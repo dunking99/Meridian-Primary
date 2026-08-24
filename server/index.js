@@ -9,7 +9,7 @@ import { auditStored } from './engines/integrity.js';
 
 import * as yahoo from './sources/yahoo.js';
 import { fetchFearAndGreed } from './sources/feargreed.js';
-import { refreshNews, getNews } from './sources/news.js';
+import { refreshNews, getNews, searchLiveNews, titleSignature, jaccard } from './sources/news.js';
 import { scoreNewStories, scoringStats, CATEGORIES } from './engines/newsscore.js';
 import { hasGeminiKey } from './sources/ai.js';
 import * as edgar from './sources/edgar.js';
@@ -571,6 +571,41 @@ const routes = {
     };
   },
   'POST /news/refresh': async () => await refreshNewsFeed() ?? { ok: true },
+
+  // Research page: news for one arbitrary ticker. `symbol` filters the
+  // standing tagged feed (only hits if it's in SYMBOLS/holdings/watchlist);
+  // `query` (defaults to symbol) additionally runs a live per-ticker search so
+  // an untracked name still returns something. Cross-source duplicates are
+  // dropped with the same title-similarity check the ingest pipeline uses,
+  // just at a looser threshold since a wire headline and an aggregator's
+  // rendering of the same story are worded less identically than two RSS
+  // feeds carrying the same wire copy.
+  'GET /research/news': async q => {
+    const symbol = q.symbol ? String(q.symbol).toUpperCase().trim() : null;
+    const queryText = String(q.query ?? symbol ?? '').trim();
+    const limit = Math.min(Number(q.limit) || 30, 60);
+
+    const held = all('SELECT DISTINCT symbol FROM holdings').map(r => r.symbol);
+    const watched = all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol);
+    const feed = symbol ? getNews({ symbol, limit: 30, sort: 'smart', held, watched }) : [];
+
+    let live = [];
+    if (queryText) {
+      const raw = await searchLiveNews(queryText, { limit: 20 });
+      const feedSigs = feed.map(f => titleSignature(f.title));
+      live = raw.filter(l => {
+        const sig = titleSignature(l.title);
+        return !feedSigs.some(fs => jaccard(sig, fs) >= 0.5);
+      });
+    }
+
+    const combined = [...feed.map(f => ({ ...f, live: false })), ...live]
+      .sort((a, b) => (b.published ?? 0) - (a.published ?? 0))
+      .slice(0, limit);
+
+    return { symbol, query: queryText, feedCount: feed.length, liveCount: live.length, news: combined };
+  },
+
   // Score on demand — lets the user fill in a backlog without waiting for the
   // next 10-minute cycle (e.g. right after first pasting their API key).
   'POST /news/score': async body => {

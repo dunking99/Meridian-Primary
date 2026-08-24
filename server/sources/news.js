@@ -208,6 +208,44 @@ export function findDuplicate(title, recent) {
   return null;
 }
 
+// ─── Live on-demand search (Research page) ─────────────────────
+// The standing 47-feed pipeline above only surfaces a story if it happened to
+// be tagged against a symbol already in SYMBOLS or a current holding/watchlist
+// item — fine for the News page, useless for "look up an arbitrary ticker the
+// app has never heard of". Google News' public search RSS needs no API key
+// and reuses the same tolerant parseFeed() this file already has, so a fresh
+// per-query fetch fills that gap instead of adding a second parser.
+function splitGoogleNewsTitle(title) {
+  // Google News RSS titles are "Headline - Publisher". A plain rsplit on the
+  // last " - " misparses headlines that themselves contain a hyphenated
+  // clause, but publisher names essentially never contain " - ", so anchoring
+  // on the last occurrence is the safer split of the two.
+  const i = title.lastIndexOf(' - ');
+  return i === -1 ? { headline: title, source: 'Google News' } : { headline: title.slice(0, i), source: title.slice(i + 3) };
+}
+
+export async function searchLiveNews(query, { limit = 15 } = {}) {
+  const q = String(query ?? '').trim();
+  if (!q) return [];
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-GB&gl=GB&ceid=GB:en`;
+  const res = await fetchText(url);
+  if (!res.ok || !res.body) return [];
+  const items = parseFeed(res.body);
+  return items.slice(0, limit).map(it => {
+    const { headline, source } = splitGoogleNewsTitle(it.title);
+    return {
+      guid: it.guid,
+      source,
+      title: headline,
+      url: it.url,
+      published: it.published,
+      summary: it.summary,
+      sentiment: scoreSentiment(`${headline} ${it.summary}`),
+      live: true,
+    };
+  });
+}
+
 export async function refreshNews(extraHoldings = []) {
   let added = 0, duplicates = 0, failed = [];
 
