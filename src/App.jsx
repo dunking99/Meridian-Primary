@@ -163,7 +163,7 @@ const NAV_ITEMS = [
   { id: "portfolio", label: "Portfolio", icon: "◰" },
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
-  { id: "forex", label: "FX & Commod.", icon: "◬" },
+  { id: "markets", label: "Markets", icon: "◬" },
   { id: "calendar", label: "Calendar", icon: "▣" },
   { id: "news", label: "News", icon: "◉" },
   { id: "settings", label: "Settings", icon: "⚙" },
@@ -401,7 +401,9 @@ function useMarketData() {
 function formatPrice(price, symbol) {
   if (!price) return "—";
   if (symbol?.includes("=X")) return price.toFixed(4);
-  if (symbol === "^IRX" || symbol === "^TNX") return price.toFixed(3) + "%";
+  // ^FVX (US 5Y) belongs with the other yields — it was missing here, so the
+  // 5-year rendered as a bare "4.12" next to "5.301%" and "4.372%".
+  if (symbol === "^IRX" || symbol === "^TNX" || symbol === "^FVX") return price.toFixed(3) + "%";
   return price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
@@ -2730,28 +2732,6 @@ function ScreenerPage() {
   );
 }
 
-// ============================================================
-// FOREX & COMMODITIES PAGE
-// ============================================================
-
-const FX_PAIRS = [
-  { pair: "EUR/USD", symbol: "EURUSD=X", price: 1.0842, change: -0.22, high: 1.0891, low: 1.0812, centralBanks: "ECB vs Fed", bias: "Bearish", driver: "ECB cutting faster than Fed. Dollar strength persisting above 104 DXY.", support: 1.0780, resistance: 1.0920 },
-  { pair: "GBP/USD", symbol: "GBPUSD=X", price: 1.2634, change: -0.14, high: 1.2680, low: 1.2601, centralBanks: "BoE vs Fed", bias: "Neutral", driver: "BoE holding hawkish stance. UK CPI still sticky. Range-bound pending data.", support: 1.2520, resistance: 1.2780 },
-  { pair: "USD/JPY", symbol: "USDJPY=X", price: 149.82, change: 0.28, high: 150.14, low: 149.44, centralBanks: "Fed vs BoJ", bias: "Bullish USD", driver: "BoJ-Fed divergence intact. Carry trade well-supported. Watch 150 psychological level.", support: 148.00, resistance: 151.90 },
-  { pair: "AUD/USD", price: 0.6524, change: -0.34, high: 0.6558, low: 0.6501, centralBanks: "RBA vs Fed", bias: "Bearish", driver: "China growth concerns weighing. RBA less hawkish than peers. Commodity drag.", support: 0.6450, resistance: 0.6620 },
-  { pair: "USD/CAD", price: 1.3582, change: 0.18, high: 1.3608, low: 1.3551, centralBanks: "Fed vs BoC", bias: "Bullish USD", driver: "BoC dovish pivot underway. Oil price support partially offsetting.", support: 1.3480, resistance: 1.3680 },
-  { pair: "USD/CHF", price: 0.8982, change: 0.12, high: 0.9012, low: 0.8961, centralBanks: "Fed vs SNB", bias: "Neutral", driver: "SNB already cut. CHF losing safe-haven premium. Risk-on conditions mildly bearish CHF.", support: 0.8880, resistance: 0.9080 },
-];
-
-const COMMODITIES_DATA = [
-  { name: "Gold", symbol: "GC=F", price: 2318.40, change: -0.54, high: 2341.20, low: 2298.80, unit: "$/oz", driver: "Central bank buying + geopolitical floor. Dollar headwind capping upside.", support: 2280, resistance: 2360, season: "Neutral Q1", dollarCorr: -0.78 },
-  { name: "Silver", price: 27.42, change: -0.88, high: 27.92, low: 27.14, unit: "$/oz", driver: "Industrial demand + gold ratio stretched. Solar panel demand secular tailwind.", support: 26.50, resistance: 29.00, season: "Neutral", dollarCorr: -0.72 },
-  { name: "WTI Crude", symbol: "CL=F", price: 82.14, change: 1.18, high: 82.88, low: 81.22, unit: "$/bbl", driver: "OPEC+ compliance improving. EIA draw expected. Geopolitical risk premium.", support: 79.00, resistance: 86.00, season: "Seasonal strength Q2", dollarCorr: -0.44 },
-  { name: "Brent Crude", symbol: "BZ=F", price: 86.22, change: 0.94, high: 87.10, low: 85.44, unit: "$/bbl", driver: "Spread to WTI normalising. Middle East risk premium. European demand recovery.", support: 83.00, resistance: 90.00, season: "Seasonal strength Q2", dollarCorr: -0.42 },
-  { name: "Natural Gas", symbol: "NG=F", price: 1.94, change: -2.84, high: 2.02, low: 1.88, unit: "$/MMBtu", driver: "Multi-year lows. Storage builds. Seasonal demand builds Q2. Mean reversion candidate.", support: 1.80, resistance: 2.40, season: "Seasonal inflection Q2", dollarCorr: -0.18 },
-  { name: "Copper", price: 3.98, change: 0.62, high: 4.02, low: 3.92, unit: "$/lb", driver: "China recovery proxy. Green energy demand structural. LME inventory draws.", support: 3.80, resistance: 4.20, season: "Positive Q2", dollarCorr: -0.56 },
-];
-
 const CB_MATRIX = [
   { bank: "Federal Reserve", country: "US", rate: "5.25-5.50%", bias: "Hold / Hawkish", nextMeeting: "Mar 19", expectation: "Hold", color: "#3d8bff" },
   { bank: "ECB", country: "Eurozone", rate: "4.00%", bias: "Cutting", nextMeeting: "Apr 11", expectation: "Cut -25bp", color: "#ffa502" },
@@ -2761,232 +2741,1062 @@ const CB_MATRIX = [
   { bank: "SNB", country: "Switzerland", rate: "1.50%", bias: "Cutting", nextMeeting: "Jun 20", expectation: "Hold", color: "#c8d6e8" },
 ];
 
-async function fetchAIForex(setCommentary, setLoading) {
-  setLoading(true);
-  const prompt = `You are an FX strategist. Current conditions: DXY at 104.22 (firm), Fed holding 5.25-5.50%, ECB cutting, BoJ at 0.1%, BoE holding hawkish. VIX 16.82, risk-on environment.
+// ============================================================
+// MARKETS PAGE
+// Replaces the old FX & Commod. page. One hub for every quoted
+// market: indices, FX, commodities, sectors, rates, crypto,
+// central banks.
+//
+// Two rules hold across every sub-page here:
+//   1. Prices are live or absent — never a hardcoded stand-in.
+//      The page this replaced showed fabricated support/resistance
+//      levels next to real quotes, which is worse than showing
+//      nothing: it reads as data.
+//   2. One visual language. Every board is built from the same
+//      MarketTile / Sparkline / RangeBar / heat-cell parts, so the
+//      sub-pages read as one page rather than seven.
+// ============================================================
 
-Write a concise FX macro commentary (2 short paragraphs):
-1. The dominant FX theme right now and which crosses benefit most
-2. The single biggest risk to current FX positioning in the next 2 weeks
+const MK = {
+  panel: "#0d1117", panelAlt: "#080b12", hair: "#12161f",
+  border: "#1a1f2e", border2: "#1a2535",
+  up: "#00d4aa", down: "#ff4757", flat: "#4a6080",
+  blue: "#3d8bff", amber: "#ffa502", purple: "#a855f7",
+  ink: "#e8f0fe", ink2: "#c8d6e8", ink3: "#7a8ba0", ink4: "#4a6080", ink5: "#3a4558",
+  mono: "monospace",
+};
 
-Then one sentence on commodities: what does current macro mean for Gold and Oil specifically?
+// VIX and similar inverted gauges: a rising print is risk-off, so the
+// usual green-is-good mapping would tell the opposite story.
+const INVERTED = new Set(["^VIX"]);
+const moveColor = (pct, symbol) => {
+  if (pct == null || Number.isNaN(pct)) return MK.flat;
+  const good = INVERTED.has(symbol) ? pct < 0 : pct >= 0;
+  return Math.abs(pct) < 0.005 ? MK.flat : (good ? MK.up : MK.down);
+};
 
-Plain text only. No markdown. Direct and specific.`;
-  const { text } = await callAI(prompt, 600);
-  setCommentary(text);
-  setLoading(false);
+// Diverging scale: two hues with a NEUTRAL midpoint. A hue at zero would
+// imply direction where there is none, so near-flat values go grey.
+function heatStyle(pct, scale = 2) {
+  if (pct == null || Number.isNaN(pct)) return { background: MK.hair, color: MK.ink5 };
+  const t = Math.max(-1, Math.min(1, pct / scale));
+  if (Math.abs(t) < 0.05) return { background: "#141a24", color: MK.ink4 };
+  const rgb = t > 0 ? "0,212,170" : "255,71,87";
+  return {
+    background: `rgba(${rgb},${(0.10 + Math.abs(t) * 0.42).toFixed(3)})`,
+    color: t > 0 ? MK.up : MK.down,
+  };
 }
 
-function BiasTag({ bias }) {
-  const colors = { "Bullish": "#00d4aa", "Bullish USD": "#00d4aa", "Bearish": "#ff4757", "Neutral": "#ffa502", "Cutting": "#ff6b35", "Hold / Hawkish": "#00d4aa", "Hiking slowly": "#ffa502" };
-  const c = colors[bias] || "#4a6080";
-  return <span style={{ fontSize: 9, background: `${c}20`, color: c, padding: "2px 6px", borderRadius: 3, fontFamily: "monospace" }}>{bias}</span>;
+const pctText = v => (v == null || Number.isNaN(v) ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
+
+// ─── Primitives ──────────────────────────────────────────────
+
+/** Bare shape-of-the-trend line. Renders nothing when history is missing. */
+function Sparkline({ data, color = MK.up, width = 120, height = 30, fill = true, id }) {
+  if (!Array.isArray(data) || data.length < 2) return null;
+  const lo = Math.min(...data), hi = Math.max(...data);
+  const span = hi - lo || 1;
+  const dx = width / (data.length - 1);
+  // Guard the top and bottom by 2px so peaks aren't clipped by the viewBox.
+  const y = v => height - 2 - ((v - lo) / span) * (height - 4);
+  const pts = data.map((v, i) => `${(i * dx).toFixed(2)},${y(v).toFixed(2)}`);
+  const gid = `sg-${id}`;
+  const lastX = (data.length - 1) * dx, lastY = y(data[data.length - 1]);
+  return (
+    <svg width={width} height={height} style={{ display: "block", overflow: "visible" }} aria-hidden="true">
+      {fill && (
+        <>
+          <defs>
+            <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+              <stop offset="100%" stopColor={color} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <polygon points={`0,${height} ${pts.join(" ")} ${width},${height}`} fill={`url(#${gid})`} />
+        </>
+      )}
+      <polyline points={pts.join(" ")} fill="none" stroke={color} strokeWidth="1.5"
+                strokeLinejoin="round" strokeLinecap="round" />
+      {/* Emphasised endpoint — the eye should land on "now". */}
+      <circle cx={lastX} cy={lastY} r="2.4" fill={color} />
+    </svg>
+  );
 }
 
-function ForexPage({ prices }) {
-  const [activeTab, setActiveTab] = useState("fx");
-  const [aiCommentary, setAiCommentary] = useState("");
+/** Where the current print sits inside a low–high band. */
+function RangeBar({ low, high, value, label, compact = false, symbol }) {
+  if ([low, high, value].some(v => typeof v !== "number" || Number.isNaN(v)) || high <= low) return null;
+  const pos = Math.max(0, Math.min(1, (value - low) / (high - low)));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      {label && <div style={{ fontSize: 8, color: MK.ink5, fontFamily: MK.mono, letterSpacing: 1 }}>{label}</div>}
+      <div style={{ position: "relative", height: compact ? 3 : 4, background: MK.border2, borderRadius: 2 }}>
+        <div style={{
+          position: "absolute", left: `${pos * 100}%`, top: -2, bottom: -2,
+          width: 2, background: MK.ink2, borderRadius: 1, transform: "translateX(-1px)",
+        }} />
+      </div>
+      {!compact && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: MK.ink5, fontFamily: MK.mono }}>
+          {/* Match the instrument's own precision — a 4dp index bound
+              ("5,568.7945") reads as noise next to a 2dp price. */}
+          <span>{symbol ? formatPrice(low, symbol) : low.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+          <span>{symbol ? formatPrice(high, symbol) : high.toLocaleString(undefined, { maximumFractionDigits: 4 })}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Signed bar growing left or right from a shared centre line. */
+function DivergingBar({ value, max, label, sub, unit = "%" }) {
+  const t = max ? Math.max(-1, Math.min(1, value / max)) : 0;
+  const pos = t >= 0;
+  const col = Math.abs(t) < 0.02 ? MK.flat : pos ? MK.up : MK.down;
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "84px 1fr 64px", alignItems: "center", gap: 10, padding: "5px 0" }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: MK.ink2, fontFamily: MK.mono }}>{label}</div>
+        {sub && <div style={{ fontSize: 9, color: MK.ink5 }}>{sub}</div>}
+      </div>
+      <div style={{ position: "relative", height: 14 }}>
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "#2a3548" }} />
+        <div style={{
+          position: "absolute", top: 3, height: 8, borderRadius: 2, background: col,
+          left: pos ? "50%" : `${50 + t * 50}%`,
+          width: `${Math.abs(t) * 50}%`,
+        }} />
+      </div>
+      <div style={{ fontSize: 12, fontFamily: MK.mono, color: col, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+        {value >= 0 ? "+" : ""}{value.toFixed(2)}{unit}
+      </div>
+    </div>
+  );
+}
+
+/** The workhorse card. Every board on this page is a grid of these. */
+function MarketTile({ symbol, name, sub, prices, spark, onClick, active, unit }) {
+  const d = prices?.[symbol];
+  const pct = d?.changePct;
+  const col = moveColor(pct, symbol);
+  const live = !!d;
+
+  return (
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } } : undefined}
+      style={{
+        background: MK.panel,
+        border: `1px solid ${active ? `${col}66` : MK.border}`,
+        borderTop: `2px solid ${live ? col : MK.border2}`,
+        borderRadius: 7,
+        padding: "12px 14px 10px",
+        cursor: onClick ? "pointer" : "default",
+        display: "flex", flexDirection: "column", gap: 8,
+        position: "relative", overflow: "hidden",
+        transition: "border-color .15s",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: MK.ink, fontFamily: MK.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {name}
+          </div>
+          {sub && <div style={{ fontSize: 9.5, color: MK.ink5, marginTop: 1 }}>{sub}</div>}
+        </div>
+        {spark && spark.length > 1 && (
+          <Sparkline data={spark} color={col} width={62} height={24} id={symbol} />
+        )}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ fontSize: 19, fontWeight: 700, color: live ? MK.ink : MK.ink5, fontFamily: MK.mono, fontVariantNumeric: "tabular-nums" }}>
+          {live ? formatPrice(d.price, symbol) : "—"}
+        </div>
+        <div style={{ fontSize: 12.5, fontFamily: MK.mono, color: col, fontVariantNumeric: "tabular-nums" }}>
+          {pctText(pct)}
+        </div>
+      </div>
+
+      {unit && <div style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono, marginTop: -4 }}>{unit}</div>}
+
+      {live && d.dayLow != null && d.dayHigh != null && d.dayHigh > d.dayLow
+        ? <RangeBar low={d.dayLow} high={d.dayHigh} value={d.price} label="DAY RANGE" symbol={symbol} />
+        : !live && <div style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono }}>awaiting price feed</div>}
+    </div>
+  );
+}
+
+/** Sub-page switcher. */
+function TabRail({ tabs, active, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${MK.border}`, overflowX: "auto" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onChange(t.id)} style={{
+          background: "transparent", border: "none",
+          borderBottom: active === t.id ? `2px solid ${MK.up}` : "2px solid transparent",
+          color: active === t.id ? MK.up : MK.ink4,
+          padding: "9px 15px", cursor: "pointer", fontFamily: MK.mono, fontSize: 11,
+          letterSpacing: 1, whiteSpace: "nowrap", flexShrink: 0,
+        }}>{t.label.toUpperCase()}</button>
+      ))}
+    </div>
+  );
+}
+
+function BoardHeading({ title, note }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", gap: 10, margin: "2px 0 -2px" }}>
+      <span style={{ fontSize: 10, color: MK.ink4, fontFamily: MK.mono, letterSpacing: 1.6 }}>{title}</span>
+      {note && <span style={{ fontSize: 10.5, color: MK.ink5 }}>{note}</span>}
+    </div>
+  );
+}
+
+// Auto-fitting grid — the old page stacked one row per instrument and left
+// most of a wide monitor empty. auto-FIT (not auto-fill) collapses the unused
+// tracks, so a three-item row like Energy stretches across the width instead
+// of huddling at the left with three empty columns beside it.
+const grid = (min = 210, max = 420) => ({
+  display: "grid",
+  gridTemplateColumns: `repeat(auto-fit, minmax(${min}px, 1fr))`,
+  maxWidth: `calc(${max}px * 6)`,
+  gap: 10,
+  alignItems: "start",
+});
+
+// ─── Static reference data ───────────────────────────────────
+// Structural context only: which central banks set a pair, what a contract is
+// quoted in, what durably drives it. Deliberately no price calls, no support
+// and resistance levels — those were invented in the page this replaces.
+
+const FX_BOARD = [
+  { symbol: "EURUSD=X", name: "EUR/USD", banks: "ECB vs Fed",  note: "The most-traded pair; policy-rate spread is the dominant driver." },
+  { symbol: "GBPUSD=X", name: "GBP/USD", banks: "BoE vs Fed",  note: "Sensitive to UK inflation prints and gilt moves." },
+  { symbol: "USDJPY=X", name: "USD/JPY", banks: "Fed vs BoJ",  note: "Rate-differential and carry proxy; moves on BoJ policy shifts." },
+  { symbol: "GBPEUR=X", name: "GBP/EUR", banks: "BoE vs ECB",  note: "UK-vs-eurozone growth and rate spread, no dollar leg." },
+  { symbol: "AUDUSD=X", name: "AUD/USD", banks: "RBA vs Fed",  note: "Traded as a China growth and industrial-commodity proxy." },
+  { symbol: "USDCAD=X", name: "USD/CAD", banks: "Fed vs BoC",  note: "Crude oil is a persistent second driver alongside rates." },
+  { symbol: "USDCHF=X", name: "USD/CHF", banks: "Fed vs SNB",  note: "Franc carries a safe-haven bid in risk-off episodes." },
+];
+
+// Which side of each pair each currency sits on, for the strength read.
+const FX_LEGS = {
+  "EURUSD=X": ["EUR", "USD"], "GBPUSD=X": ["GBP", "USD"], "USDJPY=X": ["USD", "JPY"],
+  "GBPEUR=X": ["GBP", "EUR"], "AUDUSD=X": ["AUD", "USD"], "USDCAD=X": ["USD", "CAD"],
+  "USDCHF=X": ["USD", "CHF"],
+};
+
+const COMMODITY_BOARD = [
+  { symbol: "GC=F", name: "Gold",        unit: "$ / troy oz", group: "Metals", note: "Real yields and the dollar set the tone; central-bank buying is the structural bid." },
+  { symbol: "SI=F", name: "Silver",      unit: "$ / troy oz", group: "Metals", note: "Half precious metal, half industrial input — solar demand is the secular leg." },
+  { symbol: "HG=F", name: "Copper",      unit: "$ / lb",      group: "Metals", note: "Read as a global growth proxy; China construction and grid spend dominate." },
+  { symbol: "CL=F", name: "WTI Crude",   unit: "$ / barrel",  group: "Energy", note: "US benchmark. OPEC+ supply policy and inventory draws drive it." },
+  { symbol: "BZ=F", name: "Brent Crude", unit: "$ / barrel",  group: "Energy", note: "Seaborne global benchmark; carries more geopolitical risk premium than WTI." },
+  { symbol: "NG=F", name: "Natural Gas", unit: "$ / MMBtu",   group: "Energy", note: "Weather and storage driven; the most volatile of the majors." },
+];
+
+const INDEX_BOARD = [
+  { symbol: "^GSPC",     name: "S&P 500",       sub: "US large cap",        group: "United States" },
+  { symbol: "^IXIC",     name: "NASDAQ Comp.",  sub: "US tech-weighted",    group: "United States" },
+  { symbol: "^DJI",      name: "Dow Jones",     sub: "US blue chip",        group: "United States" },
+  { symbol: "^RUT",      name: "Russell 2000",  sub: "US small cap",        group: "United States" },
+  { symbol: "^FTSE",     name: "FTSE 100",      sub: "UK large cap",        group: "International" },
+  { symbol: "^STOXX50E", name: "EuroStoxx 50",  sub: "Eurozone blue chip",  group: "International" },
+  { symbol: "^GDAXI",    name: "DAX",           sub: "Germany",             group: "International" },
+  { symbol: "^N225",     name: "Nikkei 225",    sub: "Japan",               group: "International" },
+  { symbol: "EEM",       name: "MSCI EM",       sub: "Emerging markets",    group: "International" },
+];
+
+const SECTOR_BOARD = [
+  { symbol: "XLK",  name: "Technology" },      { symbol: "XLF",  name: "Financials" },
+  { symbol: "XLV",  name: "Health Care" },     { symbol: "XLE",  name: "Energy" },
+  { symbol: "XLI",  name: "Industrials" },     { symbol: "XLY",  name: "Cons. Disc." },
+  { symbol: "XLP",  name: "Cons. Staples" },   { symbol: "XLU",  name: "Utilities" },
+  { symbol: "XLRE", name: "Real Estate" },     { symbol: "XLB",  name: "Materials" },
+  { symbol: "XLC",  name: "Communications" },
+];
+
+const RATE_BOARD = [
+  { symbol: "^IRX", name: "US 3-Month", years: 0.25, sub: "T-bill — tracks the Fed's policy rate" },
+  { symbol: "^FVX", name: "US 5-Year",  years: 5,    sub: "Belly of the curve" },
+  { symbol: "^TNX", name: "US 10-Year", years: 10,   sub: "The global discount-rate benchmark" },
+];
+
+// Placeholder until a price source is wired — labelled as such everywhere it
+// shows, rather than quietly rendering as though it were live.
+const CRYPTO_BOARD = [
+  { symbol: "BTC", name: "Bitcoin",  sub: "BTC" },
+  { symbol: "ETH", name: "Ethereum", sub: "ETH" },
+  { symbol: "SOL", name: "Solana",   sub: "SOL" },
+  { symbol: "XRP", name: "XRP",      sub: "XRP" },
+];
+
+// Rate gaps below are hand-maintained alongside CB_MATRIX; the banner on that
+// board says so, because a stale policy spread reads exactly like a live one.
+const CB_DIVERGENCE = [
+  { pair: "USD vs EUR", gap: "+1.25-1.50%", note: "ECB cutting while the Fed holds — EUR/USD carries a downside bias.", tag: "Long USD / Short EUR", color: "#3d8bff" },
+  { pair: "USD vs JPY", gap: "+5.15-5.40%", note: "The widest gap of the majors; the carry trade dominates positioning.", tag: "Long USD/JPY carry", color: "#ffa502" },
+  { pair: "USD vs GBP", gap: "-0.25-0.00%", note: "Near parity. A hawkish BoE hold keeps sterling supported and the cross range-bound.", tag: "Neutral - watch data", color: "#00d4aa" },
+  { pair: "USD vs CAD", gap: "+0.25-0.50%", note: "The BoC is ahead of the Fed in cutting, leaving CAD under moderate pressure.", tag: "Mild USD/CAD upside", color: "#a855f7" },
+];
+
+// Labels are derived from the board definitions above rather than kept in a
+// parallel hand-maintained map — one source of truth, no drift.
+const MARKET_META = Object.fromEntries([
+  ...INDEX_BOARD.map(x => [x.symbol, { name: x.name, sub: x.sub }]),
+  ...FX_BOARD.map(x => [x.symbol, { name: x.name, sub: x.banks }]),
+  ...COMMODITY_BOARD.map(x => [x.symbol, { name: x.name, sub: x.unit }]),
+  ...SECTOR_BOARD.map(x => [x.symbol, { name: x.name, sub: x.symbol }]),
+  ...RATE_BOARD.map(x => [x.symbol, { name: x.name, sub: x.sub }]),
+  ["^VIX",      { name: "VIX",          sub: "Implied volatility, S&P 500" }],
+  ["DX-Y.NYB",  { name: "Dollar Index", sub: "Trade-weighted USD" }],
+]);
+const mkName = s => MARKET_META[s]?.name || DISPLAY_NAMES[s] || s;
+const mkSub  = s => MARKET_META[s]?.sub;
+
+const ALL_MARKET_SYMBOLS = [
+  ...INDEX_BOARD.map(x => x.symbol), ...FX_BOARD.map(x => x.symbol),
+  ...COMMODITY_BOARD.map(x => x.symbol), ...SECTOR_BOARD.map(x => x.symbol),
+  ...RATE_BOARD.map(x => x.symbol), "^VIX", "DX-Y.NYB",
+];
+
+// ─── Derived measures ────────────────────────────────────────
+
+/**
+ * Per-currency strength from the tracked pairs.
+ * Each pair contributes its move to the base currency and the negation of it
+ * to the quote currency; a currency's score is the mean across the pairs it
+ * appears in. Averaging (not summing) keeps USD — which appears in six pairs —
+ * on the same scale as CHF, which appears in one.
+ */
+function currencyStrength(prices) {
+  const acc = {};
+  for (const [sym, [base, quote]] of Object.entries(FX_LEGS)) {
+    const pct = prices?.[sym]?.changePct;
+    if (pct == null || Number.isNaN(pct)) continue;
+    (acc[base] ??= []).push(pct);
+    (acc[quote] ??= []).push(-pct);
+  }
+  return Object.entries(acc)
+    .map(([ccy, vals]) => ({ ccy, value: vals.reduce((a, b) => a + b, 0) / vals.length, n: vals.length }))
+    .sort((a, b) => b.value - a.value);
+}
+
+/** Pearson correlation of daily returns. Real history in, real number out. */
+function returnsCorrelation(a, b) {
+  if (!a || !b) return null;
+  const n = Math.min(a.length, b.length);
+  if (n < 20) return null;                      // too short to mean anything
+  const ra = [], rb = [];
+  const sa = a.slice(-n), sb = b.slice(-n);
+  for (let i = 1; i < n; i++) {
+    if (!sa[i - 1] || !sb[i - 1]) continue;
+    ra.push(sa[i] / sa[i - 1] - 1);
+    rb.push(sb[i] / sb[i - 1] - 1);
+  }
+  if (ra.length < 15) return null;
+  const m = xs => xs.reduce((s, v) => s + v, 0) / xs.length;
+  const ma = m(ra), mb = m(rb);
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < ra.length; i++) {
+    const x = ra[i] - ma, y = rb[i] - mb;
+    num += x * y; da += x * x; db += y * y;
+  }
+  const den = Math.sqrt(da * db);
+  return den ? num / den : null;
+}
+
+/** Percent change across a close series — the sparkline's own period. */
+const periodChange = s => (Array.isArray(s) && s.length > 1 && s[0] ? (s[s.length - 1] / s[0] - 1) * 100 : null);
+
+// ─── Page ────────────────────────────────────────────────────
+
+function MarketsPage({ prices }) {
+  const [tab, setTab] = useState("overview");
+  const [hist, setHist] = useState({});
+  const [histLoaded, setHistLoaded] = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
-  const [expandedItem, setExpandedItem] = useState(null);
+
+  // One batched call for every sparkline on the page.
+  useEffect(() => {
+    let alive = true;
+    fetch(`${API}/history/batch?symbols=${encodeURIComponent(ALL_MARKET_SYMBOLS.join(","))}&days=90`)
+      .then(r => r.json())
+      .then(d => { if (alive) { setHist(d.series ?? {}); setHistLoaded(true); } })
+      .catch(() => { if (alive) setHistLoaded(true); });   // no history: tiles still render, just without sparklines
+    return () => { alive = false; };
+  }, []);
+
+  const sp = sym => hist[sym];
+  const px = sym => prices?.[sym];
+
+  const TABS = [
+    { id: "overview",  label: "Overview" },
+    { id: "indices",   label: "Indices" },
+    { id: "fx",        label: "FX" },
+    { id: "commod",    label: "Commodities" },
+    { id: "sectors",   label: "Sectors" },
+    { id: "rates",     label: "Rates" },
+    { id: "crypto",    label: "Crypto" },
+    { id: "banks",     label: "Central Banks" },
+  ];
+
+  // Ranked movers across everything quoted, for the overview.
+  // Yields are excluded: a 1.3% move in a 5.3% yield is a 7bp shift, which is
+  // not the same kind of quantity as a stock rising 1.3%, and ranking them
+  // together puts rates at the top of the board on a quiet day.
+  const RANKABLE = ALL_MARKET_SYMBOLS.filter(s => !RATE_BOARD.some(r => r.symbol === s));
+  const movers = RANKABLE
+    .map(s => ({ symbol: s, name: mkName(s), pct: px(s)?.changePct }))
+    .filter(m => m.pct != null && !Number.isNaN(m.pct))
+    .sort((a, b) => b.pct - a.pct);
+
+  const liveCount = ALL_MARKET_SYMBOLS.filter(s => px(s)).length;
+
+  function runAI() {
+    setAiLoading(true);
+    const line = (label, sym) => {
+      const d = px(sym);
+      return d ? `${label} ${formatPrice(d.price, sym)} (${pctText(d.changePct)})` : null;
+    };
+    const ctx = [
+      line("S&P 500", "^GSPC"), line("NASDAQ", "^IXIC"), line("FTSE 100", "^FTSE"),
+      line("VIX", "^VIX"), line("DXY", "DX-Y.NYB"), line("Gold", "GC=F"),
+      line("WTI", "CL=F"), line("US 10Y", "^TNX"), line("EUR/USD", "EURUSD=X"),
+    ].filter(Boolean).join("; ");
+    const strength = currencyStrength(prices).slice(0, 3).map(s => `${s.ccy} ${s.value >= 0 ? "+" : ""}${s.value.toFixed(2)}%`).join(", ");
+    const prompt = `You are a macro strategist writing a cross-asset read for a UK private investor.
+
+Live session data: ${ctx || "no live prices available"}.
+Strongest currencies today: ${strength || "n/a"}.
+
+Write four labelled sections, 2 sentences each, plain text, no markdown:
+THE SESSION: What is actually happening across assets right now.
+WHAT IS DRIVING IT: The mechanism linking these moves.
+WHAT TO WATCH: The specific level or event that would change the picture.
+POSITIONING READ: What this backdrop favours and what it punishes.
+
+Be specific about the numbers given. No hedging filler.`;
+    callAI(prompt, 900).then(({ text }) => { setAiText(text); setAiLoading(false); });
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel>
-        <SectionHeader title="AI FX & MACRO COMMENTARY" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={() => fetchAIForex(setAiCommentary, setAiLoading)} />
-        <div style={{ padding: 12 }}>
-          {!aiCommentary && !aiLoading && <div style={{ fontSize: 11, color: "#3a4558", fontFamily: "monospace" }}>Click GENERATE for dominant FX theme, key risks, Gold and Oil context.</div>}
-          {aiLoading && <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 12, height: 12, border: "2px solid #1a2535", borderTop: "2px solid #00d4aa", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /><span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>Analysing FX conditions...</span></div>}
-          {aiCommentary && <div style={{ fontSize: 12, color: "#a0b4c8", lineHeight: 1.7, fontFamily: "Georgia, serif", borderLeft: "2px solid #3d8bff40", paddingLeft: 12 }}>{aiCommentary}</div>}
-        </div>
-      </Panel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-        {[
-          { label: "DXY", val: (prices["DX-Y.NYB"]?.price || 104.22).toFixed(2), pct: formatChange(prices["DX-Y.NYB"]?.changePct || 0.34), color: "#ffa502" },
-          { label: "EUR/USD", val: (prices["EURUSD=X"]?.price || 1.0842).toFixed(4), pct: formatChange(prices["EURUSD=X"]?.changePct || -0.22), color: "#ff4757" },
-          { label: "GBP/USD", val: (prices["GBPUSD=X"]?.price || 1.2634).toFixed(4), pct: formatChange(prices["GBPUSD=X"]?.changePct || -0.14), color: "#ffa502" },
-          { label: "USD/JPY", val: (prices["USDJPY=X"]?.price || 149.82).toFixed(2), pct: formatChange(prices["USDJPY=X"]?.changePct || 0.28), color: "#00d4aa" },
-        ].map(item => (
-          <div key={item.label} style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 6, padding: "10px 14px" }}>
-            <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>{item.label}</div>
-            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "monospace", color: "#e8f0fe" }}>{item.val}</div>
-            <div style={{ fontSize: 12, fontFamily: "monospace", color: item.color, marginTop: 2 }}>{item.pct}</div>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: MK.ink, fontFamily: MK.mono, letterSpacing: 1 }}>MARKETS</div>
+          <div style={{ fontSize: 12.5, color: MK.ink4, marginTop: 3 }}>
+            {liveCount} of {ALL_MARKET_SYMBOLS.length} instruments live
+            {histLoaded && ` · ${Object.keys(hist).length} with stored history`}
           </div>
-        ))}
+        </div>
       </div>
 
-      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
-        {[{ id: "fx", label: "FX Pairs" }, { id: "commodities", label: "Commodities" }, { id: "centralbanks", label: "Central Banks" }, { id: "dxy", label: "DXY & Correlations" }].map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)} style={{
-            background: "transparent", border: "none",
-            borderBottom: activeTab === t.id ? "2px solid #00d4aa" : "2px solid transparent",
-            color: activeTab === t.id ? "#00d4aa" : "#4a6080",
-            padding: "8px 16px", cursor: "pointer", fontFamily: "monospace", fontSize: 11, letterSpacing: 1,
-          }}>{t.label.toUpperCase()}</button>
-        ))}
-      </div>
+      <TabRail tabs={TABS} active={tab} onChange={t => { setTab(t); setDetail(null); }} />
 
-      {activeTab === "fx" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {FX_PAIRS.map(pair => {
-            const isExp = expandedItem === pair.pair;
-            const up = pair.change >= 0;
-            return (
-              <Panel key={pair.pair} style={{ borderLeft: `3px solid ${up ? "#00d4aa40" : "#ff475740"}` }}>
-                <div onClick={() => setExpandedItem(isExp ? null : pair.pair)} style={{ display: "grid", gridTemplateColumns: "110px 100px 70px 70px 90px 1fr auto", gap: 10, padding: "12px 14px", cursor: "pointer", alignItems: "center" }}>
-                  <div><div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 14, color: "#e8f0fe" }}>{pair.pair}</div><div style={{ fontSize: 9, color: "#4a6080" }}>{pair.centralBanks}</div></div>
-                  <div><div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#c8d6e8" }}>{pair.price.toFixed(4)}</div><div style={{ fontFamily: "monospace", fontSize: 11, color: up ? "#00d4aa" : "#ff4757" }}>{up ? "+" : ""}{pair.change.toFixed(2)}%</div></div>
-                  <div><div style={{ fontSize: 9, color: "#3a4558" }}>HIGH</div><div style={{ fontFamily: "monospace", fontSize: 11, color: "#00d4aa" }}>{pair.high.toFixed(4)}</div></div>
-                  <div><div style={{ fontSize: 9, color: "#3a4558" }}>LOW</div><div style={{ fontFamily: "monospace", fontSize: 11, color: "#ff4757" }}>{pair.low.toFixed(4)}</div></div>
-                  <BiasTag bias={pair.bias} />
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>{pair.driver}</div>
-                  <span style={{ color: "#4a6080" }}>{isExp ? "▲" : "▼"}</span>
-                </div>
-                {isExp && (
-                  <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12", display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-                    {[{ label: "SUPPORT", val: pair.support?.toFixed(4), color: "#00d4aa" }, { label: "RESISTANCE", val: pair.resistance?.toFixed(4), color: "#ff4757" }, { label: "SESSION HIGH", val: pair.high.toFixed(4), color: "#c8d6e8" }, { label: "SESSION LOW", val: pair.low.toFixed(4), color: "#c8d6e8" }].map(f => (
-                      <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", marginBottom: 3 }}>{f.label}</div>
-                        <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: f.color }}>{f.val}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Panel>
-            );
-          })}
-        </div>
-      )}
-
-      {activeTab === "commodities" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {COMMODITIES_DATA.map(com => {
-            const isExp = expandedItem === com.name;
-            const up = com.change >= 0;
-            return (
-              <Panel key={com.name} style={{ borderLeft: `3px solid ${up ? "#00d4aa40" : "#ff475740"}` }}>
-                <div onClick={() => setExpandedItem(isExp ? null : com.name)} style={{ display: "grid", gridTemplateColumns: "120px 110px 70px 70px 100px 1fr auto", gap: 10, padding: "12px 14px", cursor: "pointer", alignItems: "center" }}>
-                  <div><div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 14, color: "#e8f0fe" }}>{com.name}</div><div style={{ fontSize: 9, color: "#4a6080" }}>{com.unit}</div></div>
-                  <div><div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#c8d6e8" }}>${com.price.toLocaleString()}</div><div style={{ fontFamily: "monospace", fontSize: 11, color: up ? "#00d4aa" : "#ff4757" }}>{up ? "+" : ""}{com.change.toFixed(2)}%</div></div>
-                  <div><div style={{ fontSize: 9, color: "#3a4558" }}>HIGH</div><div style={{ fontFamily: "monospace", fontSize: 11, color: "#00d4aa" }}>${com.high.toLocaleString()}</div></div>
-                  <div><div style={{ fontSize: 9, color: "#3a4558" }}>LOW</div><div style={{ fontFamily: "monospace", fontSize: 11, color: "#ff4757" }}>${com.low.toLocaleString()}</div></div>
-                  <div style={{ fontSize: 9, background: "#1a2535", color: "#4a6080", padding: "3px 7px", borderRadius: 3, fontFamily: "monospace", whiteSpace: "nowrap" }}>{com.season}</div>
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>{com.driver}</div>
-                  <span style={{ color: "#4a6080" }}>{isExp ? "▲" : "▼"}</span>
-                </div>
-                {isExp && (
-                  <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12", display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
-                    {[{ label: "SUPPORT", val: `$${com.support.toLocaleString()}`, color: "#00d4aa" }, { label: "RESISTANCE", val: `$${com.resistance.toLocaleString()}`, color: "#ff4757" }, { label: "USD CORRELATION", val: com.dollarCorr.toFixed(2), color: com.dollarCorr < 0 ? "#ff4757" : "#00d4aa" }, { label: "SEASONALITY", val: com.season, color: "#ffa502" }].map(f => (
-                      <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", marginBottom: 3 }}>{f.label}</div>
-                        <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: f.color }}>{f.val}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Panel>
-            );
-          })}
-        </div>
-      )}
-
-      {activeTab === "centralbanks" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-            {CB_MATRIX.map(cb => (
-              <Panel key={cb.bank} style={{ borderTop: `3px solid ${cb.color}` }}>
-                <div style={{ padding: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                    <div><div style={{ fontFamily: "monospace", fontWeight: 700, color: "#e8f0fe", fontSize: 13 }}>{cb.bank}</div><div style={{ fontSize: 10, color: "#4a6080" }}>{cb.country}</div></div>
-                    <BiasTag bias={cb.bias} />
-                  </div>
-                  {[{ label: "CURRENT RATE", val: cb.rate, big: true }, { label: "NEXT MEETING", val: cb.nextMeeting, big: false }, { label: "EXPECTATION", val: cb.expectation, big: false }].map(f => (
-                    <div key={f.label} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ fontSize: 10, color: "#4a6080" }}>{f.label}</span>
-                      <span style={{ fontFamily: "monospace", fontSize: f.big ? 16 : 12, fontWeight: f.big ? 700 : 400, color: f.big ? cb.color : "#c8d6e8" }}>{f.val}</span>
-                    </div>
-                  ))}
-                </div>
-              </Panel>
+      {/* ─── OVERVIEW ─────────────────────────────────────── */}
+      {tab === "overview" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={grid(200)}>
+            {["^GSPC", "^FTSE", "DX-Y.NYB", "^VIX", "GC=F", "^TNX"].map(s => (
+              <MarketTile key={s} symbol={s} name={mkName(s)}
+                          sub={mkSub(s)} prices={prices} spark={sp(s)} />
             ))}
           </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, alignItems: "start" }}>
+            <Panel>
+              <SectionHeader title="LEADERS" subtitle="strongest today, all tracked markets" />
+              <div style={{ padding: "10px 16px 14px" }}>
+                {movers.slice(0, 6).map(m => (
+                  <MarketMoverRow key={m.symbol} {...m} spark={sp(m.symbol)} />
+                ))}
+                {!movers.length && <Empty text="No live prices yet." />}
+              </div>
+            </Panel>
+            <Panel>
+              <SectionHeader title="LAGGARDS" subtitle="weakest today, all tracked markets" />
+              <div style={{ padding: "10px 16px 14px" }}>
+                {movers.slice(-6).reverse().map(m => (
+                  <MarketMoverRow key={m.symbol} {...m} spark={sp(m.symbol)} />
+                ))}
+                {!movers.length && <Empty text="No live prices yet." />}
+              </div>
+            </Panel>
+          </div>
+
           <Panel>
-            <SectionHeader title="CENTRAL BANK DIVERGENCE MAP" />
-            <div style={{ padding: 14 }}>
+            <SectionHeader title="CROSS-ASSET MAP" subtitle="today's move by asset class — colour and number both encode the same value" />
+            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
               {[
-                { pair: "USD vs EUR", diff: "+1.25-1.50%", impl: "ECB cutting while Fed holds. EUR/USD downside bias.", favours: "Long USD / Short EUR", color: "#3d8bff" },
-                { pair: "USD vs JPY", diff: "+5.15-5.40%", impl: "Extreme divergence. BoJ at 0.1% vs Fed 5.5%. Carry trade dominant.", favours: "Long USD/JPY carry", color: "#ffa502" },
-                { pair: "USD vs GBP", diff: "-0.25-0.00%", impl: "Near-parity. BoE hawkish hold = GBP support. Range-bound.", favours: "Neutral — monitor data", color: "#00d4aa" },
-                { pair: "USD vs CAD", diff: "+0.25-0.50%", impl: "BoC ahead of Fed in cutting cycle. CAD under moderate pressure.", favours: "Mild USD/CAD upside", color: "#a855f7" },
-              ].map(item => (
-                <div key={item.pair} style={{ display: "grid", gridTemplateColumns: "120px 110px 1fr 160px", gap: 12, padding: "8px 0", borderBottom: "1px solid #0f1420", alignItems: "center" }}>
-                  <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#c8d6e8", fontSize: 12 }}>{item.pair}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: item.color }}>{item.diff}</span>
-                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>{item.impl}</span>
-                  <span style={{ fontSize: 9, background: `${item.color}20`, color: item.color, padding: "2px 7px", borderRadius: 3, fontFamily: "monospace", textAlign: "center" }}>{item.favours}</span>
+                { label: "EQUITY INDICES", syms: INDEX_BOARD.map(i => i.symbol) },
+                { label: "SECTORS",        syms: SECTOR_BOARD.map(i => i.symbol) },
+                { label: "COMMODITIES",    syms: COMMODITY_BOARD.map(i => i.symbol) },
+                { label: "FX",             syms: FX_BOARD.map(i => i.symbol) },
+                { label: "RATES & VOL",    syms: [...RATE_BOARD.map(i => i.symbol), "^VIX", "DX-Y.NYB"] },
+              ].map(row => (
+                <div key={row.label}>
+                  <BoardHeading title={row.label} />
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(104px, 1fr))", gap: 4, marginTop: 6 }}>
+                    {row.syms.map(s => {
+                      const d = px(s);
+                      const st = heatStyle(d?.changePct);
+                      return (
+                        <div key={s} title={`${mkName(s)}: ${pctText(d?.changePct)}`} style={{
+                          ...st, borderRadius: 4, padding: "7px 8px",
+                          border: `1px solid ${MK.border}`, minWidth: 0,
+                        }}>
+                          <div style={{ fontSize: 9.5, color: MK.ink4, fontFamily: MK.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {mkName(s)}
+                          </div>
+                          <div style={{ fontSize: 12, fontFamily: MK.mono, fontWeight: 700, color: st.color, fontVariantNumeric: "tabular-nums" }}>
+                            {pctText(d?.changePct)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionHeader title="AI CROSS-ASSET READ" subtitle="generated from the live prices above"
+                           action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
+            <div style={{ padding: 16 }}>
+              {aiText
+                ? <div style={{ fontSize: 12.5, lineHeight: 1.8, color: "#b8c6da", whiteSpace: "pre-wrap", fontFamily: "'Courier New', monospace" }}>{aiText}</div>
+                : <div style={{ fontSize: 12, color: MK.ink4 }}>Click GENERATE for a session read across equities, rates, FX and commodities. Requires a Gemini API key (Settings).</div>}
             </div>
           </Panel>
         </div>
       )}
 
-      {activeTab === "dxy" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-          <Panel>
-            <SectionHeader title="DXY DOLLAR INDEX" subtitle="Key levels & context" />
-            <div style={{ padding: 14 }}>
-              <div style={{ textAlign: "center", padding: "10px 0 16px", borderBottom: "1px solid #1a1f2e", marginBottom: 14 }}>
-                <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>DXY SPOT</div>
-                <div style={{ fontSize: 44, fontWeight: 900, fontFamily: "monospace", color: "#ffa502" }}>{(prices["DX-Y.NYB"]?.price || 104.22).toFixed(2)}</div>
-                <div style={{ fontSize: 12, fontFamily: "monospace", color: "#00d4aa", marginTop: 4 }}>{formatChange(prices["DX-Y.NYB"]?.changePct || 0.34)}</div>
-              </div>
-              {[{ label: "Major Support", val: "103.40", color: "#00d4aa" }, { label: "Key Resistance", val: "105.20", color: "#ff4757" }, { label: "200 DMA", val: "104.82", color: "#3d8bff" }, { label: "50 DMA", val: "103.88", color: "#a855f7" }, { label: "YTD High", val: "105.80", color: "#ffa502" }, { label: "YTD Low", val: "100.62", color: "#ffa502" }].map(item => (
-                <div key={item.label} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #0a0d14" }}>
-                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>{item.label}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: item.color }}>{item.val}</span>
-                </div>
-              ))}
-              <div style={{ marginTop: 12, padding: "8px 10px", background: "#ffa50215", border: "1px solid #ffa50230", borderRadius: 4, fontSize: 11, color: "#ffa502" }}>
-                DXY above 104 = headwind for Gold, EM, commodity exporters. Below 103 = significant USD weakness signal.
+      {/* ─── INDICES ──────────────────────────────────────── */}
+      {tab === "indices" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {["United States", "International"].map(g => (
+            <div key={g} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <BoardHeading title={g.toUpperCase()} />
+              <div style={grid(215)}>
+                {INDEX_BOARD.filter(i => i.group === g).map(i => (
+                  <MarketTile key={i.symbol} symbol={i.symbol} name={i.name} sub={i.sub}
+                              prices={prices} spark={sp(i.symbol)}
+                              active={detail === i.symbol}
+                              onClick={() => setDetail(detail === i.symbol ? null : i.symbol)} />
+                ))}
               </div>
             </div>
-          </Panel>
-          <Panel>
-            <SectionHeader title="DXY CORRELATION MAP" subtitle="How dollar moves affect assets" />
-            <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-              {[
-                { asset: "Gold", corr: -0.78, desc: "Strong inverse — dollar up = gold headwind" },
-                { asset: "EUR/USD", corr: -0.88, desc: "Very strong inverse — primary inverse pair" },
-                { asset: "GBP/USD", corr: -0.72, desc: "Strong inverse — follows EUR/USD broadly" },
-                { asset: "USD/JPY", corr: +0.84, desc: "Strong positive — dollar up = JPY weakness" },
-                { asset: "WTI Crude", corr: -0.44, desc: "Moderate inverse — supply narrative can override" },
-                { asset: "Copper", corr: -0.56, desc: "Moderate inverse — China demand also key driver" },
-                { asset: "S&P 500", corr: -0.28, desc: "Weak inverse — multinationals FX headwind" },
-                { asset: "Emerging Mkts", corr: -0.62, desc: "Strong inverse — EM USD debt = pressure" },
-              ].map(item => {
-                const abs = Math.abs(item.corr);
-                const pos = item.corr > 0;
-                const barColor = pos ? "#00d4aa" : "#ff4757";
-                return (
-                  <div key={item.asset}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                      <span style={{ fontSize: 11, color: "#7a8ba0" }}>{item.asset}</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 10, color: "#4a6080" }}>{item.desc}</span>
-                        <span style={{ fontFamily: "monospace", fontSize: 12, color: barColor, minWidth: 40, textAlign: "right" }}>{item.corr.toFixed(2)}</span>
+          ))}
+          <PerformancePanel
+            title="INDEX PERFORMANCE"
+            note="which markets are actually leading, today and over the quarter"
+            rows={INDEX_BOARD} prices={prices} hist={hist} />
+          <DetailStrip symbol={detail} prices={prices} spark={sp(detail)} />
+        </div>
+      )}
+
+      {/* ─── FX ───────────────────────────────────────────── */}
+      {tab === "fx" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, alignItems: "start" }}>
+            <Panel>
+              <SectionHeader title="CURRENCY STRENGTH"
+                             subtitle="today's mean move across the pairs each currency trades in" />
+              <div style={{ padding: "12px 16px 14px" }}>
+                {(() => {
+                  const rows = currencyStrength(prices);
+                  if (!rows.length) return <Empty text="No live FX prices yet." />;
+                  const max = Math.max(...rows.map(r => Math.abs(r.value)), 0.25);
+                  return rows.map(r => (
+                    <DivergingBar key={r.ccy} label={r.ccy} value={r.value} max={max}
+                                  sub={`${r.n} pair${r.n > 1 ? "s" : ""}`} />
+                  ));
+                })()}
+                <div style={{ fontSize: 10, color: MK.ink5, marginTop: 10, lineHeight: 1.5 }}>
+                  Derived from the seven pairs tracked here, not a full G10 basket — a
+                  currency quoted in only one pair moves on thinner evidence than one quoted in six.
+                </div>
+              </div>
+            </Panel>
+
+            <Panel>
+              <SectionHeader title="DOLLAR INDEX" subtitle="DXY — the dollar's trade-weighted level" />
+              <div style={{ padding: "16px 18px" }}>
+                {px("DX-Y.NYB") ? (
+                  <>
+                    <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+                      <div>
+                        <div style={{ fontSize: 34, fontWeight: 700, color: MK.ink, fontFamily: MK.mono, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
+                          {px("DX-Y.NYB").price.toFixed(2)}
+                        </div>
+                        <div style={{ fontSize: 13, fontFamily: MK.mono, color: moveColor(px("DX-Y.NYB").changePct), marginTop: 5 }}>
+                          {pctText(px("DX-Y.NYB").changePct)} today
+                        </div>
                       </div>
+                      <Sparkline data={sp("DX-Y.NYB")} color={moveColor(px("DX-Y.NYB").changePct)} width={130} height={46} id="dxy-hero" />
                     </div>
-                    <div style={{ height: 4, background: "#1a2535", borderRadius: 2 }}>
-                      <div style={{ width: `${abs * 100}%`, height: "100%", background: barColor, borderRadius: 2 }} />
+                    <RangeBar low={px("DX-Y.NYB").low52} high={px("DX-Y.NYB").high52} value={px("DX-Y.NYB").price} label="52-WEEK RANGE" symbol="DX-Y.NYB" />
+                  </>
+                ) : <Empty text="No live DXY price." />}
+              </div>
+            </Panel>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <BoardHeading title="MAJOR PAIRS" note="click a pair for its 52-week position and dollar correlation" />
+            <div style={grid(215)}>
+              {FX_BOARD.map(p => (
+                <MarketTile key={p.symbol} symbol={p.symbol} name={p.name} sub={p.banks}
+                            prices={prices} spark={sp(p.symbol)}
+                            active={detail === p.symbol}
+                            onClick={() => setDetail(detail === p.symbol ? null : p.symbol)} />
+              ))}
+            </div>
+          </div>
+          <DetailStrip symbol={detail} prices={prices} spark={sp(detail)} hist={hist}
+                       note={FX_BOARD.find(p => p.symbol === detail)?.note} />
+        </div>
+      )}
+
+      {/* ─── COMMODITIES ──────────────────────────────────── */}
+      {tab === "commod" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {["Energy", "Metals"].map(g => (
+            <div key={g} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <BoardHeading title={g.toUpperCase()} />
+              <div style={grid(215)}>
+                {COMMODITY_BOARD.filter(c => c.group === g).map(c => (
+                  <MarketTile key={c.symbol} symbol={c.symbol} name={c.name} unit={c.unit}
+                              prices={prices} spark={sp(c.symbol)}
+                              active={detail === c.symbol}
+                              onClick={() => setDetail(detail === c.symbol ? null : c.symbol)} />
+                ))}
+              </div>
+            </div>
+          ))}
+          <PerformancePanel
+            title="COMMODITY PERFORMANCE"
+            note="today against the quarter — a one-day move can run opposite the trend"
+            rows={COMMODITY_BOARD} prices={prices} hist={hist} />
+          <DollarCorrelationPanel rows={COMMODITY_BOARD} hist={hist} />
+          <DetailStrip symbol={detail} prices={prices} spark={sp(detail)} hist={hist}
+                       note={COMMODITY_BOARD.find(c => c.symbol === detail)?.note} />
+        </div>
+      )}
+
+      {/* ─── SECTORS ──────────────────────────────────────── */}
+      {tab === "sectors" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Panel>
+            <SectionHeader title="US SECTOR MAP" subtitle="SPDR sector ETFs — today's move" />
+            <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))", gap: 5 }}>
+              {SECTOR_BOARD.map(s => {
+                const d = px(s.symbol);
+                const st = heatStyle(d?.changePct, 1.5);
+                return (
+                  <div key={s.symbol} style={{ ...st, border: `1px solid ${MK.border}`, borderRadius: 5, padding: "10px 11px" }}>
+                    <div style={{ fontSize: 10, color: MK.ink4, fontFamily: MK.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6, marginTop: 4 }}>
+                      <span style={{ fontSize: 15, fontWeight: 700, fontFamily: MK.mono, color: st.color, fontVariantNumeric: "tabular-nums" }}>
+                        {pctText(d?.changePct)}
+                      </span>
+                      <span style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono }}>{s.symbol}</span>
                     </div>
                   </div>
                 );
               })}
             </div>
           </Panel>
+
+          <Panel>
+            <SectionHeader title="SECTOR ROTATION" subtitle="ranked by today's move — leadership at the top" />
+            <div style={{ padding: "12px 18px 16px" }}>
+              {(() => {
+                const rows = SECTOR_BOARD
+                  .map(s => ({ ...s, pct: px(s.symbol)?.changePct }))
+                  .filter(s => s.pct != null)
+                  .sort((a, b) => b.pct - a.pct);
+                if (!rows.length) return <Empty text="No live sector prices yet. Sector ETFs sync with the rest of the price feed." />;
+                const max = Math.max(...rows.map(r => Math.abs(r.pct)), 0.4);
+                return rows.map(r => <DivergingBar key={r.symbol} label={r.symbol} sub={r.name} value={r.pct} max={max} />);
+              })()}
+            </div>
+          </Panel>
+
+          <div style={grid(215)}>
+            {SECTOR_BOARD.map(s => (
+              <MarketTile key={s.symbol} symbol={s.symbol} name={s.name} sub={s.symbol}
+                          prices={prices} spark={sp(s.symbol)} />
+            ))}
+          </div>
         </div>
       )}
+
+      {/* ─── RATES ────────────────────────────────────────── */}
+      {tab === "rates" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={grid(230)}>
+            {RATE_BOARD.map(r => (
+              <MarketTile key={r.symbol} symbol={r.symbol} name={r.name} sub={r.sub}
+                          prices={prices} spark={sp(r.symbol)} />
+            ))}
+          </div>
+
+          <Panel>
+            <SectionHeader title="YIELD CURVE" subtitle="US Treasury yields by maturity" />
+            <div style={{ padding: "18px 20px 14px" }}>
+              <YieldCurve prices={prices} />
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionHeader title="CURVE SPREADS" subtitle="an inverted curve has preceded most post-war US recessions" />
+            <div style={{ padding: "12px 18px 16px" }}>
+              {(() => {
+                const y = s => px(s)?.price;
+                const spreads = [
+                  { label: "10Y − 3M", a: "^TNX", b: "^IRX", note: "The Fed's own preferred recession signal" },
+                  { label: "10Y − 5Y", a: "^TNX", b: "^FVX", note: "Belly-to-long-end slope" },
+                ].map(s => ({ ...s, v: y(s.a) != null && y(s.b) != null ? y(s.a) - y(s.b) : null }))
+                 .filter(s => s.v != null);
+                if (!spreads.length) return <Empty text="No live yield data yet." />;
+                return spreads.map(s => (
+                  <div key={s.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+                                              gap: 12, padding: "11px 0", borderBottom: `1px solid ${MK.hair}` }}>
+                    <div>
+                      <div style={{ fontSize: 12.5, color: MK.ink2, fontFamily: MK.mono, fontWeight: 700 }}>{s.label}</div>
+                      <div style={{ fontSize: 10.5, color: MK.ink5, marginTop: 2 }}>{s.note}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 17, fontWeight: 700, fontFamily: MK.mono,
+                                    color: s.v < 0 ? MK.down : MK.up, fontVariantNumeric: "tabular-nums" }}>
+                        {s.v >= 0 ? "+" : ""}{s.v.toFixed(3)}%
+                      </div>
+                      <div style={{ fontSize: 10, color: s.v < 0 ? MK.down : MK.ink4, fontFamily: MK.mono, marginTop: 2 }}>
+                        {s.v < 0 ? "INVERTED" : "NORMAL"}
+                      </div>
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      {/* ─── CRYPTO ───────────────────────────────────────── */}
+      {tab === "crypto" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Panel style={{ borderLeft: `3px solid ${MK.amber}` }}>
+            <div style={{ padding: "14px 18px" }}>
+              <div style={{ fontSize: 10.5, color: MK.amber, fontFamily: MK.mono, letterSpacing: 1.4, marginBottom: 6 }}>
+                ⚠ NO PRICE SOURCE CONNECTED
+              </div>
+              <div style={{ fontSize: 12.5, color: MK.ink3, lineHeight: 1.6, maxWidth: "70ch" }}>
+                Crypto has no data feed in Meridian yet — the tiles below are structure only, and
+                deliberately show no numbers rather than placeholder ones that would read as real.
+                Wiring a source (CoinGecko's public API needs no key) is tracked as its own piece of work.
+                Crypto <em>news</em> is already live on the News page via CoinDesk and Cointelegraph.
+              </div>
+            </div>
+          </Panel>
+          <div style={grid(215)}>
+            {CRYPTO_BOARD.map(c => (
+              <div key={c.symbol} style={{
+                background: MK.panel, border: `1px dashed ${MK.border2}`, borderRadius: 7,
+                padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8, opacity: 0.75,
+              }}>
+                <div>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: MK.ink3, fontFamily: MK.mono }}>{c.name}</div>
+                  <div style={{ fontSize: 9.5, color: MK.ink5, marginTop: 1 }}>{c.sub}</div>
+                </div>
+                <div style={{ fontSize: 19, fontWeight: 700, color: MK.ink5, fontFamily: MK.mono }}>—</div>
+                <div style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono }}>awaiting data source</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ─── CENTRAL BANKS ────────────────────────────────── */}
+      {tab === "banks" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Panel style={{ borderLeft: `3px solid ${MK.amber}` }}>
+            <div style={{ padding: "12px 18px", fontSize: 11.5, color: MK.ink3, lineHeight: 1.6 }}>
+              Policy rates and meeting dates below are maintained by hand and do not update
+              automatically — check against the bank's own release before trading on them.
+            </div>
+          </Panel>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12, alignItems: "start" }}>
+            {CB_MATRIX.map(cb => (
+              <Panel key={cb.bank} style={{ borderTop: `3px solid ${cb.color}` }}>
+                <div style={{ padding: 15 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 12 }}>
+                    <div>
+                      <div style={{ fontFamily: MK.mono, fontWeight: 700, color: MK.ink, fontSize: 13 }}>{cb.bank}</div>
+                      <div style={{ fontSize: 10, color: MK.ink4, marginTop: 1 }}>{cb.country}</div>
+                    </div>
+                    <span style={{ fontSize: 9.5, fontFamily: MK.mono, background: `${cb.color}1e`, color: cb.color,
+                                   padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>{cb.bias}</span>
+                  </div>
+                  {[["CURRENT RATE", cb.rate, cb.color], ["NEXT MEETING", cb.nextMeeting, MK.ink2], ["EXPECTATION", cb.expectation, MK.ink2]].map(([l, v, c]) => (
+                    <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline",
+                                          padding: "7px 0", borderTop: `1px solid ${MK.hair}` }}>
+                      <span style={{ fontSize: 9.5, color: MK.ink5, fontFamily: MK.mono, letterSpacing: 1 }}>{l}</span>
+                      <span style={{ fontSize: l === "CURRENT RATE" ? 15 : 12, fontWeight: 700, color: c, fontFamily: MK.mono }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </Panel>
+            ))}
+          </div>
+
+          <Panel>
+            <SectionHeader title="POLICY DIVERGENCE" subtitle="where the rate gaps sit, and what they imply for the crosses" />
+            <div style={{ padding: "6px 18px 14px" }}>
+              {CB_DIVERGENCE.map(d => (
+                <div key={d.pair} style={{ display: "grid", gridTemplateColumns: "110px 92px 1fr auto", gap: 12,
+                                           alignItems: "center", padding: "11px 0", borderBottom: `1px solid ${MK.hair}` }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: MK.ink2, fontFamily: MK.mono }}>{d.pair}</span>
+                  <span style={{ fontSize: 12, color: MK.blue, fontFamily: MK.mono }}>{d.gap}</span>
+                  <span style={{ fontSize: 11.5, color: MK.ink3 }}>{d.note}</span>
+                  <span style={{ fontSize: 9.5, fontFamily: MK.mono, background: `${d.color}1e`, color: d.color,
+                                 padding: "3px 9px", borderRadius: 3, whiteSpace: "nowrap" }}>{d.tag}</span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Page-local sub-components ───────────────────────────────
+
+function Empty({ text }) {
+  return <div style={{ fontSize: 12, color: MK.ink4, padding: "14px 0", textAlign: "center" }}>{text}</div>;
+}
+
+function MarketMoverRow({ symbol, name, pct, spark }) {
+  const col = moveColor(pct, symbol);
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 10,
+                  padding: "7px 0", borderBottom: `1px solid ${MK.hair}` }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: MK.ink2, fontFamily: MK.mono, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</div>
+        <div style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono }}>{symbol}</div>
+      </div>
+      <Sparkline data={spark} color={col} width={54} height={20} fill={false} id={`mv-${symbol}`} />
+      <div style={{ fontSize: 13, fontWeight: 700, fontFamily: MK.mono, color: col, minWidth: 62,
+                    textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+        {pctText(pct)}
+      </div>
+    </div>
+  );
+}
+
+/** Expanded row shown under a board when a tile is selected. */
+function DetailStrip({ symbol, prices, spark, hist, note }) {
+  if (!symbol) return null;
+  const d = prices?.[symbol];
+  if (!d) return null;
+  const col = moveColor(d.changePct, symbol);
+  const dxyCorr = hist ? returnsCorrelation(hist[symbol], hist["DX-Y.NYB"]) : null;
+  const per = periodChange(spark);
+
+  return (
+    <Panel style={{ borderLeft: `3px solid ${col}` }}>
+      <SectionHeader title={mkName(symbol).toUpperCase()} subtitle={symbol} />
+      <div style={{ padding: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, alignItems: "flex-start" }}>
+        <Stat label="LAST" value={formatPrice(d.price, symbol)} color={MK.ink} />
+        <Stat label="TODAY" value={pctText(d.changePct)} color={col} />
+        {per != null && <Stat label="90-DAY" value={pctText(per)} color={moveColor(per, symbol)} />}
+        {d.dayLow != null && d.dayHigh != null && (
+          <div><RangeBar low={d.dayLow} high={d.dayHigh} value={d.price} label="DAY RANGE" symbol={symbol} /></div>
+        )}
+        {d.low52 != null && d.high52 != null && (
+          <div><RangeBar low={d.low52} high={d.high52} value={d.price} label="52-WEEK RANGE" symbol={symbol} /></div>
+        )}
+        {dxyCorr != null && symbol !== "DX-Y.NYB" && (
+          <Stat label="90D DXY CORR" value={dxyCorr.toFixed(2)}
+                color={dxyCorr < -0.3 ? MK.down : dxyCorr > 0.3 ? MK.up : MK.ink3} />
+        )}
+      </div>
+      {spark && spark.length > 1 && (
+        <div style={{ padding: "0 16px 14px" }}>
+          <Sparkline data={spark} color={col} width={760} height={70} id={`detail-${symbol}`} />
+          <div style={{ fontSize: 9.5, color: MK.ink5, fontFamily: MK.mono, marginTop: 4 }}>
+            90 days of stored closes
+          </div>
+        </div>
+      )}
+      {note && (
+        <div style={{ padding: "0 16px 16px", fontSize: 12, color: MK.ink3, lineHeight: 1.6, maxWidth: "78ch" }}>
+          {note}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * Today's move beside the 90-day move, both ranked.
+ * The pairing is the point: a name up strongly today can still be the worst
+ * thing on the board over the quarter, and one column alone hides that.
+ */
+function PerformancePanel({ title, note, rows, prices, hist }) {
+  const build = key => rows
+    .map(r => ({
+      symbol: r.symbol,
+      name: r.name,
+      v: key === "day" ? prices?.[r.symbol]?.changePct : periodChange(hist?.[r.symbol]),
+    }))
+    .filter(r => r.v != null && !Number.isNaN(r.v))
+    .sort((a, b) => b.v - a.v);
+
+  const cols = [
+    { key: "day", label: "TODAY", sub: "since previous close" },
+    { key: "period", label: "90 DAYS", sub: "from stored history" },
+  ].map(c => ({ ...c, data: build(c.key) }));
+
+  if (cols.every(c => !c.data.length)) return null;
+
+  return (
+    <Panel>
+      <SectionHeader title={title} subtitle={note} />
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 18, alignItems: "start" }}>
+        {cols.map(c => (
+          <div key={c.key}>
+            <BoardHeading title={c.label} note={c.sub} />
+            <div style={{ marginTop: 8 }}>
+              {c.data.length
+                ? (() => {
+                    const max = Math.max(...c.data.map(r => Math.abs(r.v)), 0.4);
+                    return c.data.map(r => (
+                      <DivergingBar key={r.symbol} label={r.symbol} sub={r.name} value={r.v} max={max} />
+                    ));
+                  })()
+                : <Empty text="No stored history yet — run a sync to populate." />}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * Real 90-day correlation of daily returns against the dollar index.
+ * The page this replaced carried hand-written correlation figures that never
+ * moved; these are computed from the same stored closes the sparklines use.
+ */
+function DollarCorrelationPanel({ rows, hist }) {
+  const data = rows
+    .map(r => ({ ...r, c: returnsCorrelation(hist?.[r.symbol], hist?.["DX-Y.NYB"]) }))
+    .filter(r => r.c != null)
+    .sort((a, b) => a.c - b.c);
+  if (!data.length) return null;
+
+  return (
+    <Panel>
+      <SectionHeader title="DOLLAR CORRELATION"
+                     subtitle="90-day correlation of daily returns against DXY — computed, not assumed" />
+      <div style={{ padding: "12px 18px 16px" }}>
+        {data.map(r => (
+          <DivergingBar key={r.symbol} label={r.symbol} sub={r.name} value={r.c} max={1} unit="" />
+        ))}
+        <div style={{ fontSize: 10, color: MK.ink5, marginTop: 10, lineHeight: 1.5 }}>
+          −1 moves exactly opposite the dollar, +1 exactly with it, 0 no linear relationship.
+          Correlation is not causation and it drifts — a commodity with its own supply story
+          can decouple from the dollar for months.
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function Stat({ label, value, color }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9, color: MK.ink5, fontFamily: MK.mono, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 17, fontWeight: 700, color, fontFamily: MK.mono, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    </div>
+  );
+}
+
+/** Yields plotted against maturity — the curve's actual shape, not a table of it. */
+function YieldCurve({ prices }) {
+  const pts = RATE_BOARD
+    .map(r => ({ ...r, y: prices?.[r.symbol]?.price }))
+    .filter(p => p.y != null && !Number.isNaN(p.y));
+  if (pts.length < 2) return <Empty text="Not enough live yield data to plot the curve." />;
+
+  const W = 620, H = 160, PAD = { l: 46, r: 20, t: 26, b: 28 };
+  const ys = pts.map(p => p.y);
+  const lo = Math.min(...ys), hi = Math.max(...ys);
+  const pad = (hi - lo) * 0.45 || 0.2;
+  const yMin = lo - pad, yMax = hi + pad;
+  // Maturity is log-spaced: 3M to 10Y is two orders of magnitude, and a linear
+  // axis would crush the short end into the y-axis.
+  const xs = pts.map(p => Math.log(p.years));
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const px = i => PAD.l + ((xs[i] - xMin) / (xMax - xMin || 1)) * (W - PAD.l - PAD.r);
+  const py = v => PAD.t + (1 - (v - yMin) / (yMax - yMin || 1)) * (H - PAD.t - PAD.b);
+  const line = pts.map((p, i) => `${px(i).toFixed(1)},${py(p.y).toFixed(1)}`).join(" ");
+  const inverted = pts[pts.length - 1].y < pts[0].y;
+  const col = inverted ? MK.down : MK.up;
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", minWidth: 420, height: "auto", display: "block" }}>
+        {/* Recessive gridlines — present for reading values, never competing with the data. */}
+        {[0, 0.5, 1].map(t => {
+          const v = yMin + t * (yMax - yMin);
+          return (
+            <g key={t}>
+              <line x1={PAD.l} x2={W - PAD.r} y1={py(v)} y2={py(v)} stroke={MK.border} strokeWidth="1" />
+              <text x={PAD.l - 8} y={py(v) + 3.5} textAnchor="end" fill={MK.ink5} fontSize="9.5" fontFamily="monospace">
+                {v.toFixed(2)}
+              </text>
+            </g>
+          );
+        })}
+        <polyline points={line} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {pts.map((p, i) => (
+          <g key={p.symbol}>
+            {/* 2px surface ring keeps the marker legible where it sits on the line. */}
+            <circle cx={px(i)} cy={py(p.y)} r="4.5" fill={col} stroke={MK.panel} strokeWidth="2" />
+            {/* End labels are anchored inward: centred on the first point a
+                label overlaps the y-axis tick text, and on the last it runs off
+                the right edge. Near the top it also drops below the marker. */}
+            <text x={px(i) + (i === 0 ? 8 : i === pts.length - 1 ? -8 : 0)}
+                  y={py(p.y) < PAD.t + 18 ? py(p.y) + 20 : py(p.y) - 12}
+                  textAnchor={i === 0 ? "start" : i === pts.length - 1 ? "end" : "middle"}
+                  fill={MK.ink2} fontSize="11" fontFamily="monospace" fontWeight="700">
+              {p.y.toFixed(2)}%
+            </text>
+            <text x={px(i)} y={H - 8} textAnchor="middle" fill={MK.ink4} fontSize="9.5" fontFamily="monospace">
+              {p.years < 1 ? `${p.years * 12}M` : `${p.years}Y`}
+            </text>
+          </g>
+        ))}
+      </svg>
+      <div style={{ fontSize: 11, color: inverted ? MK.down : MK.ink4, fontFamily: MK.mono, marginTop: 8 }}>
+        {inverted
+          ? "INVERTED — the long end yields less than the short end"
+          : "Upward sloping — the conventional shape"}
+      </div>
     </div>
   );
 }
@@ -5020,7 +5830,7 @@ function ComingSoonPage({ title, icon, description }) {
         background: "#0d1117", border: "1px solid #1a2535", borderRadius: 6,
         padding: "8px 20px", fontSize: 11, color: "#3a4558", fontFamily: "monospace",
       }}>
-        PHASE {["macro","research","portfolio","watchlist","screener","forex","calendar","news"].indexOf(title.toLowerCase().split(" ")[0]) + 3} — IN DEVELOPMENT
+        PHASE {["macro","research","portfolio","watchlist","screener","markets","calendar","news"].indexOf(title.toLowerCase().split(" ")[0]) + 3} — IN DEVELOPMENT
       </div>
     </div>
   );
@@ -5172,7 +5982,7 @@ export default function TradingTerminal() {
     portfolio: "Risk console — holdings, exposure breakdown, correlation clustering, heatmap, thesis cards, AI health check",
     watchlist: "Idea pipeline — 5 tiered lists, setup cards, alert flags, AI daily watchlist monitor",
     screener: "Opportunity scanner — equities/FX/commodities scans, strategy presets, composite scoring, AI setup commentary",
-    forex: "FX pairs, commodities charts, DXY tracker, central bank backdrop, AI macro commentary",
+    markets: "Every quoted market — indices, FX, commodities, sectors, rates, crypto and central bank policy, with cross-asset ranking and AI session read",
     calendar: "Economic events + earnings calendar — CPI/NFP/Fed countdowns, expected vs previous, portfolio-aware warnings",
     news: "Catalyst intelligence — filtered by portfolio/watchlist, importance scoring, AI summarisation, actionable vs noise",
   };
@@ -5307,8 +6117,8 @@ export default function TradingTerminal() {
           {activePage === "screener" && (
             <ScreenerPage />
           )}
-          {activePage === "forex" && (
-            <ForexPage prices={prices} />
+          {activePage === "markets" && (
+            <MarketsPage prices={prices} />
           )}
           {activePage === "calendar" && (
             <CalendarPage />

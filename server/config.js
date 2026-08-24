@@ -59,6 +59,12 @@ export const SYMBOLS = {
   'EURUSD=X':  { decimals: 4, ccy: 'USD', group: 'fx', name: 'EUR/USD' },
   'USDJPY=X':  { decimals: 2, ccy: 'JPY', group: 'fx', name: 'USD/JPY' },
   'GBPEUR=X':  { decimals: 4, ccy: 'EUR', group: 'fx', name: 'GBP/EUR' },
+  // The Markets FX board showed these three as hardcoded numbers because they
+  // had no symbol to price from. Tracking them makes that board fully live and
+  // widens the currency-strength read beyond USD/EUR/GBP/JPY.
+  'AUDUSD=X':  { decimals: 4, ccy: 'USD', group: 'fx', name: 'AUD/USD' },
+  'USDCAD=X':  { decimals: 4, ccy: 'CAD', group: 'fx', name: 'USD/CAD' },
+  'USDCHF=X':  { decimals: 4, ccy: 'CHF', group: 'fx', name: 'USD/CHF' },
 
   // US sector ETFs (heatmap + factor work)
   'XLK':  { decimals: 2, ccy: 'USD', group: 'sectors', name: 'Technology' },

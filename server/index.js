@@ -164,6 +164,32 @@ const routes = {
     return { symbol: q.symbol, bars: bars.length, data: bars };
   },
 
+  // Closing prices for many symbols at once, for sparklines. The Markets page
+  // draws ~35 of them; one request per symbol would mean 35 round trips on
+  // every page load. Only closes are returned — a sparkline needs nothing
+  // else, and full OHLCV rows would bloat the payload several times over.
+  'GET /history/batch': q => {
+    const symbols = String(q.symbols || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 80);
+    const days = Math.min(Math.max(Number(q.days) || 60, 5), 400);
+    // Calendar days back, not trading days — markets are shut ~2/7 of the
+    // time, so this deliberately over-reaches and lets the data decide.
+    const from = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+    // getBars only applies its date filter when BOTH bounds are given — pass
+    // `from` alone and it silently returns the symbol's entire history, which
+    // for a 12-year store is thousands of bars per symbol. `to` is set a day
+    // ahead so a bar stamped today is never cut off by a timezone boundary.
+    const to = new Date(Date.now() + 86400_000).toISOString().slice(0, 10);
+    const series = {};
+    for (const sym of symbols) {
+      const closes = getBars(sym, from, to)
+        .map(b => b.close)
+        .filter(c => typeof c === 'number' && Number.isFinite(c));
+      // A lone point can't be drawn as a line — treat it as no history.
+      if (closes.length > 1) series[sym] = closes;
+    }
+    return { days, from, to, series };
+  },
+
   'POST /sync': async body => {
     const symbols = body.symbols?.length ? body.symbols : trackedSymbols();
     console.log(`  syncing history for ${symbols.length} symbols…`);
