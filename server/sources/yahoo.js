@@ -132,6 +132,12 @@ export async function syncAll(symbols, opts = {}) {
   };
 }
 
+const isoDate = d => {
+  if (!d) return null;
+  const t = new Date(d);
+  return isNaN(t) ? null : t.toISOString().slice(0, 10);
+};
+
 export async function fetchSummary(symbol) {
   try {
     const r = await yf.quoteSummary(symbol, {
@@ -139,6 +145,57 @@ export async function fetchSummary(symbol) {
     });
     const sd = r.summaryDetail ?? {}, ks = r.defaultKeyStatistics ?? {}, pr = r.price ?? {};
     const yCcy = pr.currency ?? null;
+
+    // Analyst targets, earnings/dividend dates, rating trend and upgrade
+    // history live in separate modules that many non-equity symbols (indices,
+    // FX, commodities, funds) simply don't have. Fetched in a second call so
+    // a module that doesn't apply to this symbol can't take down the core
+    // quote fields above, which every symbol needs regardless of type.
+    let analyst = null, dates = null, ratingTrend = null, upgrades = [], earningsHistory = [];
+    try {
+      const r2 = await yf.quoteSummary(symbol, {
+        modules: ['financialData', 'calendarEvents', 'recommendationTrend', 'upgradeDowngradeHistory', 'earningsHistory'],
+      });
+      const fd = r2.financialData;
+      if (fd) {
+        analyst = {
+          targetMean: normaliseByCurrency(fd.targetMeanPrice, yCcy),
+          targetHigh: normaliseByCurrency(fd.targetHighPrice, yCcy),
+          targetLow: normaliseByCurrency(fd.targetLowPrice, yCcy),
+          targetMedian: normaliseByCurrency(fd.targetMedianPrice, yCcy),
+          recommendationKey: fd.recommendationKey ?? null,
+          recommendationMean: fd.recommendationMean ?? null,
+          numberOfAnalysts: fd.numberOfAnalystOpinions ?? null,
+        };
+      }
+      const ce = r2.calendarEvents;
+      if (ce) {
+        const earn = ce.earnings?.earningsDate ?? [];
+        dates = {
+          nextEarnings: isoDate(earn[0]),
+          nextEarningsLate: isoDate(earn[1]),
+          exDividendDate: isoDate(ce.exDividendDate),
+          dividendDate: isoDate(ce.dividendDate),
+        };
+      }
+      const trend = r2.recommendationTrend?.trend?.[0];
+      if (trend) {
+        ratingTrend = {
+          period: trend.period ?? '0m',
+          strongBuy: trend.strongBuy ?? 0, buy: trend.buy ?? 0, hold: trend.hold ?? 0,
+          sell: trend.sell ?? 0, strongSell: trend.strongSell ?? 0,
+        };
+      }
+      upgrades = (r2.upgradeDowngradeHistory?.history ?? []).slice(0, 8).map(h => ({
+        date: isoDate(h.epochGradeDate), firm: h.firm ?? null,
+        action: h.action ?? null, fromGrade: h.fromGrade ?? null, toGrade: h.toGrade ?? null,
+      }));
+      earningsHistory = (r2.earningsHistory?.history ?? []).slice(-4).reverse().map(h => ({
+        quarter: isoDate(h.quarter), epsActual: h.epsActual ?? null,
+        epsEstimate: h.epsEstimate ?? null, surprisePercent: h.surprisePercent ?? null,
+      }));
+    } catch { /* analyst/date modules unavailable for this symbol type — fields stay null */ }
+
     return {
       symbol,
       name: pr.longName ?? pr.shortName ?? symbol,
@@ -159,6 +216,11 @@ export async function fetchSummary(symbol) {
       holdings: r.topHoldings?.holdings?.slice(0, 10) ?? null,
       sectorWeights: r.topHoldings?.sectorWeightings ?? null,
       rawCurrency: yCcy,
+      analyst,
+      dates,
+      ratingTrend,
+      upgrades,
+      earningsHistory,
     };
   } catch (e) {
     return { symbol, error: e.message };

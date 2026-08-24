@@ -4582,24 +4582,371 @@ function NewsPage() {
   );
 }
 
+function ResearchStat({ label, value, color = "#c8d6e8" }) {
+  return (
+    <div style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5, padding: "10px 12px" }}>
+      <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color, fontFamily: "monospace", marginTop: 3 }}>{value ?? "\u2014"}</div>
+    </div>
+  );
+}
+
+const RATING_COLORS = { strongBuy: "#00d4aa", buy: "#4ade80", hold: "#ffa502", sell: "#ff8c42", strongSell: "#ff4757" };
+const RATING_LABELS = { strongBuy: "Strong Buy", buy: "Buy", hold: "Hold", sell: "Sell", strongSell: "Strong Sell" };
+
+function ResearchOverviewTab({ symbol, name, data, summary, summaryLoading, levels }) {
+  const s = summary && !summary.error ? summary : null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {!data && (
+        <Panel><div style={{ padding: 16, fontSize: 12, color: "#7a8ba0" }}>No live price for <span style={{ color: "#c8d6e8", fontFamily: "monospace" }}>{symbol}</span> in the terminal feed. Fundamentals below still load independently — you can also add a price link in Settings.</div></Panel>
+      )}
+
+      {(s?.dates?.nextEarnings || s?.dates?.exDividendDate) && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {s.dates.nextEarnings && (
+            <div style={{ flex: 1, minWidth: 200, background: "#0d1117", border: "1px solid #3d8bff30", borderTop: "2px solid #3d8bff", borderRadius: 6, padding: "12px 16px" }}>
+              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>NEXT EARNINGS</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#3d8bff", fontFamily: "monospace", marginTop: 4 }}>
+                {s.dates.nextEarnings}{s.dates.nextEarningsLate && s.dates.nextEarningsLate !== s.dates.nextEarnings ? ` \u2013 ${s.dates.nextEarningsLate}` : ""}
+              </div>
+            </div>
+          )}
+          {s.dates.exDividendDate && (
+            <div style={{ flex: 1, minWidth: 200, background: "#0d1117", border: "1px solid #a855f730", borderTop: "2px solid #a855f7", borderRadius: 6, padding: "12px 16px" }}>
+              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>EX-DIVIDEND DATE</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#a855f7", fontFamily: "monospace", marginTop: 4 }}>{s.dates.exDividendDate}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <Panel>
+        <SectionHeader title="KEY STATS" subtitle={summaryLoading ? "Loading\u2026" : s ? `${s.sector || s.industry ? [s.sector, s.industry].filter(Boolean).join(" \u00b7 ") : "Fundamentals"}${s.country ? ` \u00b7 ${s.country}` : ""}` : "No fundamentals data for this symbol"} />
+        {s ? (
+          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            <ResearchStat label="MARKET CAP" value={s.marketCap ? formatBigNumber(s.marketCap) : null} />
+            <ResearchStat label="P/E (TTM)" value={s.pe ? s.pe.toFixed(1) : null} />
+            <ResearchStat label="FORWARD P/E" value={s.forwardPe ? s.forwardPe.toFixed(1) : null} />
+            <ResearchStat label="DIV YIELD" value={s.dividendYield ? `${(s.dividendYield * 100).toFixed(2)}%` : null} />
+            <ResearchStat label="BETA" value={s.beta ? s.beta.toFixed(2) : null} />
+            <ResearchStat label="52W RANGE" value={s.low52 && s.high52 ? `${formatPrice(s.low52, symbol)} \u2013 ${formatPrice(s.high52, symbol)}` : null} />
+            <ResearchStat label="AVG VOLUME" value={s.avgVolume ? formatBigNumber(s.avgVolume) : null} />
+            <ResearchStat label="EXPENSE RATIO" value={s.expenseRatio ? `${(s.expenseRatio * 100).toFixed(2)}%` : null} />
+          </div>
+        ) : !summaryLoading && (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>
+            {summary?.error ? `Could not fetch fundamentals: ${summary.error}` : "No fundamentals available \u2014 common for indices, FX pairs and futures, which don't carry company financials."}
+          </div>
+        )}
+      </Panel>
+
+      {levels && (
+        <Panel>
+          <SectionHeader title="APPROXIMATE KEY LEVELS" subtitle="Derived from current price — reference only, not technical analysis" />
+          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            {[["R2 (+5%)", levels.r2, "#ff4757"], ["R1 (+2%)", levels.r1, "#ff8c42"], ["S1 (-2%)", levels.s1, "#4ade80"], ["S2 (-5%)", levels.s2, "#00d4aa"]].map(([lbl, val, col]) => (
+              <div key={lbl} style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5, padding: "10px 12px", borderTop: `2px solid ${col}` }}>
+                <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>{lbl}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace", marginTop: 3 }}>{formatPrice(val, symbol)}</div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
+  const s = summary && !summary.error ? summary : null;
+  const a = s?.analyst;
+  const trend = s?.ratingTrend;
+  const trendTotal = trend ? trend.strongBuy + trend.buy + trend.hold + trend.sell + trend.strongSell : 0;
+
+  if (summaryLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading\u2026</div></Panel>;
+  if (!a && !trend && !s?.upgrades?.length && !s?.earningsHistory?.length) {
+    return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No analyst coverage data for {symbol} — common for indices, FX, commodities and many funds, which aren't individually rated.</div></Panel>;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      {a && (
+        <Panel>
+          <SectionHeader title="CONSENSUS PRICE TARGET" subtitle={a.numberOfAnalysts ? `${a.numberOfAnalysts} analyst${a.numberOfAnalysts === 1 ? "" : "s"}` : undefined} />
+          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            <ResearchStat label="LOW" value={a.targetLow ? formatPrice(a.targetLow, symbol) : null} color="#ff4757" />
+            <ResearchStat label="MEAN" value={a.targetMean ? formatPrice(a.targetMean, symbol) : null} color="#e8f0fc" />
+            <ResearchStat label="MEDIAN" value={a.targetMedian ? formatPrice(a.targetMedian, symbol) : null} />
+            <ResearchStat label="HIGH" value={a.targetHigh ? formatPrice(a.targetHigh, symbol) : null} color="#00d4aa" />
+          </div>
+          {price && a.targetMean && (
+            <div style={{ padding: "0 14px 14px", fontSize: 12, color: a.targetMean >= price ? "#00d4aa" : "#ff4757" }}>
+              Mean target implies {a.targetMean >= price ? "+" : ""}{(((a.targetMean - price) / price) * 100).toFixed(1)}% vs current price
+              {a.recommendationKey && <span style={{ color: "#7a8ba0" }}> \u00b7 consensus: <span style={{ fontFamily: "monospace", textTransform: "capitalize" }}>{a.recommendationKey.replace(/_/g, " ")}</span></span>}
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {trend && trendTotal > 0 && (
+        <Panel>
+          <SectionHeader title="RATING BREAKDOWN" subtitle="Current analyst ratings" />
+          <div style={{ padding: 14 }}>
+            <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", marginBottom: 10 }}>
+              {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => trend[k] > 0 && (
+                <div key={k} style={{ width: `${(trend[k] / trendTotal) * 100}%`, background: RATING_COLORS[k] }} title={`${RATING_LABELS[k]}: ${trend[k]}`} />
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+              {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 2, background: RATING_COLORS[k] }} />
+                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>{RATING_LABELS[k]}</span>
+                  <span style={{ fontSize: 11, color: "#c8d6e8", fontFamily: "monospace" }}>{trend[k]}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {s?.upgrades?.length > 0 && (
+        <Panel>
+          <SectionHeader title="RECENT RATING CHANGES" />
+          <div style={{ padding: "4px 0" }}>
+            {s.upgrades.map((u, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < s.upgrades.length - 1 ? "1px solid #12161f" : "none" }}>
+                <div>
+                  <span style={{ fontSize: 12, color: "#c8d6e8" }}>{u.firm || "Unknown firm"}</span>
+                  {u.fromGrade && u.toGrade && u.fromGrade !== u.toGrade && (
+                    <span style={{ fontSize: 11, color: "#4a6080" }}> \u00b7 {u.fromGrade} \u2192 {u.toGrade}</span>
+                  )}
+                  {(!u.fromGrade || u.fromGrade === u.toGrade) && u.toGrade && (
+                    <span style={{ fontSize: 11, color: "#4a6080" }}> \u00b7 {u.toGrade}</span>
+                  )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  {u.action && <span style={{ fontSize: 10, textTransform: "uppercase", fontFamily: "monospace", color: u.action === "up" ? "#00d4aa" : u.action === "down" ? "#ff4757" : "#7a8ba0" }}>{u.action}</span>}
+                  <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{u.date || "\u2014"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {s?.earningsHistory?.length > 0 && (
+        <Panel>
+          <SectionHeader title="EARNINGS TRACK RECORD" subtitle="Actual vs. estimate, last 4 quarters" />
+          <div style={{ padding: "4px 0" }}>
+            {s.earningsHistory.map((e, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < s.earningsHistory.length - 1 ? "1px solid #12161f" : "none" }}>
+                <span style={{ fontSize: 12, color: "#c8d6e8", fontFamily: "monospace" }}>{e.quarter || "\u2014"}</span>
+                <div style={{ display: "flex", gap: 14 }}>
+                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>Est {e.epsEstimate != null ? e.epsEstimate.toFixed(2) : "\u2014"}</span>
+                  <span style={{ fontSize: 11, color: "#c8d6e8" }}>Actual {e.epsActual != null ? e.epsActual.toFixed(2) : "\u2014"}</span>
+                  <span style={{ fontSize: 11, fontFamily: "monospace", color: e.surprisePercent > 0 ? "#00d4aa" : e.surprisePercent < 0 ? "#ff4757" : "#7a8ba0" }}>
+                    {e.surprisePercent != null ? `${e.surprisePercent >= 0 ? "+" : ""}${e.surprisePercent.toFixed(1)}%` : "\u2014"}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
+  if (newsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Searching feed and live sources for {name}\u2026</div></Panel>;
+  const stories = newsData?.news ?? [];
+  if (!stories.length) {
+    return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No news found for {name}. Try a broader company name in the search box above.</div></Panel>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>
+        {newsData.feedCount} from your tracked feed \u00b7 {newsData.liveCount} from live search
+      </div>
+      {stories.map(story => {
+        const sentiment = newsSentimentMeta(story.sentiment);
+        return (
+          <Panel key={story.guid} style={{ borderLeft: `3px solid ${sentiment.color}` }}>
+            <div style={{ padding: "12px 16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "monospace", background: story.live ? "#3d8bff18" : "#00d4aa18", color: story.live ? "#3d8bff" : "#00d4aa", padding: "2px 7px", borderRadius: 3 }}>
+                  {story.live ? "LIVE SEARCH" : "TRACKED FEED"}
+                </span>
+                <span style={{ fontSize: 10, fontWeight: 700, background: `${sentiment.color}18`, color: sentiment.color, padding: "2px 7px", borderRadius: 3, fontFamily: "monospace" }}>{sentiment.label}</span>
+                <span style={{ fontSize: 11, color: "#3a4558" }}>{story.source}</span>
+                <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{newsRelativeTime(story.published)}</span>
+              </div>
+              <div style={{ fontSize: 14, color: "#c8d6e8", lineHeight: 1.4 }}>{story.title}</div>
+              {story.summary && <div style={{ fontSize: 12, color: "#7a8ba0", marginTop: 5, lineHeight: 1.5 }}>{story.summary}</div>}
+              {story.url && (
+                <a href={story.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#3d8bff", textDecoration: "none", marginTop: 6, display: "inline-block" }}>
+                  Read full story \u2197
+                </a>
+              )}
+            </div>
+          </Panel>
+        );
+      })}
+    </div>
+  );
+}
+
+function ResearchFilingsTab({ symbol, filingsData, insidersData, filingsLoading }) {
+  if (filingsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading SEC data\u2026</div></Panel>;
+  if (filingsData?.error) {
+    return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>{filingsData.error} SEC EDGAR only covers US-listed tickers, so this is expected for LSE and other non-US symbols.</div></Panel>;
+  }
+  const filings = filingsData?.filings ?? [];
+  const insiders = insidersData?.filings ?? [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Panel>
+        <SectionHeader title="SEC FILINGS" subtitle={filingsData?.company ? `${filingsData.company} \u00b7 CIK ${filingsData.cik}` : undefined} />
+        {filings.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No filings found.</div>
+        ) : (
+          <div style={{ padding: "4px 0" }}>
+            {filings.map((f, i) => (
+              <div key={f.accession} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < filings.length - 1 ? "1px solid #12161f" : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "monospace", background: "#1a2535", color: "#7a8ba0", padding: "2px 7px", borderRadius: 3 }}>{f.form}</span>
+                  <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
+                </div>
+                <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View filing \u2197</a>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel>
+        <SectionHeader title="INSIDER ACTIVITY" subtitle="Form 4 filings — filing index only, not parsed transaction detail" />
+        {insiders.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No Form 4 filings on record.</div>
+        ) : (
+          <div style={{ padding: "4px 0" }}>
+            {insiders.map((f, i) => (
+              <div key={f.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < insiders.length - 1 ? "1px solid #12161f" : "none" }}>
+                <span style={{ fontSize: 12, color: "#c8d6e8" }}>{f.filer || symbol}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
+                  <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View \u2197</a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function ResearchPage({ prices }) {
   const trackedSymbols = Object.keys(DISPLAY_NAMES);
   const [query, setQuery] = useState("^GSPC");
   const [symbol, setSymbol] = useState("^GSPC");
+  const [companyName, setCompanyName] = useState(null);
+  const [suggestions, setSuggestions] = useState([]);
+  const [tab, setTab] = useState("overview");
+
+  const [summary, setSummary] = useState(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+
+  const [newsData, setNewsData] = useState(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const newsCache = useRef({});
+
+  const [filingsData, setFilingsData] = useState(null);
+  const [insidersData, setInsidersData] = useState(null);
+  const [filingsLoading, setFilingsLoading] = useState(false);
+  const filingsCache = useRef({});
+
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
 
   const data = prices?.[symbol];
-  const name = DISPLAY_NAMES[symbol] || symbol;
+  const name = companyName || DISPLAY_NAMES[symbol] || symbol;
   const isTracked = trackedSymbols.includes(symbol);
-  const price = data?.price;
+  const price = data?.price ?? (summary && !summary.error ? summary.price : null);
   const levels = price ? { r2: price * 1.05, r1: price * 1.02, s1: price * 0.98, s2: price * 0.95 } : null;
+
+  // Company-name autocomplete. Debounced so every keystroke doesn't fire a
+  // request, and skipped once the query already matches the selected symbol.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2 || q === symbol) { setSuggestions([]); return; }
+    const t = setTimeout(() => {
+      fetch(`${API}/search?q=${encodeURIComponent(q)}`).then(r => r.json())
+        .then(d => setSuggestions(d.results ?? []))
+        .catch(() => setSuggestions([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, symbol]);
+
+  const selectSymbol = (sym, nm) => {
+    setSymbol(sym); setQuery(sym); setCompanyName(nm || DISPLAY_NAMES[sym] || null);
+    setSuggestions([]); setAiText("");
+  };
 
   const runSearch = () => {
     const s = query.trim();
     if (!s) return;
-    setSymbol(s); setAiText("");
+    selectSymbol(s.toUpperCase(), null);
   };
+
+  // Overview + Analyst tabs share one fetch — same underlying quoteSummary call.
+  useEffect(() => {
+    let cancelled = false;
+    setSummaryLoading(true);
+    fetch(`${API}/quote?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(d => {
+        if (cancelled) return;
+        setSummary(d);
+        if (d?.name && !d.error) setCompanyName(d.name);
+      })
+      .catch(() => { if (!cancelled) setSummary(null); })
+      .finally(() => { if (!cancelled) setSummaryLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbol]);
+
+  // News tab: lazy-loaded on first visit per symbol, then cached.
+  useEffect(() => {
+    if (tab !== "news") return;
+    if (newsCache.current[symbol]) { setNewsData(newsCache.current[symbol]); return; }
+    setNewsLoading(true);
+    const params = new URLSearchParams({ symbol, query: name, limit: "30" });
+    fetch(`${API}/research/news?${params}`).then(r => r.json())
+      .then(d => { newsCache.current[symbol] = d; setNewsData(d); })
+      .catch(() => setNewsData({ news: [], feedCount: 0, liveCount: 0 }))
+      .finally(() => setNewsLoading(false));
+  }, [tab, symbol, name]);
+
+  // Filings tab: same lazy-load-and-cache pattern.
+  useEffect(() => {
+    if (tab !== "filings") return;
+    if (filingsCache.current[symbol]) {
+      const c = filingsCache.current[symbol];
+      setFilingsData(c.filings); setInsidersData(c.insiders);
+      return;
+    }
+    setFilingsLoading(true);
+    Promise.all([
+      fetch(`${API}/filings?symbol=${encodeURIComponent(symbol)}&type=`).then(r => r.json()),
+      fetch(`${API}/insiders?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
+    ]).then(([f, i]) => {
+      filingsCache.current[symbol] = { filings: f, insiders: i };
+      setFilingsData(f); setInsidersData(i);
+    }).catch(() => {
+      setFilingsData({ error: "Could not reach the server." }); setInsidersData(null);
+    }).finally(() => setFilingsLoading(false));
+  }, [tab, symbol]);
 
   const runAI = async () => {
     setAiLoading(true);
@@ -4621,18 +4968,37 @@ Be specific and opinionated. No hedging filler.`;
   };
 
   const inputStyle = { background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, color: "#c8d6e8", fontFamily: "monospace", fontSize: 13, padding: "9px 12px" };
+  const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"], ["filings", "Filings"], ["ai", "AI Note"]];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel>
-        <SectionHeader title="ASSET RESEARCH" subtitle="Deep-dive on any tracked symbol" />
-        <div style={{ padding: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key === "Enter" && runSearch()} placeholder="Symbol e.g. ^GSPC, GC=F, GBPUSD=X" style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
+        <SectionHeader title="ASSET RESEARCH" subtitle="Look up any ticker or company — live fundamentals, analyst view, news, filings" />
+        <div style={{ padding: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", position: "relative" }}>
+          <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && runSearch()}
+              placeholder="Company name or symbol e.g. Apple, AAPL, ^GSPC, GC=F"
+              style={{ ...inputStyle, width: "100%" }}
+            />
+            {suggestions.length > 0 && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, zIndex: 10, maxHeight: 260, overflowY: "auto" }}>
+                {suggestions.map(r => (
+                  <div key={r.symbol} onMouseDown={() => selectSymbol(r.symbol, r.name)} style={{ padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid #12161f", display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <span style={{ fontSize: 12, color: "#c8d6e8" }}>{r.name}</span>
+                    <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace", flexShrink: 0 }}>{r.symbol}{r.exchange ? ` \u00b7 ${r.exchange}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <button onClick={runSearch} style={{ background: "#3d8bff20", border: "1px solid #3d8bff40", color: "#3d8bff", padding: "9px 18px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 12 }}>ANALYSE</button>
         </div>
         <div style={{ padding: "0 14px 12px", display: "flex", gap: 6, flexWrap: "wrap" }}>
           {trackedSymbols.slice(0, 10).map(s => (
-            <button key={s} onClick={() => { setQuery(s); setSymbol(s); setAiText(""); }} style={{ background: symbol === s ? "#00d4aa20" : "#0d1117", border: `1px solid ${symbol === s ? "#00d4aa40" : "#1a2535"}`, color: symbol === s ? "#00d4aa" : "#7a8ba0", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 10 }}>{DISPLAY_NAMES[s] || s}</button>
+            <button key={s} onClick={() => selectSymbol(s, null)} style={{ background: symbol === s ? "#00d4aa20" : "#0d1117", border: `1px solid ${symbol === s ? "#00d4aa40" : "#1a2535"}`, color: symbol === s ? "#00d4aa" : "#7a8ba0", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 10 }}>{DISPLAY_NAMES[s] || s}</button>
           ))}
         </div>
       </Panel>
@@ -4655,32 +5021,32 @@ Be specific and opinionated. No hedging filler.`;
         </div>
       </Panel>
 
-      {!data && (
-        <Panel><div style={{ padding: 16, fontSize: 12, color: "#7a8ba0" }}>No live price for <span style={{ color: "#c8d6e8", fontFamily: "monospace" }}>{symbol}</span> in the terminal feed. You can still generate an AI research note below, or add a price link in Settings.</div></Panel>
-      )}
+      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{
+            background: "transparent", border: "none",
+            borderBottom: tab === id ? "2px solid #00d4aa" : "2px solid transparent",
+            color: tab === id ? "#00d4aa" : "#4a6080",
+            padding: "8px 14px", cursor: "pointer", fontFamily: "monospace",
+            fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+          }}>{label}</button>
+        ))}
+      </div>
 
-      {levels && (
+      {tab === "overview" && <ResearchOverviewTab symbol={symbol} name={name} data={data} summary={summary} summaryLoading={summaryLoading} levels={levels} />}
+      {tab === "analyst" && <ResearchAnalystTab symbol={symbol} price={price} summary={summary} summaryLoading={summaryLoading} />}
+      {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
+      {tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} filingsLoading={filingsLoading} />}
+      {tab === "ai" && (
         <Panel>
-          <SectionHeader title="APPROXIMATE KEY LEVELS" subtitle="Derived from current price \u2014 reference only, not technical analysis" />
-          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-            {[["R2 (+5%)", levels.r2, "#ff4757"], ["R1 (+2%)", levels.r1, "#ff8c42"], ["S1 (-2%)", levels.s1, "#4ade80"], ["S2 (-5%)", levels.s2, "#00d4aa"]].map(([lbl, val, col]) => (
-              <div key={lbl} style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5, padding: "10px 12px", borderTop: `2px solid ${col}` }}>
-                <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>{lbl}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace", marginTop: 3 }}>{formatPrice(val, symbol)}</div>
-              </div>
-            ))}
+          <SectionHeader title="AI RESEARCH NOTE" subtitle="Bull / bear / base case" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
+          <div style={{ padding: 16 }}>
+            {aiText
+              ? <div style={{ fontSize: 12.5, lineHeight: 1.8, color: "#b8c6da", whiteSpace: "pre-wrap", fontFamily: "'Courier New', monospace" }}>{aiText}</div>
+              : <div style={{ fontSize: 12, color: "#4a6080" }}>Click GENERATE for a structured bull / bear / base research note on {name}. Requires a Gemini API key (Settings).</div>}
           </div>
         </Panel>
       )}
-
-      <Panel>
-        <SectionHeader title="AI RESEARCH NOTE" subtitle="Bull / bear / base case" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
-        <div style={{ padding: 16 }}>
-          {aiText
-            ? <div style={{ fontSize: 12.5, lineHeight: 1.8, color: "#b8c6da", whiteSpace: "pre-wrap", fontFamily: "'Courier New', monospace" }}>{aiText}</div>
-            : <div style={{ fontSize: 12, color: "#4a6080" }}>Click GENERATE for a structured bull / bear / base research note on {name}. Requires a Gemini API key (Settings).</div>}
-        </div>
-      </Panel>
     </div>
   );
 }
