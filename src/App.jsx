@@ -1284,349 +1284,258 @@ function WatchlistPage() {
 }
 
 // ============================================================
-// SCREENER / OPPORTUNITY SCANNER PAGE
+// SCREENER
+//
+// The backend has scored every tracked symbol against six weighted factor
+// strategies since v2, entirely from stored bar history — /screen and /score
+// in server/engines/screener.js. This page never called either. It rendered
+// SCREENER_RESULTS: twenty-one lines of fixed rows with invented composite
+// scores, invented setups and invented invalidation levels that never changed
+// no matter what the market did.
+//
+// This is now a front end for the engine that was already there.
 // ============================================================
 
-const SCREENER_RESULTS = {
-  equities: [
-    { rank: 1, symbol: "NVDA", name: "NVIDIA Corp", sector: "Tech", price: 914.30, change: 4.82, volume: "89.2M", volRatio: 2.4, techScore: 94, fundScore: 88, liqScore: 98, rrScore: 82, composite: 91, setup: "Momentum continuation — AI infrastructure theme intact, breakout above ATH cluster", invalidation: "Close below $880 (prior breakout level)", regime: "Trending / Risk-on" },
-    { rank: 2, symbol: "META", name: "Meta Platforms", sector: "Tech", price: 533.18, change: 2.94, volume: "22.1M", volRatio: 1.6, techScore: 88, fundScore: 92, liqScore: 96, rrScore: 84, composite: 90, setup: "High-quality pullback — 8% correction to rising 21EMA, fundamental upgrade cycle", invalidation: "Break below $510 on volume", regime: "Trending / Risk-on" },
-    { rank: 3, symbol: "SMCI", name: "Super Micro", sector: "Tech", price: 892.14, change: 6.42, volume: "34.8M", volRatio: 3.1, techScore: 91, fundScore: 74, liqScore: 72, rrScore: 68, composite: 78, setup: "Breakout continuation — AI server demand + NVDA derivative. High beta, size small", invalidation: "$840 reclaimed by bears", regime: "Trending / Risk-on" },
-    { rank: 4, symbol: "JPM", name: "JPMorgan Chase", sector: "Financials", price: 198.44, change: 0.62, volume: "12.4M", volRatio: 1.1, techScore: 78, fundScore: 86, liqScore: 98, rrScore: 80, composite: 85, setup: "Sector leadership — financials rotating into leadership, earnings beat cycle intact", invalidation: "Yield curve meaningfully steepens negatively", regime: "Trending / Risk-on" },
-    { rank: 5, symbol: "LRCX", name: "Lam Research", sector: "Semis", price: 924.82, change: 1.84, volume: "8.2M", volRatio: 1.4, techScore: 82, fundScore: 84, liqScore: 82, rrScore: 86, composite: 84, setup: "Relative strength leader — semi equipment cycle recovery, lower vol entry vs NVDA", invalidation: "Semis breadth deteriorates broadly", regime: "Trending / Risk-on" },
-    { rank: 6, symbol: "AMGN", name: "Amgen Inc", sector: "Healthcare", price: 284.22, change: 0.14, volume: "4.8M", volRatio: 0.9, techScore: 72, fundScore: 88, liqScore: 88, rrScore: 84, composite: 83, setup: "Mean reversion bounce — oversold vs sector, GLP-1 pipeline optionality unpriced", invalidation: "Fails to hold $275 support on retest", regime: "Mean-reverting / Any" },
-    { rank: 7, symbol: "GS", name: "Goldman Sachs", sector: "Financials", price: 442.18, change: 1.12, volume: "7.2M", volRatio: 1.3, techScore: 80, fundScore: 84, liqScore: 94, rrScore: 78, composite: 82, setup: "Post-earnings drift — beat + raise cycle, IB recovery narrative gaining traction", invalidation: "Market risk-off rotation into defensives", regime: "Trending / Risk-on" },
-  ],
-  fx: [
-    { rank: 1, pair: "USD/JPY", change: 0.28, price: 149.82, techScore: 88, macroScore: 92, composite: 90, setup: "Trend persistence — BoJ-Fed divergence intact. Short JPY positioning well-supported above 148", invalidation: "BoJ surprise hike or Fed emergency cut", regime: "Dollar strength / Carry" },
-    { rank: 2, pair: "GBP/USD", change: -0.14, price: 1.2634, techScore: 74, macroScore: 68, composite: 71, setup: "Breakout from compression — 6-week range resolving. BoE hawkish hold vs Fed cut expectations", invalidation: "UK inflation surprise to downside", regime: "Ranging / Event-driven" },
-    { rank: 3, pair: "EUR/USD", change: -0.22, price: 1.0842, techScore: 62, macroScore: 66, composite: 64, setup: "ATR expansion signal — volatility compression breaking down. ECB cut priced faster than Fed", invalidation: "EUR reclaims 1.0920", regime: "Trending / Dollar strength" },
-  ],
-  commodities: [
-    { rank: 1, asset: "Gold (GC)", price: 2318.40, change: -0.54, techScore: 76, eventScore: 82, composite: 79, setup: "Momentum with macro hedge — central bank buying floor, geopolitical risk premium intact despite dollar headwind", invalidation: "DXY breaks above 106 sustained", regime: "Any / Geopolitical risk" },
-    { rank: 2, asset: "WTI Crude", price: 82.14, change: 1.18, techScore: 80, eventScore: 76, composite: 78, setup: "Inventory sensitivity — EIA draw expected, supply cut compliance improving. Dollar headwind key risk", invalidation: "Inventory build >3M barrels", regime: "Risk-on / Supply-driven" },
-    { rank: 3, asset: "Natural Gas", price: 1.94, change: -2.84, techScore: 58, eventScore: 72, composite: 65, setup: "Mean reversion from multi-year lows — seasonal demand builds Q2, production growth slowing", invalidation: "Warm spring extends into May", regime: "Mean-reverting / Seasonal" },
-  ],
-};
-
-const STRATEGY_PRESETS = [
-  { id: "momentum", label: "Strong Trend Continuation", icon: "▲", description: "High momentum, volume confirmation, trend intact" },
-  { id: "reversion", label: "Mean Reversion Bounce", icon: "◈", description: "Oversold, support holding, catalyst for snap-back" },
-  { id: "postearnings", label: "Post-Earnings Drift", icon: "▣", description: "Beat + raise, gap held, continuation setup" },
-  { id: "rsleader", label: "Relative Strength Leaders", icon: "◎", description: "Outperforming sector and index, sector rotation" },
-  { id: "pullback", label: "High-Quality Pullbacks", icon: "◬", description: "Trending name, controlled retrace to key level" },
-];
-
-async function fetchAISetup(item, setAiSetup, setLoading) {
-  setLoading(true);
-  const name = item.symbol || item.pair || item.asset;
-  const prompt = `You are a professional trading analyst. Asset: ${name}. Setup: ${item.setup}. Composite score: ${item.composite}/100.
-
-Write exactly 3 short sentences:
-1. Why this is specifically interesting RIGHT NOW (not generic)
-2. What market regime this setup is best suited for and why it fits current conditions
-3. One specific thing that would make you more or less confident in this trade
-
-Be concrete, opinionated, no hedging. Plain text only.`;
-  const { text } = await callAI(prompt, 400);
-  setAiSetup(text);
-  setLoading(false);
+function ScoreBar({ score, color = "#00d4aa", showValue = true }) {
+  if (score == null) return <NoData compact reason="Not scored" />;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{ flex: 1, height: 4, background: "#141b28", borderRadius: 2, overflow: "hidden", minWidth: 40 }}>
+        <div style={{ width: `${Math.max(0, Math.min(100, score))}%`, height: "100%", background: color, borderRadius: 2 }} />
+      </div>
+      {showValue && (
+        <span style={{ fontFamily: "monospace", fontSize: 10, color: "#7a8ba0", minWidth: 26, textAlign: "right" }}>
+          {score.toFixed(0)}
+        </span>
+      )}
+    </div>
+  );
 }
 
-function ScoreBar({ score, color = "#00d4aa" }) {
-  const c = score >= 85 ? "#00d4aa" : score >= 70 ? "#3d8bff" : score >= 55 ? "#ffa502" : "#ff4757";
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-      <div style={{ width: 40, height: 4, background: "#1a2535", borderRadius: 2 }}>
-        <div style={{ width: `${score}%`, height: "100%", background: c, borderRadius: 2 }} />
+// Colour by strength so a table of sixty rows can be read at a glance.
+function compositeColor(v) {
+  if (v == null) return "#3a4558";
+  if (v >= 70) return "#00d4aa";
+  if (v >= 55) return "#a8e063";
+  if (v >= 45) return "#ffa502";
+  return "#ff7043";
+}
+
+const FACTOR_COLORS = {
+  trend: "#00d4aa", momentum: "#3d8bff", meanRev: "#a855f7",
+  volume: "#ffa502", lowVol: "#4ade80", breakout: "#ff7043",
+};
+
+/** Expanded detail for one result — the components behind its composite. */
+function ScreenDetail({ r }) {
+  const m = r.metrics;
+  const cell = (label, value, suffix = "") => (
+    <div key={label}>
+      <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: value == null ? "#3a4558" : "#c8d6e8", marginTop: 2 }}>
+        {value == null ? <NoData compact /> : `${value}${suffix}`}
       </div>
-      <span style={{ fontFamily: "monospace", fontSize: 11, color: c, minWidth: 24 }}>{score}</span>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: "12px 16px", background: "#080b12", borderBottom: "1px solid #10151f" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+
+        <div>
+          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, marginBottom: 8 }}>
+            FACTOR COMPONENTS
+          </div>
+          {Object.entries(r.scores).map(([k, v]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 5 }}>
+              <span style={{ fontSize: 10, color: "#7a8ba0", minWidth: 74, fontFamily: "monospace" }}>{k}</span>
+              <div style={{ flex: 1 }}><ScoreBar score={v} color={FACTOR_COLORS[k] ?? "#4a6080"} /></div>
+            </div>
+          ))}
+          <div style={{ fontSize: 9, color: "#2a3548", marginTop: 8, lineHeight: 1.5 }}>
+            Weighted by the selected strategy. Computed from {r.observations} stored daily bars.
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, marginBottom: 8 }}>
+            MEASURES
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "10px 14px" }}>
+            {cell("1M", m.return1m, "%")}
+            {cell("3M", m.return3m, "%")}
+            {cell("6M", m.return6m, "%")}
+            {cell("12-1M", m.return12m1, "%")}
+            {cell("RSI(14)", m.rsi)}
+            {cell("Z-SCORE", m.zScore)}
+            {cell("ANN VOL", m.annualVol, "%")}
+            {cell("VOL RATIO", m.volumeRatio, "×")}
+            {cell("52W RANGE", m.rangePosition, "%")}
+            {cell("50DMA", m.ma50)}
+            {cell("200DMA", m.ma200)}
+            {cell("MACD HIST", m.macdHistogram)}
+          </div>
+
+          {r.signals.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {r.signals.map(s => (
+                <span key={s} style={{
+                  fontSize: 10, fontFamily: "monospace", padding: "2px 7px", borderRadius: 3,
+                  background: "#0d1421", border: "1px solid #1a2535", color: "#7a8ba0",
+                }}>{s}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
 
 function ScreenerPage() {
-  const [activeCategory, setActiveCategory] = useState("equities");
-  const [activePreset, setActivePreset] = useState(null);
-  const [expandedItem, setExpandedItem] = useState(null);
-  const [aiSetups, setAiSetups] = useState({});
-  const [aiLoadingId, setAiLoadingId] = useState(null);
+  const [strategy, setStrategy] = useState("balanced");
+  const [strategies, setStrategies] = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [minScore, setMinScore] = useState(0);
 
-  const categories = [
-    { id: "equities", label: "Equities", icon: "◎", count: SCREENER_RESULTS.equities.length },
-    { id: "fx", label: "FX", icon: "◬", count: SCREENER_RESULTS.fx.length },
-    { id: "commodities", label: "Commodities", icon: "◈", count: SCREENER_RESULTS.commodities.length },
-  ];
+  useEffect(() => {
+    fetch(`${API}/screener/strategies`)
+      .then(r => r.json())
+      .then(d => setStrategies(d.screener ?? null))
+      .catch(() => {});
+  }, []);
 
-  const results = SCREENER_RESULTS[activeCategory] || [];
+  const run = useCallback(async (strat, floor) => {
+    setLoading(true); setErr(null);
+    try {
+      const res = await fetch(`${API}/screen`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ strategy: strat, minScore: floor, limit: 60 }),
+      });
+      setData(await res.json());
+    } catch {
+      setErr("Could not reach the Meridian API. Start it with: npm run server");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  function handleAISetup(item, id) {
-    if (aiSetups[id]) return;
-    setAiLoadingId(id);
-    fetchAISetup(item, (text) => {
-      setAiSetups(prev => ({ ...prev, [id]: text }));
-      setAiLoadingId(null);
-    }, () => setAiLoadingId(null));
-  }
+  useEffect(() => { run(strategy, minScore); }, [strategy, minScore, run]);
+
+  const stratList = strategies
+    ? Object.entries(strategies).map(([id, s]) => ({ id, label: s.label }))
+    : [{ id: "balanced", label: "Balanced" }];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
-      {/* Header + strategy presets */}
       <Panel>
-        <SectionHeader title="OPPORTUNITY SCANNER" subtitle="Ranked shortlist — max 20 results per view" />
-        <div style={{ padding: "10px 12px" }}>
-          <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 8 }}>STRATEGY PRESETS</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {STRATEGY_PRESETS.map(p => (
-              <button key={p.id} onClick={() => setActivePreset(activePreset === p.id ? null : p.id)} style={{
-                background: activePreset === p.id ? "#00d4aa20" : "#080b12",
-                border: activePreset === p.id ? "1px solid #00d4aa40" : "1px solid #1a2535",
-                color: activePreset === p.id ? "#00d4aa" : "#7a8ba0",
-                padding: "6px 12px", borderRadius: 4, cursor: "pointer",
-                fontFamily: "monospace", fontSize: 10,
-                display: "flex", alignItems: "center", gap: 5,
-              }}>
-                <span>{p.icon}</span>
-                <span>{p.label}</span>
-              </button>
+        <SectionHeader
+          title="SCREENER"
+          subtitle="Factor scores computed from stored daily bars"
+          action={loading ? "SCANNING…" : "RESCAN"}
+          onAction={() => run(strategy, minScore)}
+        />
+
+        <div style={{ padding: "10px 14px", display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", borderBottom: "1px solid #1a1f2e" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {stratList.map(s => (
+              <button key={s.id} onClick={() => setStrategy(s.id)} style={{
+                background: strategy === s.id ? "#0d2820" : "transparent",
+                border: `1px solid ${strategy === s.id ? "#00d4aa50" : "#1a2535"}`,
+                color: strategy === s.id ? "#00d4aa" : "#4a6080",
+                fontFamily: "monospace", fontSize: 11, padding: "4px 10px",
+                borderRadius: 3, cursor: "pointer",
+              }}>{s.label}</button>
             ))}
-            {activePreset && (
-              <div style={{ display: "flex", alignItems: "center", padding: "0 10px", fontSize: 11, color: "#4a6080", fontStyle: "italic" }}>
-                {STRATEGY_PRESETS.find(p => p.id === activePreset)?.description}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+            <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace" }}>MIN SCORE</span>
+            <input
+              type="range" min="0" max="80" step="5" value={minScore}
+              onChange={e => setMinScore(Number(e.target.value))}
+              style={{ width: 110, accentColor: "#00d4aa" }}
+            />
+            <span style={{ fontFamily: "monospace", fontSize: 11, color: "#c8d6e8", minWidth: 20 }}>{minScore}</span>
+          </div>
+        </div>
+
+        {err ? (
+          <div style={{ padding: 20, color: "#ff4757", fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+        ) : loading && !data ? (
+          <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Scoring stored history…</div>
+        ) : !data?.results?.length ? (
+          <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace", lineHeight: 1.7 }}>
+            Nothing scored{minScore > 0 ? ` above ${minScore}` : ""}.
+            {data?.skipped?.length > 0 && (
+              <div style={{ color: "#2a3548", marginTop: 6 }}>
+                {data.skipped.length} symbol{data.skipped.length === 1 ? "" : "s"} skipped for having under 120 stored bars.
               </div>
             )}
           </div>
-        </div>
+        ) : (
+          <>
+            <div style={{
+              display: "grid", gridTemplateColumns: "22px minmax(90px,1.2fr) 80px 90px 1.1fr 1.4fr",
+              gap: 10, padding: "7px 14px", borderBottom: "1px solid #1a1f2e",
+              fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1,
+            }}>
+              <span />
+              <span>SYMBOL</span>
+              <span style={{ textAlign: "right" }}>PRICE</span>
+              <span style={{ textAlign: "right" }}>COMPOSITE</span>
+              <span>STRENGTH</span>
+              <span>SIGNALS</span>
+            </div>
+
+            {data.results.map(r => {
+              const open = expanded === r.symbol;
+              return (
+                <div key={r.symbol}>
+                  <div
+                    onClick={() => setExpanded(open ? null : r.symbol)}
+                    style={{
+                      display: "grid", gridTemplateColumns: "22px minmax(90px,1.2fr) 80px 90px 1.1fr 1.4fr",
+                      gap: 10, padding: "8px 14px", borderBottom: "1px solid #10151f",
+                      cursor: "pointer", alignItems: "center",
+                      background: open ? "#0b0f18" : "transparent",
+                    }}
+                  >
+                    <span style={{ color: "#3a4558", fontSize: 10 }}>{open ? "▾" : "▸"}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8", fontWeight: 700 }}>
+                      {r.symbol}
+                    </span>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#7a8ba0", textAlign: "right" }}>
+                      {r.price}
+                    </span>
+                    <span style={{
+                      fontFamily: "monospace", fontSize: 14, fontWeight: 700,
+                      color: compositeColor(r.composite), textAlign: "right",
+                    }}>
+                      {r.composite}
+                    </span>
+                    <ScoreBar score={r.composite} color={compositeColor(r.composite)} showValue={false} />
+                    <span style={{ fontSize: 10, color: "#4a6080", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {r.signals.length ? r.signals.join(" · ") : "—"}
+                    </span>
+                  </div>
+                  {open && <ScreenDetail r={r} />}
+                </div>
+              );
+            })}
+
+            <div style={{ padding: "8px 14px", fontSize: 10, color: "#2a3548", fontFamily: "monospace" }}>
+              {data.strategyLabel} · scanned {data.scanned}, showing {data.results.length}
+              {data.skipped?.length > 0 && ` · ${data.skipped.length} skipped for insufficient history`}
+            </div>
+          </>
+        )}
       </Panel>
-
-      {/* Category tabs */}
-      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
-        {categories.map(c => (
-          <button key={c.id} onClick={() => setActiveCategory(c.id)} style={{
-            background: "transparent", border: "none",
-            borderBottom: activeCategory === c.id ? "2px solid #00d4aa" : "2px solid transparent",
-            color: activeCategory === c.id ? "#00d4aa" : "#4a6080",
-            padding: "8px 16px", cursor: "pointer", fontFamily: "monospace", fontSize: 11, letterSpacing: 1,
-            display: "flex", alignItems: "center", gap: 5,
-          }}>
-            <span>{c.icon}</span> {c.label.toUpperCase()} SCAN ({c.count})
-          </button>
-        ))}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", padding: "0 12px", fontSize: 10, color: "#3a4558", fontFamily: "monospace" }}>
-          SORTED BY COMPOSITE SCORE ↓
-        </div>
-      </div>
-
-      {/* Score legend */}
-      <div style={{ display: "flex", gap: 16, padding: "0 4px" }}>
-        {[["85+", "#00d4aa", "Strong"], ["70-84", "#3d8bff", "Good"], ["55-69", "#ffa502", "Moderate"], ["<55", "#ff4757", "Weak"]].map(([range, color, label]) => (
-          <div key={range} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} />
-            <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace" }}>{range} {label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Results */}
-      {activeCategory === "equities" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {/* Column headers */}
-          <div style={{ display: "grid", gridTemplateColumns: "32px 90px 1fr 70px 70px 55px 55px 55px 55px 60px 32px", gap: 8, padding: "4px 14px", fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>
-            <span>#</span><span>SYMBOL</span><span>SETUP SUMMARY</span><span>PRICE</span><span>CHANGE</span>
-            <span>TECH</span><span>FUND</span><span>LIQ</span><span>R/R</span><span>SCORE</span><span></span>
-          </div>
-          {results.map((item) => {
-            const id = item.symbol;
-            const isExp = expandedItem === id;
-            const compColor = item.composite >= 85 ? "#00d4aa" : item.composite >= 70 ? "#3d8bff" : "#ffa502";
-            const up = item.change >= 0;
-            return (
-              <Panel key={id} style={{ borderLeft: `3px solid ${compColor}` }}>
-                <div onClick={() => { setExpandedItem(isExp ? null : id); if (!isExp) handleAISetup(item, id); }}
-                  style={{ display: "grid", gridTemplateColumns: "32px 90px 1fr 70px 70px 55px 55px 55px 55px 60px 32px", gap: 8, padding: "10px 14px", cursor: "pointer", alignItems: "center" }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#3a4558" }}>#{item.rank}</span>
-                  <div>
-                    <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#e8f0fe", fontSize: 13 }}>{item.symbol}</div>
-                    <div style={{ fontSize: 9, color: "#4a6080" }}>{item.sector}</div>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#7a8ba0", lineHeight: 1.4 }}>{item.setup}</div>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8" }}>${item.price.toFixed(2)}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: up ? "#00d4aa" : "#ff4757" }}>{up ? "+" : ""}{item.change.toFixed(2)}%</span>
-                  <ScoreBar score={item.techScore} />
-                  <ScoreBar score={item.fundScore} />
-                  <ScoreBar score={item.liqScore} />
-                  <ScoreBar score={item.rrScore} />
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: "50%", background: `${compColor}20`, border: `2px solid ${compColor}` }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 900, fontSize: 13, color: compColor }}>{item.composite}</span>
-                  </div>
-                  <span style={{ color: "#4a6080", fontSize: 12 }}>{isExp ? "▲" : "▼"}</span>
-                </div>
-                {isExp && (
-                  <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                    <div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                        {[
-                          { label: "INVALIDATION", val: item.invalidation, color: "#ff4757" },
-                          { label: "REGIME FIT", val: item.regime, color: "#3d8bff" },
-                          { label: "VOLUME RATIO", val: `${item.volRatio}x avg`, color: item.volRatio > 2 ? "#ffa502" : "#c8d6e8" },
-                          { label: "VOLUME", val: item.volume, color: "#c8d6e8" },
-                        ].map(f => (
-                          <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "7px 9px" }}>
-                            <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, marginBottom: 2 }}>{f.label}</div>
-                            <div style={{ fontSize: 11, color: f.color }}>{f.val}</div>
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
-                        {[
-                          { label: "TECH", val: item.techScore },
-                          { label: "FUND", val: item.fundScore },
-                          { label: "LIQ", val: item.liqScore },
-                          { label: "R/R", val: item.rrScore },
-                        ].map(s => {
-                          const c = s.val >= 85 ? "#00d4aa" : s.val >= 70 ? "#3d8bff" : "#ffa502";
-                          return (
-                            <div key={s.label} style={{ background: "#0d1117", borderRadius: 4, padding: "6px 8px", textAlign: "center" }}>
-                              <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace" }}>{s.label}</div>
-                              <div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: c }}>{s.val}</div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 9, color: "#00d4aa", fontFamily: "monospace", letterSpacing: 1, marginBottom: 6 }}>AI SETUP COMMENTARY</div>
-                      {aiLoadingId === id ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <div style={{ width: 12, height: 12, border: "2px solid #1a2535", borderTop: "2px solid #00d4aa", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                          <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>Analysing setup...</span>
-                        </div>
-                      ) : aiSetups[id] ? (
-                        <div style={{ fontSize: 11, color: "#a0b4c8", lineHeight: 1.7, fontFamily: "Georgia, serif" }}>{aiSetups[id]}</div>
-                      ) : (
-                        <button onClick={e => { e.stopPropagation(); handleAISetup(item, id); }} style={{ background: "#00d4aa20", border: "1px solid #00d4aa40", color: "#00d4aa", padding: "6px 12px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10 }}>
-                          GET AI COMMENTARY
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </Panel>
-            );
-          })}
-        </div>
-      )}
-
-      {activeCategory === "fx" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "32px 100px 1fr 80px 60px 60px 60px 32px", gap: 8, padding: "4px 14px", fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>
-            <span>#</span><span>PAIR</span><span>SETUP</span><span>PRICE</span><span>TECH</span><span>MACRO</span><span>SCORE</span><span></span>
-          </div>
-          {results.map(item => {
-            const id = item.pair;
-            const isExp = expandedItem === id;
-            const compColor = item.composite >= 85 ? "#00d4aa" : item.composite >= 70 ? "#3d8bff" : "#ffa502";
-            return (
-              <Panel key={id} style={{ borderLeft: `3px solid ${compColor}` }}>
-                <div onClick={() => { setExpandedItem(isExp ? null : id); if (!isExp) handleAISetup(item, id); }}
-                  style={{ display: "grid", gridTemplateColumns: "32px 100px 1fr 80px 60px 60px 60px 32px", gap: 8, padding: "10px 14px", cursor: "pointer", alignItems: "center" }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#3a4558" }}>#{item.rank}</span>
-                  <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#e8f0fe", fontSize: 13 }}>{item.pair}</div>
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>{item.setup}</div>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8" }}>{item.price.toFixed(4)}</span>
-                  <ScoreBar score={item.techScore} />
-                  <ScoreBar score={item.macroScore} />
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: "50%", background: `${compColor}20`, border: `2px solid ${compColor}` }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 900, fontSize: 13, color: compColor }}>{item.composite}</span>
-                  </div>
-                  <span style={{ color: "#4a6080" }}>{isExp ? "▲" : "▼"}</span>
-                </div>
-                {isExp && (
-                  <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                      {[
-                        { label: "INVALIDATION", val: item.invalidation },
-                        { label: "REGIME FIT", val: item.regime },
-                      ].map(f => (
-                        <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "8px 10px" }}>
-                          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", marginBottom: 2 }}>{f.label}</div>
-                          <div style={{ fontSize: 11, color: "#a0b4c8" }}>{f.val}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ fontSize: 9, color: "#00d4aa", fontFamily: "monospace", letterSpacing: 1, marginBottom: 6 }}>AI SETUP COMMENTARY</div>
-                    {aiLoadingId === id ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 12, height: 12, border: "2px solid #1a2535", borderTop: "2px solid #00d4aa", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                        <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>Analysing...</span>
-                      </div>
-                    ) : aiSetups[id] ? (
-                      <div style={{ fontSize: 11, color: "#a0b4c8", lineHeight: 1.7 }}>{aiSetups[id]}</div>
-                    ) : (
-                      <button onClick={e => { e.stopPropagation(); handleAISetup(item, id); }} style={{ background: "#00d4aa20", border: "1px solid #00d4aa40", color: "#00d4aa", padding: "6px 12px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10 }}>GET AI COMMENTARY</button>
-                    )}
-                  </div>
-                )}
-              </Panel>
-            );
-          })}
-        </div>
-      )}
-
-      {activeCategory === "commodities" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "32px 140px 1fr 80px 60px 60px 60px 32px", gap: 8, padding: "4px 14px", fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>
-            <span>#</span><span>ASSET</span><span>SETUP</span><span>PRICE</span><span>TECH</span><span>EVENT</span><span>SCORE</span><span></span>
-          </div>
-          {results.map(item => {
-            const id = item.asset;
-            const isExp = expandedItem === id;
-            const compColor = item.composite >= 85 ? "#00d4aa" : item.composite >= 70 ? "#3d8bff" : "#ffa502";
-            const up = item.change >= 0;
-            return (
-              <Panel key={id} style={{ borderLeft: `3px solid ${compColor}` }}>
-                <div onClick={() => { setExpandedItem(isExp ? null : id); if (!isExp) handleAISetup(item, id); }}
-                  style={{ display: "grid", gridTemplateColumns: "32px 140px 1fr 80px 60px 60px 60px 32px", gap: 8, padding: "10px 14px", cursor: "pointer", alignItems: "center" }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#3a4558" }}>#{item.rank}</span>
-                  <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#e8f0fe", fontSize: 12 }}>{item.asset}</div>
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>{item.setup}</div>
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8" }}>${item.price.toFixed(2)}</span>
-                  <ScoreBar score={item.techScore} />
-                  <ScoreBar score={item.eventScore} />
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: "50%", background: `${compColor}20`, border: `2px solid ${compColor}` }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 900, fontSize: 13, color: compColor }}>{item.composite}</span>
-                  </div>
-                  <span style={{ color: "#4a6080" }}>{isExp ? "▲" : "▼"}</span>
-                </div>
-                {isExp && (
-                  <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-                      {[{ label: "INVALIDATION", val: item.invalidation }, { label: "REGIME FIT", val: item.regime }].map(f => (
-                        <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "8px 10px" }}>
-                          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", marginBottom: 2 }}>{f.label}</div>
-                          <div style={{ fontSize: 11, color: "#a0b4c8" }}>{f.val}</div>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ fontSize: 9, color: "#00d4aa", fontFamily: "monospace", letterSpacing: 1, marginBottom: 6 }}>AI SETUP COMMENTARY</div>
-                    {aiLoadingId === id ? (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 12, height: 12, border: "2px solid #1a2535", borderTop: "2px solid #00d4aa", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                        <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>Analysing...</span>
-                      </div>
-                    ) : aiSetups[id] ? (
-                      <div style={{ fontSize: 11, color: "#a0b4c8", lineHeight: 1.7 }}>{aiSetups[id]}</div>
-                    ) : (
-                      <button onClick={e => { e.stopPropagation(); handleAISetup(item, id); }} style={{ background: "#00d4aa20", border: "1px solid #00d4aa40", color: "#00d4aa", padding: "6px 12px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10 }}>GET AI COMMENTARY</button>
-                    )}
-                  </div>
-                )}
-              </Panel>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
