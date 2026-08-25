@@ -603,6 +603,27 @@ export function correlationShifts({ window = 60, limit = 8 } = {}) {
   };
 }
 
+/**
+ * Latest observation for each of several symbols, keyed by symbol.
+ *
+ * Symbols with no observations are simply absent from the result rather than
+ * being given an empty row, so callers can tell "not tracked / no history"
+ * apart from "tracked and flat".
+ */
+export function latestFor(symbols) {
+  if (!symbols?.length) return {};
+  const placeholders = symbols.map(() => '?').join(',');
+  // One row per symbol: its own most recent date, which may differ between
+  // symbols when their histories end on different days.
+  const rows = all(
+    `SELECT o.* FROM symbol_observations o
+     JOIN (SELECT symbol, MAX(date) d FROM symbol_observations
+           WHERE symbol IN (${placeholders}) GROUP BY symbol) m
+       ON o.symbol = m.symbol AND o.date = m.d`,
+    ...symbols);
+  return Object.fromEntries(rows.map(r => [r.symbol, r]));
+}
+
 /** Full observation history for one symbol — powers per-instrument context. */
 export function symbolHistory(symbol, { days = 260 } = {}) {
   const rows = all(

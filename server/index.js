@@ -209,6 +209,10 @@ const routes = {
   }),
 
   'GET /memory': () => memory.memoryStats(),
+  'GET /memory/latest': q => ({
+    observations: memory.latestFor(
+      String(q.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 200)),
+  }),
   'GET /leadership': q => memory.leadership({ window: Number(q.window) || 21 }),
   'GET /relationships': q => memory.correlationShifts({ window: Number(q.window) || 60 }),
   'GET /memory/regime': q => ({ series: memory.regimeHistory({ days: Number(q.days) || 252 }) }),

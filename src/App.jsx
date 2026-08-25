@@ -890,395 +890,251 @@ function GaugeBar({ label, value, max = 100, color = "#00d4aa", format = v => `$
 
 
 // ============================================================
-// WATCHLIST / IDEA PIPELINE PAGE
+// WATCHLIST
+//
+// A list of symbols with prices next to them is the single easiest thing to
+// get for free, and any broker does it better. So this is not that.
+//
+// The watchlist table has existed in the database since v2 and the page never
+// touched it — it kept INITIAL_WATCHLIST, six invented positions with fixed
+// prices, fixed triggers and fixed catalysts, in React state that reset on
+// reload.
+//
+// It now reads the real table, and shows each name the way the memory layer
+// sees it: how unusual today's move was in that instrument's own terms, where
+// it sits in its own yearly range, how far it is from the target you set, and
+// what the factor screener makes of it. That is a watchlist answering "is
+// anything I care about doing something", which is a different question from
+// "what are these worth".
 // ============================================================
 
-const TIER_CONFIG = [
-  { id: "active", label: "Active This Week", icon: "⚡", color: "#ff4757" },
-  { id: "conviction", label: "High Conviction", icon: "◈", color: "#00d4aa" },
-  { id: "earnings", label: "Earnings Watch", icon: "▣", color: "#ffa502" },
-  { id: "macro", label: "Macro Sensitive", icon: "◬", color: "#a855f7" },
-  { id: "longterm", label: "Long-Term Candidates", icon: "◎", color: "#3d8bff" },
+const TIERS = [
+  { id: 1, label: "Conviction", color: "#00d4aa" },
+  { id: 2, label: "Active",     color: "#ffa502" },
+  { id: 3, label: "Monitoring", color: "#3d8bff" },
 ];
 
-const INITIAL_WATCHLIST = [
-  {
-    id: 1, symbol: "MSFT", name: "Microsoft Corp", tier: "conviction", price: 415.32, change: 0.84,
-    keyLevels: { support: 408.00, resistance: 421.50, ma50: 410.20 },
-    thesis: "Azure AI revenue inflection — Copilot monetisation just beginning",
-    trigger: "Break and close above $421.50 on volume >30M",
-    stop: "$398 — below Feb consolidation base",
-    catalyst: "Q3 earnings Apr 25 — Azure guide key",
-    regimeFit: "Risk-on trending",
-    daysOnList: 12,
-    alertStatus: ["nearBreakout"],
-    notes: "Watch for volume confirmation on any breakout attempt",
-  },
-  {
-    id: 2, symbol: "XOM", name: "Exxon Mobil", tier: "macro", price: 118.44, change: -0.32,
-    keyLevels: { support: 114.00, resistance: 122.80, ma50: 116.80 },
-    thesis: "Oil supply constraint + dividend yield floor — geopolitical premium",
-    trigger: "Oil above $86/bbl sustained + XOM reclaims $120",
-    stop: "$112 — invalidates range support",
-    catalyst: "EIA inventory data weekly + OPEC meeting Jun",
-    regimeFit: "Risk-on / commodity bull",
-    daysOnList: 28,
-    alertStatus: ["eventImminent"],
-    notes: "Dollar correlation watch — DXY above 105 is headwind",
-  },
-  {
-    id: 3, symbol: "SMCI", name: "Super Micro Computer", tier: "active", price: 892.14, change: 6.42,
-    keyLevels: { support: 840.00, resistance: 920.00, ma50: 798.40 },
-    thesis: "AI server infrastructure beneficiary — NVDA GPU demand proxy",
-    trigger: "Already triggered — managing position",
-    stop: "$840 — previous breakout level",
-    catalyst: "NVDA earnings Apr 24 — derivative move",
-    regimeFit: "Risk-on / AI momentum",
-    daysOnList: 4,
-    alertStatus: ["volumeSpike", "nearBreakout"],
-    notes: "High beta name — size accordingly. Earnings risk elevated",
-  },
-  {
-    id: 4, symbol: "AMGN", name: "Amgen Inc", tier: "longterm", price: 284.22, change: 0.14,
-    keyLevels: { support: 275.00, resistance: 298.00, ma50: 281.40 },
-    thesis: "Obesity drug pipeline optionality + defensive yield characteristics",
-    trigger: "Pullback to $278-282 support zone on low volume",
-    stop: "$268 — below 200DMA",
-    catalyst: "GLP-1 data readout Q2 + earnings May 2",
-    regimeFit: "Risk-off / defensive rotation",
-    daysOnList: 41,
-    alertStatus: ["pullbackSupport"],
-    notes: "Stale idea — reassess if no catalyst in 2 weeks",
-  },
-  {
-    id: 5, symbol: "COST", name: "Costco Wholesale", tier: "earnings", price: 748.80, change: -1.22,
-    keyLevels: { support: 730.00, resistance: 768.00, ma50: 738.20 },
-    thesis: "Earnings reaction trade — consistent beat + raise history",
-    trigger: "Post-earnings gap + hold above $755 on follow day",
-    stop: "$728 — gap fill risk",
-    catalyst: "Earnings after close today — EPS est $3.71",
-    regimeFit: "Any regime — earnings-specific",
-    daysOnList: 6,
-    alertStatus: ["eventImminent", "newsAlert"],
-    notes: "Implied move ±3.8%. Consider options for defined risk",
-  },
-  {
-    id: 6, symbol: "GDX", name: "VanEck Gold Miners ETF", tier: "macro", price: 28.42, change: -0.88,
-    keyLevels: { support: 27.00, resistance: 30.40, ma50: 27.80 },
-    thesis: "Leveraged gold play — miners lag spot, mean reversion due",
-    trigger: "Gold spot above $2350 + GDX reclaims $29.50",
-    stop: "$26.50 — below recent consolidation",
-    catalyst: "Fed dovish pivot or geopolitical escalation",
-    regimeFit: "Risk-off / dollar weakness",
-    daysOnList: 19,
-    alertStatus: [],
-    notes: "Dollar strength is primary headwind — watch DXY 104 level",
-  },
-];
-
-const ALERT_STATUS_CONFIG = {
-  nearBreakout: { label: "Near Breakout", color: "#00d4aa", icon: "▲" },
-  pullbackSupport: { label: "Pullback to Support", color: "#3d8bff", icon: "◈" },
-  volumeSpike: { label: "Volume Spike", color: "#ffa502", icon: "⚡" },
-  newsAlert: { label: "News Catalyst", color: "#a855f7", icon: "◉" },
-  eventImminent: { label: "Event Imminent", color: "#ff4757", icon: "▣" },
-};
-
-async function fetchAIWatchlistBrief(items, setAiWatchlist, setLoading) {
-  setLoading(true);
-  const summary = items.slice(0, 6).map(i =>
-    `${i.symbol} (${i.tier} tier, ${i.daysOnList}d on list, alerts: ${i.alertStatus.join(",") || "none"}, trigger: ${i.trigger})`
-  ).join("; ");
-  const prompt = `You are a tactical trading desk analyst. Watchlist summary: ${summary}.
-
-Answer two questions concisely in plain text:
-CHANGED: What changed today for these watchlist names? Which ones moved closest to their trigger levels?
-PRIORITY: Which 3 names deserve the most attention right now and why — be specific, one sentence each.
-
-No markdown. No bullet points. Label each answer clearly.`;
-  const { text } = await callAI(prompt, 600);
-  setAiWatchlist(text);
-  setLoading(false);
-}
+const tierMeta = t => TIERS.find(x => x.id === Number(t)) ?? TIERS[2];
 
 function WatchlistPage() {
-  const [items, setItems] = useState(INITIAL_WATCHLIST);
-  const [activeTier, setActiveTier] = useState("all");
-  const [expandedId, setExpandedId] = useState(null);
-  const [aiWatchlist, setAiWatchlist] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [archived, setArchived] = useState([]);
-  const [newItem, setNewItem] = useState({ symbol: "", name: "", tier: "conviction", trigger: "", stop: "", catalyst: "", thesis: "", regimeFit: "", notes: "" });
+  const [items, setItems] = useState([]);
+  const [obs, setObs] = useState({});
+  const [scores, setScores] = useState({});
+  const [prices, setPrices] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ symbol: "", tier: 3, target: "", note: "" });
+  const [busy, setBusy] = useState(false);
 
-  const filtered = activeTier === "all" ? items : items.filter(i => i.tier === activeTier);
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const wl = await fetch(`${API}/watchlist`).then(r => r.json());
+      const list = wl.watchlist ?? [];
+      setItems(list);
 
-  function archiveItem(id) {
-    const item = items.find(i => i.id === id);
-    setArchived(a => [...a, { ...item, archivedAt: new Date().toLocaleDateString() }]);
-    setItems(prev => prev.filter(i => i.id !== id));
+      if (list.length) {
+        const syms = list.map(i => i.symbol).join(",");
+        // Memory, screener scores and live quotes are independent — a failure
+        // in any one of them must not blank the other two.
+        const [m, p] = await Promise.all([
+          fetch(`${API}/memory/latest?symbols=${encodeURIComponent(syms)}`).then(r => r.json()).catch(() => ({})),
+          fetch(`${API}/prices`).then(r => r.json()).catch(() => ({})),
+        ]);
+        setObs(m.observations ?? {});
+        setPrices(p.prices ?? {});
+
+        const scored = await Promise.all(list.map(i =>
+          fetch(`${API}/score?symbol=${encodeURIComponent(i.symbol)}`)
+            .then(r => r.json()).then(d => [i.symbol, d?.composite ?? null]).catch(() => [i.symbol, null])));
+        setScores(Object.fromEntries(scored));
+      } else {
+        setObs({}); setScores({}); setPrices({});
+      }
+    } catch {
+      setErr("Could not reach the Meridian API. Start it with: npm run server");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function add() {
+    const symbol = draft.symbol.trim().toUpperCase();
+    if (!symbol) return;
+    setBusy(true);
+    try {
+      await fetch(`${API}/watchlist`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol, tier: Number(draft.tier),
+          target: draft.target === "" ? null : Number(draft.target),
+          note: draft.note.trim() || null,
+        }),
+      });
+      setDraft({ symbol: "", tier: 3, target: "", note: "" });
+      setAdding(false);
+      await load();
+    } finally { setBusy(false); }
   }
 
-  function addItem() {
-    if (!newItem.symbol) return;
-    setItems(prev => [...prev, {
-      id: Date.now(), symbol: newItem.symbol.toUpperCase(), name: newItem.name || newItem.symbol.toUpperCase(),
-      tier: newItem.tier, price: 0, change: 0,
-      keyLevels: { support: 0, resistance: 0, ma50: 0 },
-      thesis: newItem.thesis, trigger: newItem.trigger, stop: newItem.stop,
-      catalyst: newItem.catalyst, regimeFit: newItem.regimeFit, daysOnList: 0,
-      alertStatus: [], notes: newItem.notes,
-    }]);
-    setNewItem({ symbol: "", name: "", tier: "conviction", trigger: "", stop: "", catalyst: "", thesis: "", regimeFit: "", notes: "" });
-    setShowAddForm(false);
+  async function remove(id) {
+    setBusy(true);
+    try {
+      await fetch(`${API}/watchlist?id=${id}`, { method: "DELETE" });
+      await load();
+    } finally { setBusy(false); }
   }
+
+  const GRID = "minmax(110px,1.3fr) 84px 76px 62px 96px 92px 80px 34px";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* AI Monitor Panel */}
       <Panel>
         <SectionHeader
-          title="AI WATCHLIST MONITOR"
-          subtitle="Daily intelligence"
-          action={aiLoading ? "THINKING..." : "RUN MONITOR"}
-          onAction={() => fetchAIWatchlistBrief(items, setAiWatchlist, setAiLoading)}
+          title="WATCHLIST"
+          subtitle={`${items.length} name${items.length === 1 ? "" : "s"} · scored against each instrument's own history`}
+          action={adding ? "CANCEL" : "+ ADD"}
+          onAction={() => setAdding(a => !a)}
+          extra={
+            <button onClick={load} disabled={loading} style={{
+              background: "transparent", border: "1px solid #1a2535", color: "#4a6080",
+              fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace",
+            }}>{loading ? "…" : "↻ REFRESH"}</button>
+          }
         />
-        <div style={{ padding: 12 }}>
-          {!aiWatchlist && !aiLoading && (
-            <div style={{ fontSize: 11, color: "#3a4558", fontFamily: "monospace" }}>
-              Click RUN MONITOR → "What changed today? Which 3 names need attention?"
-            </div>
-          )}
-          {aiLoading && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ width: 12, height: 12, border: "2px solid #1a2535", borderTop: "2px solid #00d4aa", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-              <span style={{ color: "#4a6080", fontSize: 11, fontFamily: "monospace" }}>Scanning watchlist...</span>
-            </div>
-          )}
-          {aiWatchlist && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {aiWatchlist.split(/\n(?=[A-Z]+:)/).filter(Boolean).map((section, i) => {
-                const colonIdx = section.indexOf(":");
-                const label = colonIdx > -1 ? section.slice(0, colonIdx).trim() : `Note ${i + 1}`;
-                const body = colonIdx > -1 ? section.slice(colonIdx + 1).trim() : section;
-                const colors = ["#3d8bff", "#00d4aa"];
-                return (
-                  <div key={i} style={{ borderLeft: `2px solid ${colors[i % 2]}40`, paddingLeft: 10 }}>
-                    <div style={{ fontSize: 9, fontFamily: "monospace", color: colors[i % 2], letterSpacing: 1, marginBottom: 3 }}>{label}</div>
-                    <div style={{ fontSize: 11, color: "#a0b4c8", lineHeight: 1.6 }}>{body}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </Panel>
 
-      {/* Tier filter + Add button */}
-      <div style={{ display: "flex", alignItems: "center", gap: 2, borderBottom: "1px solid #1a1f2e", paddingBottom: 0 }}>
-        <button onClick={() => setActiveTier("all")} style={{
-          background: "transparent", border: "none",
-          borderBottom: activeTier === "all" ? "2px solid #c8d6e8" : "2px solid transparent",
-          color: activeTier === "all" ? "#c8d6e8" : "#4a6080",
-          padding: "8px 14px", cursor: "pointer", fontFamily: "monospace", fontSize: 11, letterSpacing: 1,
-        }}>ALL ({items.length})</button>
-        {TIER_CONFIG.map(t => {
-          const count = items.filter(i => i.tier === t.id).length;
-          return (
-            <button key={t.id} onClick={() => setActiveTier(t.id)} style={{
-              background: "transparent", border: "none",
-              borderBottom: activeTier === t.id ? `2px solid ${t.color}` : "2px solid transparent",
-              color: activeTier === t.id ? t.color : "#4a6080",
-              padding: "8px 14px", cursor: "pointer", fontFamily: "monospace", fontSize: 11,
-              display: "flex", alignItems: "center", gap: 4,
-            }}>
-              <span>{t.icon}</span> {t.label} ({count})
+        {adding && (
+          <div style={{ padding: "12px 14px", background: "#080b12", borderBottom: "1px solid #1a1f2e",
+                        display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              autoFocus placeholder="Symbol (e.g. VUSA.L)" value={draft.symbol}
+              onChange={e => setDraft(d => ({ ...d, symbol: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && add()}
+              style={fieldStyle(150)}
+            />
+            <select value={draft.tier} onChange={e => setDraft(d => ({ ...d, tier: e.target.value }))} style={fieldStyle(130)}>
+              {TIERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+            <input
+              placeholder="Target price" value={draft.target} type="number" step="any"
+              onChange={e => setDraft(d => ({ ...d, target: e.target.value }))}
+              style={fieldStyle(110)}
+            />
+            <input
+              placeholder="Note — why are you watching it?" value={draft.note}
+              onChange={e => setDraft(d => ({ ...d, note: e.target.value }))}
+              onKeyDown={e => e.key === "Enter" && add()}
+              style={fieldStyle(280)}
+            />
+            <button onClick={add} disabled={busy || !draft.symbol.trim()} style={btn("#00d4aa")}>
+              {busy ? "SAVING…" : "ADD"}
             </button>
-          );
-        })}
-        <button onClick={() => setShowAddForm(s => !s)} style={{
-          marginLeft: "auto", background: "#00d4aa20", border: "1px solid #00d4aa40",
-          color: "#00d4aa", padding: "6px 14px", cursor: "pointer",
-          fontFamily: "monospace", fontSize: 11, borderRadius: 4,
-        }}>+ ADD IDEA</button>
-      </div>
-
-      {/* Add form */}
-      {showAddForm && (
-        <Panel>
-          <SectionHeader title="ADD TO WATCHLIST" />
-          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-            {[
-              { key: "symbol", label: "Ticker", placeholder: "MSFT" },
-              { key: "name", label: "Name", placeholder: "Microsoft Corp" },
-              { key: "catalyst", label: "Next Catalyst", placeholder: "Earnings Apr 25" },
-              { key: "trigger", label: "Entry Trigger", placeholder: "Break above $421.50 on volume" },
-              { key: "stop", label: "Stop / Invalidation", placeholder: "$398 — below Feb base" },
-              { key: "regimeFit", label: "Regime Fit", placeholder: "Risk-on trending" },
-            ].map(f => (
-              <div key={f.key}>
-                <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", marginBottom: 3 }}>{f.label}</div>
-                <input value={newItem[f.key]} onChange={e => setNewItem(p => ({ ...p, [f.key]: e.target.value }))} placeholder={f.placeholder}
-                  style={{ width: "100%", background: "#080b12", border: "1px solid #1a2535", color: "#c8d6e8", padding: "6px 8px", borderRadius: 4, fontSize: 11, fontFamily: "monospace", outline: "none" }} />
-              </div>
-            ))}
-            <div style={{ gridColumn: "1 / -1" }}>
-              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", marginBottom: 3 }}>THESIS</div>
-              <input value={newItem.thesis} onChange={e => setNewItem(p => ({ ...p, thesis: e.target.value }))} placeholder="Why is this on the list?"
-                style={{ width: "100%", background: "#080b12", border: "1px solid #1a2535", color: "#c8d6e8", padding: "6px 8px", borderRadius: 4, fontSize: 11, fontFamily: "monospace", outline: "none" }} />
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", marginBottom: 3 }}>TIER</div>
-              <select value={newItem.tier} onChange={e => setNewItem(p => ({ ...p, tier: e.target.value }))}
-                style={{ background: "#080b12", border: "1px solid #1a2535", color: "#c8d6e8", padding: "6px 8px", borderRadius: 4, fontSize: 11, fontFamily: "monospace", outline: "none", width: "100%" }}>
-                {TIER_CONFIG.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-              </select>
-            </div>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-              <button onClick={addItem} style={{ background: "#00d4aa", border: "none", color: "#000", padding: "8px 16px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontWeight: 700, fontSize: 11 }}>ADD</button>
-              <button onClick={() => setShowAddForm(false)} style={{ background: "transparent", border: "1px solid #1a2535", color: "#4a6080", padding: "8px 16px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 11 }}>CANCEL</button>
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      {/* Watchlist items */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filtered.length === 0 && (
-          <div style={{ color: "#3a4558", fontSize: 12, fontFamily: "monospace", padding: 20, textAlign: "center" }}>
-            No items in this tier. Add ideas using the + ADD IDEA button.
           </div>
         )}
-        {filtered.map(item => {
-          const tierConfig = TIER_CONFIG.find(t => t.id === item.tier);
-          const isExpanded = expandedId === item.id;
-          const up = item.change >= 0;
-          const isStale = item.daysOnList > 30;
-          return (
-            <Panel key={item.id} style={{ borderLeft: `3px solid ${tierConfig?.color || "#4a6080"}` }}>
-              {/* Header row */}
-              <div
-                onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                style={{ display: "grid", gridTemplateColumns: "100px 1fr auto auto auto", gap: 12, padding: "12px 14px", cursor: "pointer", alignItems: "start" }}
-              >
-                {/* Symbol */}
-                <div>
-                  <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#e8f0fe", fontSize: 15 }}>{item.symbol}</div>
-                  <div style={{ fontSize: 10, color: "#4a6080" }}>{item.name}</div>
-                  {item.price > 0 && (
-                    <div style={{ fontFamily: "monospace", fontSize: 12, color: up ? "#00d4aa" : "#ff4757", marginTop: 2 }}>
-                      ${item.price.toFixed(2)} {up ? "+" : ""}{item.change.toFixed(2)}%
-                    </div>
-                  )}
-                </div>
 
-                {/* Setup summary */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>
-                    <span style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 10 }}>TRIGGER </span>
-                    {item.trigger}
-                  </div>
-                  <div style={{ fontSize: 11, color: "#7a8ba0" }}>
-                    <span style={{ color: "#ff475780", fontFamily: "monospace", fontSize: 10 }}>STOP </span>
-                    {item.stop}
-                  </div>
-                  {item.catalyst && (
-                    <div style={{ fontSize: 11, color: "#7a8ba0" }}>
-                      <span style={{ color: "#ffa50280", fontFamily: "monospace", fontSize: 10 }}>CATALYST </span>
-                      {item.catalyst}
-                    </div>
-                  )}
-                </div>
-
-                {/* Alert badges */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 130 }}>
-                  {item.alertStatus.map(a => {
-                    const cfg = ALERT_STATUS_CONFIG[a];
-                    if (!cfg) return null;
-                    return (
-                      <span key={a} style={{
-                        fontSize: 9, background: `${cfg.color}20`, color: cfg.color,
-                        padding: "2px 6px", borderRadius: 3, fontFamily: "monospace",
-                        display: "flex", alignItems: "center", gap: 4,
-                      }}>
-                        <span>{cfg.icon}</span> {cfg.label}
-                      </span>
-                    );
-                  })}
-                  {isStale && (
-                    <span style={{ fontSize: 9, background: "#ff475720", color: "#ff4757", padding: "2px 6px", borderRadius: 3, fontFamily: "monospace" }}>
-                      ⚠ {item.daysOnList}D STALE
-                    </span>
-                  )}
-                </div>
-
-                {/* Meta */}
-                <div style={{ textAlign: "right", minWidth: 80 }}>
-                  <div style={{ fontSize: 10, color: "#3a4558", fontFamily: "monospace" }}>{item.daysOnList}d on list</div>
-                  <div style={{ fontSize: 9, background: `${tierConfig?.color}20`, color: tierConfig?.color, padding: "2px 5px", borderRadius: 2, fontFamily: "monospace", marginTop: 3 }}>
-                    {tierConfig?.icon} {tierConfig?.label}
-                  </div>
-                  <div style={{ fontSize: 9, color: "#3a4558", marginTop: 3 }}>{item.regimeFit}</div>
-                </div>
-
-                {/* Actions */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-                  <span style={{ color: "#4a6080", fontSize: 12 }}>{isExpanded ? "▲" : "▼"}</span>
-                </div>
-              </div>
-
-              {/* Expanded detail */}
-              {isExpanded && (
-                <div style={{ borderTop: "1px solid #1a1f2e", padding: "12px 14px", background: "#080b12" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
-                    {[
-                      { label: "THESIS", val: item.thesis },
-                      { label: "KEY LEVELS", val: item.keyLevels?.support ? `Support: $${item.keyLevels.support} | Resist: $${item.keyLevels.resistance} | 50MA: $${item.keyLevels.ma50}` : "Add levels" },
-                      { label: "NOTES", val: item.notes || "—" },
-                    ].map(f => (
-                      <div key={f.label} style={{ background: "#0d1117", borderRadius: 4, padding: "8px 10px" }}>
-                        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, marginBottom: 3 }}>{f.label}</div>
-                        <div style={{ fontSize: 11, color: "#a0b4c8", lineHeight: 1.5 }}>{f.val}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button onClick={e => { e.stopPropagation(); archiveItem(item.id); }} style={{
-                      background: "transparent", border: "1px solid #1a2535", color: "#4a6080",
-                      padding: "5px 12px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10,
-                    }}>ARCHIVE IDEA</button>
-                    <button style={{
-                      background: "#00d4aa20", border: "1px solid #00d4aa40", color: "#00d4aa",
-                      padding: "5px 12px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 10,
-                    }}>→ MOVE TO PORTFOLIO</button>
-                    {TIER_CONFIG.filter(t => t.id !== item.tier).map(t => (
-                      <button key={t.id} onClick={e => { e.stopPropagation(); setItems(prev => prev.map(i => i.id === item.id ? { ...i, tier: t.id } : i)); }} style={{
-                        background: "transparent", border: `1px solid ${t.color}40`, color: t.color,
-                        padding: "5px 10px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace", fontSize: 9,
-                      }}>→ {t.label}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </Panel>
-          );
-        })}
-      </div>
-
-      {/* Archived section */}
-      {archived.length > 0 && (
-        <Panel>
-          <SectionHeader title={`ARCHIVED IDEAS (${archived.length})`} subtitle="Completed or invalidated" />
-          <div style={{ padding: 12 }}>
-            {archived.map(item => (
-              <div key={item.id} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #0f1420", opacity: 0.5 }}>
-                <span style={{ fontFamily: "monospace", color: "#7a8ba0", fontSize: 12 }}>{item.symbol}</span>
-                <span style={{ fontSize: 10, color: "#3a4558" }}>Archived {item.archivedAt}</span>
-              </div>
-            ))}
+        {err ? (
+          <div style={{ padding: 20, color: "#ff4757", fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+        ) : loading && !items.length ? (
+          <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Loading…</div>
+        ) : !items.length ? (
+          <div style={{ padding: 22, color: "#4a6080", fontSize: 12, fontFamily: "monospace", lineHeight: 1.8 }}>
+            Nothing on the watchlist yet.
+            <div style={{ color: "#2a3548", marginTop: 6 }}>
+              Add a symbol and it will be tracked, priced and scored alongside your holdings.
+            </div>
           </div>
-        </Panel>
-      )}
+        ) : (
+          <>
+            <div style={{
+              display: "grid", gridTemplateColumns: GRID, gap: 10,
+              padding: "7px 14px", borderBottom: "1px solid #1a1f2e",
+              fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1,
+            }}>
+              <span>SYMBOL</span>
+              <span style={{ textAlign: "right" }}>LAST</span>
+              <span style={{ textAlign: "right" }}>DAY</span>
+              <span style={{ textAlign: "right" }}>SIGMA</span>
+              <span style={{ textAlign: "right" }}>1Y RANGE</span>
+              <span style={{ textAlign: "right" }}>TO TARGET</span>
+              <span style={{ textAlign: "right" }}>SCORE</span>
+              <span />
+            </div>
+
+            {items.map(it => {
+              const o = obs[it.symbol];
+              const live = prices[it.symbol];
+              const t = tierMeta(it.tier);
+              const last = live?.price ?? o?.close ?? null;
+              const sigma = o?.ret_z;
+              const toTarget = (it.target && last) ? (it.target / last - 1) : null;
+              const score = scores[it.symbol];
+
+              return (
+                <div key={it.id} style={{
+                  display: "grid", gridTemplateColumns: GRID, gap: 10,
+                  padding: "9px 14px", borderBottom: "1px solid #10151f", alignItems: "center",
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 3, height: 12, background: t.color, borderRadius: 2 }} />
+                      <span style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8", fontWeight: 700 }}>
+                        {it.symbol}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 9, color: "#3a4558", marginTop: 2, overflow: "hidden",
+                                  textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {t.label}{it.note ? ` · ${it.note}` : ""}
+                    </div>
+                  </div>
+
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 12, color: "#c8d6e8" }}>
+                    {last != null ? last.toFixed(2) : <NoData compact reason="No price and no stored bars" />}
+                  </span>
+
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 12,
+                                 color: signColor(o?.ret_1d) }}>
+                    {o?.ret_1d != null ? pct(o.ret_1d, 2) : <NoData compact reason="No stored history" />}
+                  </span>
+
+                  {/* The comparable number: how big that move was for this instrument. */}
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 11,
+                                 color: sigma == null ? "#3a4558"
+                                      : Math.abs(sigma) >= 2 ? "#ffa502"
+                                      : Math.abs(sigma) >= 1.5 ? "#c8d6e8" : "#4a6080" }}>
+                    {sigma != null ? `${Math.abs(sigma).toFixed(1)}σ` : <NoData compact reason="Needs a year of bars" />}
+                  </span>
+
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 11, color: "#7a8ba0" }}>
+                    {o?.pct_rank != null ? `${Math.round(o.pct_rank * 100)}%` : <NoData compact reason="Needs a year of bars" />}
+                  </span>
+
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 11,
+                                 color: toTarget == null ? "#3a4558" : Math.abs(toTarget) < 0.02 ? "#00d4aa" : "#7a8ba0" }}>
+                    {toTarget != null ? pct(toTarget, 1) : <NoData compact reason="No target set" />}
+                  </span>
+
+                  <span style={{ textAlign: "right", fontFamily: "monospace", fontSize: 12,
+                                 color: compositeColor(score), fontWeight: 700 }}>
+                    {score != null ? score.toFixed(0) : <NoData compact reason="Under 120 stored bars" />}
+                  </span>
+
+                  <button onClick={() => remove(it.id)} disabled={busy} title="Remove" style={{
+                    background: "transparent", border: "none", color: "#3a4558",
+                    cursor: "pointer", fontSize: 13, padding: 0,
+                  }}>×</button>
+                </div>
+              );
+            })}
+
+            <div style={{ padding: "8px 14px", fontSize: 10, color: "#2a3548", fontFamily: "monospace" }}>
+              Sigma and 1-year range from stored daily bars · score from the factor screener · last price from the live feed where available
+            </div>
+          </>
+        )}
+      </Panel>
     </div>
   );
 }
