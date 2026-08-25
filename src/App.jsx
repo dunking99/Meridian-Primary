@@ -203,29 +203,82 @@ function formatChange(pct) {
 
 // ============================================================
 // AI BRIEF ENGINE
+//
+// Every prompt here shares one constraint: the model must be allowed to
+// conclude that nothing is happening. That is not politeness — most sessions
+// genuinely are unremarkable, and a prompt that demands an opinion, forbids
+// hedging and asks "where is today's opportunity" will manufacture one. The
+// output then looks identical on a quiet day and a real one, which makes it
+// useless on both.
+//
+// The prompts also take derived context — sigma-scored moves, percentile
+// ranks, breadth — rather than a list of price levels. Handing a model raw
+// levels and asking what it means invites it to invent the significance it was
+// not given.
 // ============================================================
 
-async function fetchAIBrief(prices, setAiBrief, setAiLoading) {
-  setAiLoading(true);
-  const snapshot = Object.entries(DISPLAY_NAMES).map(([sym, name]) => {
-    const d = prices[sym];
-    if (!d) return "";
-    return `${name}: ${formatPrice(d.price, sym)} (${formatChange(d.changePct)})`;
-  }).filter(Boolean).join(", ");
+/** Prepended to every prompt in this file. */
+const AI_RULES = `Rules you must follow:
+- If the data shows nothing unusual, say so plainly and stop. A short answer
+  that says "this was an ordinary session" is correct and useful. Do not
+  manufacture a narrative to fill space.
+- Only cite numbers present in the data given to you. Never estimate, recall
+  or invent a figure, a level, or an event.
+- Where the data says a value is unavailable, say it is unavailable rather
+  than guessing or working around it.
+- Do not describe a move as significant unless the data says it is unusual by
+  its own historical standard.
+- British English. Plain text, no markdown. No disclaimers about not being
+  financial advice.`;
 
-  const prompt = `You are a sharp, senior market analyst writing the morning brief for an intermediate-to-advanced trader. Based on this market snapshot: ${snapshot}
+/**
+ * The session read on the What Changed page.
+ *
+ * Fed the memory layer's own output — which instruments moved beyond their
+ * normal range and by how many sigma, plus breadth, dispersion and correlation
+ * with their percentiles — rather than a list of prices. The verdict is passed
+ * through explicitly, so on a quiet day the model is told it was quiet instead
+ * of being left to decide whether to say so.
+ */
+async function fetchSessionRead(changes, setText, setLoading) {
+  setLoading(true);
+  const r = changes?.regime;
+  const notable = (changes?.notable ?? [])
+    .map(n => `${n.symbol} ${(n.ret1d * 100).toFixed(2)}% (${Math.abs(n.retZ).toFixed(1)} sigma vs its own year, `
+             + `${n.pctRank != null ? `${ordinal(Math.round(n.pctRank * 100))} percentile of its 1y range` : "range unknown"})`)
+    .join("; ") || "none — nothing moved beyond 1.5 sigma of its own normal range";
 
-Write a concise, high-signal daily brief (3-4 paragraphs) that:
-1. States the current market regime clearly (risk-on/off, trending/choppy, etc.)
-2. Explains what changed since yesterday and why it matters
-3. Identifies where the primary opportunity AND risk sits today
-4. Ends with one specific tactical note
+  const pctText = (v, dp = 0) => v == null ? "unavailable" : `${(v * 100).toFixed(dp)}%`;
 
-Be direct, specific, and opinionated. No fluff. No hedging for the sake of it. Write like a Bloomberg Surveillance anchor, not a chatbot. Use plain text, no markdown.`;
+  const prompt = `${AI_RULES}
 
-  const { text } = await callAI(prompt, 1000);
-  setAiBrief(text);
-  setAiLoading(false);
+You are reading one session for a UK private investor, using a dataset that
+measures every move against that instrument's own trailing year.
+
+Session: ${changes?.date ?? "unknown"} (previous: ${changes?.previousDate ?? "unknown"}), ${changes?.observed ?? 0} instruments.
+Automated verdict: ${changes?.verdict?.tone ?? "unknown"} — ${changes?.verdict?.text ?? ""}
+
+Moved unusually: ${notable}.
+
+Universe state:
+- Above their 50-day average: ${pctText(r?.breadth50)}${r?.breadth50Pct != null ? ` (${ordinal(Math.round(r.breadth50Pct * 100))} percentile of the past year)` : ""}
+- Above their 200-day average: ${pctText(r?.breadth200)}${r?.breadth200Pct != null ? ` (${ordinal(Math.round(r.breadth200Pct * 100))} percentile)` : ""}
+- Cross-sectional dispersion: ${r?.dispersion != null ? (r.dispersion * 100).toFixed(2) + "%" : "unavailable"}${r?.dispersionPct != null ? ` (${ordinal(Math.round(r.dispersionPct * 100))} percentile)` : ""}
+- Mean pairwise 60-day correlation: ${r?.avgCorr != null ? r.avgCorr.toFixed(2) : "unavailable"}${r?.avgCorrPct != null ? ` (${ordinal(Math.round(r.avgCorrPct * 100))} percentile)` : ""}
+- Advancing: ${pctText(r?.pctUp)}. Instruments with a 2-sigma day: ${pctText(r?.pctExtreme)}.
+${r?.breadth50Streak > 1 ? `- Breadth has been ${r.breadth50 >= 0.5 ? "above" : "below"} half for ${r.breadth50Streak} consecutive sessions.` : ""}
+
+If the verdict is quiet or mild, reply with one or two sentences saying so and
+naming the one thing, if any, worth keeping an eye on. Do not pad it.
+
+Otherwise write at most three short paragraphs: what was actually unusual and
+in what terms, whether the move was broad or isolated and what breadth,
+dispersion and correlation say about that, and one observation with a number
+attached. Not a trade instruction.`;
+
+  const { text } = await callAI(prompt, 700);
+  setText(text);
+  setLoading(false);
 }
 
 // ============================================================
@@ -642,6 +695,8 @@ function WhatChangedPage({ prices, pulseCount, poll, feed }) {
   const [loading, setLoading] = useState(true);
   const [fearGreed, setFearGreed] = useState(null);
   const [fgTried, setFgTried] = useState(false);
+  const [aiRead, setAiRead] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -731,6 +786,32 @@ function WhatChangedPage({ prices, pulseCount, poll, feed }) {
         </div>
         <PulseIndicator pulseCount={pulseCount} feed={feed} />
       </div>
+
+      {/* On demand. Auto-generating a paragraph every load is how a quiet day
+          ends up with a narrative attached to it. */}
+      <Panel>
+        <SectionHeader
+          title="SESSION READ"
+          subtitle="AI, given the sigma-scored moves and breadth above — not raw prices"
+          action={aiLoading ? "READING\u2026" : aiRead ? "REGENERATE" : "GENERATE"}
+          onAction={() => fetchSessionRead(data, setAiRead, setAiLoading)}
+        />
+        <div style={{ padding: 14 }}>
+          {aiLoading ? (
+            <span style={{ color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Reading the session\u2026</span>
+          ) : aiRead ? (
+            <div style={{ fontSize: 13, lineHeight: 1.75, color: "#a0b4c8", borderLeft: "2px solid #00d4aa30", paddingLeft: 12 }}>
+              {aiRead.split("\n\n").filter(Boolean).map((para, i) => (
+                <p key={i} style={{ margin: "0 0 10px 0" }}>{para}</p>
+              ))}
+            </div>
+          ) : (
+            <span style={{ color: "#3a4558", fontSize: 12, fontFamily: "monospace" }}>
+              Not generated. The verdict above already says whether anything happened.
+            </span>
+          )}
+        </div>
+      </Panel>
 
       {/* Universe-level state, each figure with its own historical percentile. */}
       <Panel>
@@ -1835,18 +1916,21 @@ function MarketsPage({ prices }) {
       line("WTI", "CL=F"), line("US 10Y", "^TNX"), line("EUR/USD", "EURUSD=X"),
     ].filter(Boolean).join("; ");
     const strength = currencyStrength(prices).slice(0, 3).map(s => `${s.ccy} ${s.value >= 0 ? "+" : ""}${s.value.toFixed(2)}%`).join(", ");
-    const prompt = `You are a macro strategist writing a cross-asset read for a UK private investor.
+    const prompt = `${AI_RULES}
+
+You are writing a cross-asset read for a UK private investor.
 
 Live session data: ${ctx || "no live prices available"}.
 Strongest currencies today: ${strength || "n/a"}.
 
-Write four labelled sections, 2 sentences each, plain text, no markdown:
-THE SESSION: What is actually happening across assets right now.
-WHAT IS DRIVING IT: The mechanism linking these moves.
-WHAT TO WATCH: The specific level or event that would change the picture.
-POSITIONING READ: What this backdrop favours and what it punishes.
+If the moves here are small and unremarkable, say that in one or two sentences
+and stop. A flat session across assets is a legitimate and common finding.
 
-Be specific about the numbers given. No hedging filler.`;
+Otherwise write three labelled sections, at most two sentences each:
+THE SESSION: What is actually moving, in the numbers given.
+WHAT LINKS IT: The mechanism connecting those moves — or say plainly that the
+moves do not appear connected, if they do not.
+WHAT WOULD CHANGE IT: The specific thing that would alter this picture.`;
     callAI(prompt, 900).then(({ text }) => { setAiText(text); setAiLoading(false); });
   }
 
@@ -2662,14 +2746,17 @@ function CalendarPage() {
 async function fetchAINewsSummary(story, setResult, setLoading) {
   setLoading(true);
   const symbolsStr = story.symbols?.length ? story.symbols.join(", ") : "none tagged";
-  const prompt = `You are a buy-side analyst. Headline: "${story.title}" (${story.source}). Summary: ${story.summary || "none provided"}. Tagged symbols: ${symbolsStr}.
+  const prompt = `${AI_RULES}
 
-Write exactly 3 labeled sentences:
-WHAT HAPPENED: One sentence plain English summary.
-WHY MARKETS CARE: The mechanism — why could this move prices?
-ACTIONABLE OR NOISE: Is this likely a tradeable catalyst or background noise? Be explicit, give a reason.
+Headline: "${story.title}" (${story.source}). Summary: ${story.summary || "none provided"}. Tagged symbols: ${symbolsStr}.
 
-Plain text only. No markdown.`;
+Write exactly three labelled sentences:
+WHAT HAPPENED: A one-sentence plain summary.
+WHY MARKETS MIGHT CARE: The mechanism by which this could move prices — or
+state that there is no plausible mechanism, if there is not.
+ACTIONABLE OR NOISE: Say which, and why. Most news is noise; saying so is the
+right answer far more often than not, and you should not strain to find
+significance in a story that has none.`;
   const { text } = await callAI(prompt, 400);
   setResult(text);
   setLoading(false);
@@ -3685,15 +3772,20 @@ function ResearchPage({ prices }) {
     const ctx = data
       ? `Current price ${formatPrice(data.price, symbol)}, day change ${formatChange(data.changePct)}, week change ${formatChange(data.weekChangePct)}.`
       : "No live price available for this asset in the terminal feed.";
-    const prompt = `You are a senior sell-side analyst. Asset: ${name} (${symbol}). ${ctx}
+    const prompt = `${AI_RULES}
 
-Write a structured research note in plain text, no markdown, with these four labelled sections, each 2-3 sentences:
+Asset: ${name} (${symbol}). ${ctx}
+
+Write a structured note in four labelled sections, each 2-3 sentences:
 BULL CASE: The strongest argument to be long.
-BEAR CASE: The strongest argument against / to be short.
+BEAR CASE: The strongest argument against.
 BASE CASE: The most probable path from here.
-WHAT WOULD CHANGE MY VIEW: The specific signals that would upgrade or downgrade this.
+WHAT WOULD CHANGE THIS: The specific, observable signals that would shift the
+picture either way.
 
-Be specific and opinionated. No hedging filler.`;
+You have been given very little data about this instrument. Say what you cannot
+assess rather than filling those gaps from memory — a note that names its own
+blind spots is more useful than one that reads confidently past them.`;
     const { text } = await callAI(prompt, 900);
     setAiText(text);
     setAiLoading(false);
@@ -4395,12 +4487,17 @@ function HoldingDetail({ p }) {
   async function askAI() {
     setAiLoading(true);
     setAiText("");
-    const prompt = `You are a buy-side analyst giving a colleague a quick verbal take, not a report.
+    const prompt = `${AI_RULES}
+
+A quick take on one holding, not a report.
 Holding: ${p.name || p.symbol} (${p.symbol}), tagged ${p.sector}/${p.geography} in this portfolio.
 Current price ${ccySymbol(p.currency)}${p.price?.toFixed(2) ?? "—"}, position P&L ${p.pnlPct >= 0 ? "+" : ""}${p.pnlPct?.toFixed(1)}%, portfolio weight ${p.weight?.toFixed(1)}%.
 ${quote?.marketCap != null ? `Market cap ${formatBigNumber(quote.marketCap)}. ` : ""}${quote?.beta != null ? `Beta ${quote.beta.toFixed(2)}. ` : ""}${quote?.low52 != null && quote?.high52 != null ? `52-week range ${ccySymbol(p.currency)}${quote.low52.toFixed(2)}–${ccySymbol(p.currency)}${quote.high52.toFixed(2)}.` : ""}
 
-Give a short, opinionated take in plain text, no markdown, 4-6 sentences: is this holding currently attractive to add to, hold, or trim, and why — reference the valuation/momentum context above where relevant.`;
+Give a short take in 4-6 sentences: what the figures above do and do not say
+about this holding's position in the portfolio. Reference the valuation and
+weight context given. Where the data is too thin to support a view, say that
+instead of supplying one.`;
     const res = await callAI(prompt, 350);
     setAiText(res.text);
     setAiLoading(false);
