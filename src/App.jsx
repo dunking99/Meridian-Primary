@@ -115,7 +115,6 @@ const NAV_ITEMS = [
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
   { id: "markets", label: "Markets", icon: "◬" },
-  { id: "calendar", label: "Calendar", icon: "▣" },
   { id: "news", label: "News", icon: "◉" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
@@ -691,6 +690,8 @@ function WhatChangedPage({ prices, pulseCount, poll, feed }) {
   const [data, setData] = useState(null);
   const [lead, setLead] = useState(null);
   const [rel, setRel] = useState(null);
+  const [cal, setCal] = useState(null);
+  const [calBusy, setCalBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [loading, setLoading] = useState(true);
   const [fearGreed, setFearGreed] = useState(null);
@@ -702,12 +703,16 @@ function WhatChangedPage({ prices, pulseCount, poll, feed }) {
     setLoading(true);
     setErr(null);
     try {
-      const [c, l, r] = await Promise.all([
+      const [c, l, r, cal] = await Promise.all([
         fetch(`${API}/changes?limit=14`).then(x => x.json()),
         fetch(`${API}/leadership?window=21`).then(x => x.json()),
         fetch(`${API}/relationships`).then(x => x.json()),
+        // "What is coming up" belongs beside "what changed", and for a book of
+        // index funds there are only ever a handful of dated events — not
+        // enough to justify a page of its own.
+        fetch(`${API}/calendar?days=90`).then(x => x.json()).catch(() => null),
       ]);
-      setData(c); setLead(l); setRel(r);
+      setData(c); setLead(l); setRel(r); setCal(cal);
     } catch {
       setErr("Could not reach the Meridian API. Start it with: npm run server");
     } finally {
@@ -932,6 +937,60 @@ function WhatChangedPage({ prices, pulseCount, poll, feed }) {
                 ))}
               </div>
             )}
+          </Panel>
+
+          <Panel>
+            <SectionHeader
+              title="COMING UP"
+              subtitle="Next 90 days, for what you hold or watch"
+              action={calBusy ? "FETCHING\u2026" : "\u21bb FETCH"}
+              onAction={async () => {
+                setCalBusy(true);
+                try {
+                  const res = await fetch(`${API}/calendar/refresh`, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ days: 90 }),
+                  });
+                  setCal(await res.json());
+                } catch { /* leave the previous view in place */ }
+                finally { setCalBusy(false); }
+              }}
+            />
+            {!cal?.events?.length ? (
+              <div style={{ padding: 14, fontSize: 11, color: "#4a6080", lineHeight: 1.7 }}>
+                No dated events in the next 90 days.
+                {cal?.unresolved?.length > 0 && (
+                  <div style={{ color: "#2a3548", marginTop: 5 }}>
+                    {cal.unresolved.length} instrument{cal.unresolved.length === 1 ? "" : "s"} not looked up yet.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ padding: "4px 0" }}>
+                {cal.events.slice(0, 6).map(ev => (
+                  <div key={ev.id} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 14px", fontSize: 11 }}>
+                    <span style={{
+                      fontFamily: "monospace", fontSize: 10, minWidth: 52,
+                      color: ev.daysAway <= 7 ? "#ffa502" : "#4a6080",
+                    }}>{ev.daysAway <= 0 ? "today" : `${ev.daysAway}d`}</span>
+                    <span style={{ flex: 1, color: "#a0b4c8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {ev.title}
+                    </span>
+                    <span style={{ fontSize: 9, fontFamily: "monospace", color: ev.relevance === "held" ? "#00d4aa" : "#3d8bff" }}>
+                      {ev.relevance}
+                    </span>
+                  </div>
+                ))}
+                {cal.events.length > 6 && (
+                  <div style={{ padding: "4px 14px 8px", fontSize: 9, color: "#2a3548", fontFamily: "monospace" }}>
+                    +{cal.events.length - 6} more
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ padding: "0 14px 10px", fontSize: 9, color: "#2a3548", lineHeight: 1.5 }}>
+              Earnings and dividend dates plus the ISA deadline. Macro releases are not covered.
+            </div>
           </Panel>
 
           <Panel>
@@ -2549,195 +2608,6 @@ function YieldCurve({ prices }) {
   );
 }
 
-// ============================================================
-// CALENDAR
-//
-// The page this replaces invented its events. Apple reported in three days,
-// Tesla in nine, the FOMC met in twelve, with made-up EPS estimates and
-// made-up dividend amounts — and because every date was an offset from today,
-// it always looked current and was never right.
-//
-// This shows the dates that genuinely exist for the instruments in this
-// portfolio: earnings and dividend dates from Yahoo's calendar module for
-// everything held or watched, plus the UK ISA deadline, which is fixed in
-// statute and needs no source.
-//
-// Macro releases are deliberately absent. There is no free structured feed for
-// CPI, payrolls or rate decisions wired up here, and Investing.com does that
-// job better — inventing a version of it was how the old page got into
-// trouble. The page says so rather than leaving the gap to be inferred.
-// ============================================================
-
-const CAL_TYPES = {
-  earnings:       { label: "Earnings",     color: "#3d8bff", icon: "▣" },
-  dividend:       { label: "Ex-dividend",  color: "#00d4aa", icon: "◈" },
-  "dividend-pay": { label: "Dividend paid", color: "#4ade80", icon: "◈" },
-  deadline:       { label: "Deadline",     color: "#ff4757", icon: "⚑" },
-};
-
-function calCountdown(days) {
-  if (days == null) return "";
-  if (days < 0) return "passed";
-  if (days === 0) return "today";
-  if (days === 1) return "tomorrow";
-  if (days < 7) return `${days} days`;
-  if (days < 31) return `${Math.round(days / 7)} week${days >= 10.5 ? "s" : ""}`;
-  return `${Math.round(days / 30)} month${days >= 45 ? "s" : ""}`;
-}
-
-function calFmtDate(iso) {
-  const d = new Date(`${iso}T12:00:00Z`);
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-}
-
-function CalendarEventRow({ ev }) {
-  const t = CAL_TYPES[ev.type] ?? { label: ev.type, color: "#7a8ba0", icon: "·" };
-  const imminent = ev.daysAway != null && ev.daysAway <= 7;
-  return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "18px 150px 1fr 110px 84px",
-      gap: 12, alignItems: "center", padding: "10px 14px",
-      borderBottom: "1px solid #10151f",
-      borderLeft: `2px solid ${imminent ? t.color : "transparent"}`,
-    }}>
-      <span style={{ color: t.color, fontSize: 12 }}>{t.icon}</span>
-
-      <div>
-        <div style={{ fontFamily: "monospace", fontSize: 11, color: "#c8d6e8" }}>{calFmtDate(ev.date)}</div>
-        <div style={{ fontSize: 9, color: imminent ? t.color : "#3a4558", fontFamily: "monospace" }}>
-          {calCountdown(ev.daysAway)}
-        </div>
-      </div>
-
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {ev.title}
-        </div>
-        {ev.note && <div style={{ fontSize: 10, color: "#4a6080", marginTop: 2 }}>{ev.note}</div>}
-      </div>
-
-      <span style={{ fontSize: 10, fontFamily: "monospace", color: t.color }}>{t.label}</span>
-
-      <span style={{
-        fontSize: 9, fontFamily: "monospace", textAlign: "right",
-        color: ev.relevance === "held" ? "#00d4aa" : ev.relevance === "watched" ? "#3d8bff" : "#7a8ba0",
-      }}>
-        {ev.relevance.toUpperCase()}
-      </span>
-    </div>
-  );
-}
-
-function CalendarPage() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [err, setErr] = useState(null);
-  const [filter, setFilter] = useState("all");
-
-  const load = useCallback(async () => {
-    setLoading(true); setErr(null);
-    try {
-      setData(await fetch(`${API}/calendar`).then(r => r.json()));
-    } catch {
-      setErr("Could not reach the Meridian API. Start it with: npm run server");
-    } finally { setLoading(false); }
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
-
-  async function refresh() {
-    setRefreshing(true);
-    try {
-      const res = await fetch(`${API}/calendar/refresh`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      });
-      setData(await res.json());
-    } catch {
-      setErr("Refresh failed — could not reach the API.");
-    } finally { setRefreshing(false); }
-  }
-
-  const events = (data?.events ?? []).filter(e =>
-    filter === "all" ? true : filter === "held" ? e.relevance === "held" : e.type === filter);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel>
-        <SectionHeader
-          title="CALENDAR"
-          subtitle={data ? `Next ${data.horizonDays} days · ${data.symbols} instruments tracked` : "loading"}
-          action={refreshing ? "FETCHING…" : "↻ FETCH DATES"}
-          onAction={refresh}
-        />
-
-        <div style={{ padding: "8px 14px", display: "flex", gap: 6, borderBottom: "1px solid #1a1f2e", flexWrap: "wrap" }}>
-          {[["all", "All"], ["held", "Held only"], ["earnings", "Earnings"], ["dividend", "Ex-dividend"]].map(([id, label]) => (
-            <button key={id} onClick={() => setFilter(id)} style={{
-              background: filter === id ? "#0d2820" : "transparent",
-              border: `1px solid ${filter === id ? "#00d4aa50" : "#1a2535"}`,
-              color: filter === id ? "#00d4aa" : "#4a6080",
-              fontFamily: "monospace", fontSize: 11, padding: "3px 10px",
-              borderRadius: 3, cursor: "pointer",
-            }}>{label}</button>
-          ))}
-        </div>
-
-        {err ? (
-          <div style={{ padding: 20, color: "#ff4757", fontSize: 12, fontFamily: "monospace" }}>{err}</div>
-        ) : loading && !data ? (
-          <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Loading…</div>
-        ) : !events.length ? (
-          <div style={{ padding: 22, color: "#4a6080", fontSize: 12, fontFamily: "monospace", lineHeight: 1.8 }}>
-            No dated events{filter !== "all" ? " matching that filter" : ""} in the next {data?.horizonDays ?? 120} days.
-            {data?.unresolved?.length > 0 && (
-              <div style={{ color: "#2a3548", marginTop: 8 }}>
-                {data.unresolved.length} instrument{data.unresolved.length === 1 ? " has" : "s have"} no dates yet —
-                press FETCH DATES to look them up.
-              </div>
-            )}
-          </div>
-        ) : (
-          events.map(ev => <CalendarEventRow key={ev.id} ev={ev} />)
-        )}
-      </Panel>
-
-      {/* What this page does not cover, said plainly rather than left to be discovered. */}
-      {data && (
-        <Panel>
-          <SectionHeader title="COVERAGE" />
-          <div style={{ padding: 14, fontSize: 11, color: "#4a6080", lineHeight: 1.8 }}>
-            {data.coverage}
-
-            {/* A lookup that was attempted and failed is a different state from
-                one never attempted, and the user has just pressed the button. */}
-            {data.failed?.length > 0 && (
-              <div style={{ marginTop: 10, color: "#ff4757" }}>
-                Lookup failed for {data.failed.join(", ")} — the API could not reach Yahoo.
-              </div>
-            )}
-
-            {data.unresolved?.length > 0 && (
-              <div style={{ marginTop: 10 }}>
-                <div style={{ fontSize: 10, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>
-                  NO DATES RESOLVED
-                </div>
-                {/* Named individually: a symbol absent because its lookup failed
-                    is otherwise indistinguishable from one with no events. */}
-                {data.unresolved.map(u => (
-                  <div key={u.symbol} style={{ fontSize: 10, fontFamily: "monospace", color: "#4a6080", marginTop: 3 }}>
-                    {u.symbol} — {u.reason}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </Panel>
-      )}
-    </div>
-  );
-}
 
 // ============================================================
 // NEWS / CATALYST INTELLIGENCE PAGE
@@ -5078,24 +4948,6 @@ function BreakdownPanel({ title, rows }) {
   );
 }
 
-function ComingSoonPage({ title, icon, description }) {
-  return (
-    <div style={{
-      display: "flex", flexDirection: "column", alignItems: "center",
-      justifyContent: "center", height: "60vh", gap: 16,
-    }}>
-      <div style={{ fontSize: 48, opacity: 0.3 }}>{icon}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace" }}>{title}</div>
-      <div style={{ fontSize: 13, color: "#4a6080", textAlign: "center", maxWidth: 400 }}>{description}</div>
-      <div style={{
-        background: "#0d1117", border: "1px solid #1a2535", borderRadius: 6,
-        padding: "8px 20px", fontSize: 11, color: "#3a4558", fontFamily: "monospace",
-      }}>
-        PHASE {["macro","research","portfolio","watchlist","screener","markets","calendar","news"].indexOf(title.toLowerCase().split(" ")[0]) + 3} — IN DEVELOPMENT
-      </div>
-    </div>
-  );
-}
 
 // ============================================================
 // MAIN APP
@@ -5237,15 +5089,6 @@ export default function TradingTerminal() {
   // it to the backend once on load so ranking works without re-saving it.
   useEffect(() => { syncKeyToServerIfNeeded(); }, []);
 
-  const pageDescriptions = {
-    research: "Deep-dive asset analysis — candlestick charting, technicals, fundamentals, positioning, AI bull/bear/base case",
-    portfolio: "Risk console — holdings, exposure breakdown, correlation clustering, heatmap, thesis cards, AI health check",
-    watchlist: "Idea pipeline — 5 tiered lists, setup cards, alert flags, AI daily watchlist monitor",
-    screener: "Opportunity scanner — equities/FX/commodities scans, strategy presets, composite scoring, AI setup commentary",
-    markets: "Every quoted market — indices, FX, commodities, sectors, rates, crypto and central bank policy, with cross-asset ranking and AI session read",
-    calendar: "Economic events + earnings calendar — CPI/NFP/Fed countdowns, expected vs previous, portfolio-aware warnings",
-    news: "Catalyst intelligence — filtered by portfolio/watchlist, importance scoring, AI summarisation, actionable vs noise",
-  };
 
   return (
     <div style={{
@@ -5376,9 +5219,6 @@ export default function TradingTerminal() {
           )}
           {activePage === "markets" && (
             <MarketsPage prices={prices} />
-          )}
-          {activePage === "calendar" && (
-            <CalendarPage />
           )}
           {activePage === "news" && (
             <NewsPage />
