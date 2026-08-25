@@ -3,6 +3,7 @@
 
 import YahooFinance from 'yahoo-finance2';
 import { SYMBOLS } from '../config.js';
+import { classify } from './instruments.js';
 import { saveBars, getBars, barCoverage } from '../db.js';
 
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey'] });
@@ -64,6 +65,7 @@ export async function fetchQuotes(symbols) {
           currency:   (yCcy === 'GBp') ? 'GBP' : (yCcy ?? meta.ccy ?? 'USD'),
           name:       meta.name ?? q.shortName ?? key,
           rawCurrency: yCcy,
+          instrument: classify(key, q.quoteType ?? null).type,
           live: true,
         };
       }
@@ -196,8 +198,22 @@ export async function fetchSummary(symbol) {
       }));
     } catch { /* analyst/date modules unavailable for this symbol type — fields stay null */ }
 
+    // What kind of instrument this is decides which of the fields below are
+    // meaningful at all. Without it the caller asks every symbol for a P/E.
+    const instrument = classify(symbol, pr.quoteType ?? null);
+
     return {
       symbol,
+      instrument: instrument.type,
+      instrumentLabel: instrument.label,
+      applicableStats: instrument.stats,
+      // Why a field is absent, per field — so a blank can be explained rather
+      // than looking like a fetch failure.
+      inapplicable: instrument.absent,
+      hasAnalystCoverage: instrument.analyst,
+      // 'us-only' means EDGAR could have it if the issuer is a US registrant;
+      // false means the instrument type has no filings at all.
+      filingsSupport: instrument.filings,
       name: pr.longName ?? pr.shortName ?? symbol,
       price: normaliseByCurrency(pr.regularMarketPrice, yCcy),
       marketCap: pr.marketCap ?? null,

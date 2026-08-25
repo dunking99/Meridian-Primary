@@ -3056,11 +3056,33 @@ function NewsPage() {
   );
 }
 
-function ResearchStat({ label, value, color = "#c8d6e8" }) {
+/**
+ * One key figure.
+ *
+ * Three states, kept visibly distinct. A real value renders normally. A value
+ * the source did not return renders as no-data. A value that does not apply to
+ * this kind of instrument — a P/E on an index, a dividend yield on a currency
+ * pair — renders greyed out with the reason, because it is not missing data
+ * and showing it as missing implies something is broken.
+ */
+function ResearchStat({ label, value, color = "#c8d6e8", inapplicable = null }) {
+  if (inapplicable) {
+    return (
+      <div title={inapplicable} style={{
+        background: "#0a0d14", border: "1px dashed #141b28", borderRadius: 5,
+        padding: "10px 12px", cursor: "help",
+      }}>
+        <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
+        <div style={{ fontSize: 10, color: "#2a3548", marginTop: 4, lineHeight: 1.4 }}>n/a for this instrument</div>
+      </div>
+    );
+  }
   return (
     <div style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5, padding: "10px 12px" }}>
       <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 14, fontWeight: 700, color, fontFamily: "monospace", marginTop: 3 }}>{value ?? "\u2014"}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color, fontFamily: "monospace", marginTop: 3 }}>
+        {value ?? <NoData reason="The source returned no value for this field" />}
+      </div>
     </div>
   );
 }
@@ -3096,17 +3118,29 @@ function ResearchOverviewTab({ symbol, name, data, summary, summaryLoading, leve
       )}
 
       <Panel>
-        <SectionHeader title="KEY STATS" subtitle={summaryLoading ? "Loading\u2026" : s ? `${s.sector || s.industry ? [s.sector, s.industry].filter(Boolean).join(" \u00b7 ") : "Fundamentals"}${s.country ? ` \u00b7 ${s.country}` : ""}` : "No fundamentals data for this symbol"} />
+        <SectionHeader title="KEY STATS" subtitle={summaryLoading ? "Loading\u2026" : s ? [s.instrumentLabel, s.sector, s.industry, s.country].filter(Boolean).join(" \u00b7 ") || "Fundamentals" : "No fundamentals data for this symbol"} />
         {s ? (
           <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-            <ResearchStat label="MARKET CAP" value={s.marketCap ? formatBigNumber(s.marketCap) : null} />
-            <ResearchStat label="P/E (TTM)" value={s.pe ? s.pe.toFixed(1) : null} />
-            <ResearchStat label="FORWARD P/E" value={s.forwardPe ? s.forwardPe.toFixed(1) : null} />
-            <ResearchStat label="DIV YIELD" value={s.dividendYield ? `${(s.dividendYield * 100).toFixed(2)}%` : null} />
-            <ResearchStat label="BETA" value={s.beta ? s.beta.toFixed(2) : null} />
-            <ResearchStat label="52W RANGE" value={s.low52 && s.high52 ? `${formatPrice(s.low52, symbol)} \u2013 ${formatPrice(s.high52, symbol)}` : null} />
-            <ResearchStat label="AVG VOLUME" value={s.avgVolume ? formatBigNumber(s.avgVolume) : null} />
-            <ResearchStat label="EXPENSE RATIO" value={s.expenseRatio ? `${(s.expenseRatio * 100).toFixed(2)}%` : null} />
+            {/* Which of these apply is decided by instrument type, not by
+                whether Yahoo happened to return a number. An index has no P/E
+                — that is a fact about indices, not a gap in the data. */}
+            {[
+              ["marketCap",     "MARKET CAP",    s.marketCap ? formatBigNumber(s.marketCap) : null],
+              ["pe",            "P/E (TTM)",     s.pe ? s.pe.toFixed(1) : null],
+              ["forwardPe",     "FORWARD P/E",   s.forwardPe ? s.forwardPe.toFixed(1) : null],
+              ["dividendYield", "DIV YIELD",     s.dividendYield ? `${(s.dividendYield * 100).toFixed(2)}%` : null],
+              ["beta",          "BETA",          s.beta ? s.beta.toFixed(2) : null],
+              ["range52",       "52W RANGE",     s.low52 && s.high52 ? `${formatPrice(s.low52, symbol)} \u2013 ${formatPrice(s.high52, symbol)}` : null],
+              ["avgVolume",     "AVG VOLUME",    s.avgVolume ? formatBigNumber(s.avgVolume) : null],
+              ["expenseRatio",  "EXPENSE RATIO", s.expenseRatio ? `${(s.expenseRatio * 100).toFixed(2)}%` : null],
+            ].map(([key, label, value]) => (
+              <ResearchStat
+                key={key} label={label} value={value}
+                inapplicable={s.applicableStats && !s.applicableStats.includes(key)
+                  ? (s.inapplicable?.[key] ?? `Not applicable to a ${s.instrumentLabel?.toLowerCase() ?? "instrument"} like this.`)
+                  : null}
+              />
+            ))}
           </div>
         ) : !summaryLoading && (
           <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>
@@ -3442,6 +3476,21 @@ Be specific and opinionated. No hedging filler.`;
   };
 
   const inputStyle = { background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, color: "#c8d6e8", fontFamily: "monospace", fontSize: 13, padding: "9px 12px" };
+  // Analyst coverage and SEC filings are equity concepts. Rather than showing
+  // an always-empty tab for an index or a currency pair, each tab declares
+  // whether it applies to this instrument and why not when it doesn't.
+  const inst = summary && !summary.error ? summary : null;
+  const tabNA = {
+    analyst: inst?.hasAnalystCoverage === false
+      ? (inst.inapplicable?.analyst ?? `Analysts do not rate a ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} like this.`)
+      : null,
+    // filingsSupport is false for instrument types with no filings at all, and
+    // 'us-only' where EDGAR applies if — and only if — the issuer is a US
+    // registrant, which only the fetch itself can settle.
+    filings: inst?.filingsSupport === false
+      ? `A ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} has no SEC filings.`
+      : null,
+  };
   const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"], ["filings", "Filings"], ["ai", "AI Note"]];
 
   return (
@@ -3497,7 +3546,8 @@ Be specific and opinionated. No hedging filler.`;
 
       <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
         {tabs.map(([id, label]) => (
-          <button key={id} onClick={() => setTab(id)} style={{
+          <button key={id} onClick={() => setTab(id)} title={tabNA[id] ?? undefined} style={{
+            opacity: tabNA[id] ? 0.45 : 1,
             background: "transparent", border: "none",
             borderBottom: tab === id ? "2px solid #00d4aa" : "2px solid transparent",
             color: tab === id ? "#00d4aa" : "#4a6080",
