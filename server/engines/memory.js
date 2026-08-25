@@ -27,7 +27,7 @@
 // enough data", and callers are expected to render that differently from zero.
 
 import { all, one, db, getBars } from '../db.js';
-import { TRADING_DAYS } from '../config.js';
+import { TRADING_DAYS, SYMBOLS, FACTORS } from '../config.js';
 import { mean, stdev, correlation } from './analytics.js';
 
 // ─── Schema ───────────────────────────────────────────────────
@@ -475,6 +475,126 @@ export function whatChanged({ limit = 12, zThreshold = 1.5 } = {}) {
     observed: obs.length,
     notable, regime, verdict,
     source: 'Derived from stored daily bars (Yahoo Finance), recomputed locally.',
+  };
+}
+
+// ─── Relationships and leadership ─────────────────────────────
+
+/**
+ * Group-level leadership over a window, and whether it has rotated.
+ *
+ * A sector table showing today's percentages is available anywhere. What is
+ * not is whether today's leader was also last month's leader — rotation is
+ * the signal, and it needs two windows to see.
+ */
+export function leadership({ window = 21, prior = 21 } = {}) {
+  const date = latestDate();
+  if (!date) return { available: false, groups: [] };
+
+  const col = window <= 5 ? 'ret_5d' : window <= 21 ? 'ret_21d' : 'ret_252d';
+  const rows = all(`SELECT symbol, ${col} r FROM symbol_observations WHERE date = ? AND ${col} IS NOT NULL`, date);
+
+  // The same measure as of `prior` sessions ago, for the rotation comparison.
+  const past = all(
+    `SELECT date FROM regime_observations WHERE date < ? ORDER BY date DESC LIMIT ?`, date, prior);
+  const priorDate = past.length === prior ? past[past.length - 1].date : null;
+  const priorRows = priorDate
+    ? all(`SELECT symbol, ${col} r FROM symbol_observations WHERE date = ? AND ${col} IS NOT NULL`, priorDate)
+    : [];
+  const priorBySymbol = Object.fromEntries(priorRows.map(r => [r.symbol, r.r]));
+
+  const buckets = {};
+  for (const { symbol, r } of rows) {
+    const g = SYMBOLS[symbol]?.group ?? 'other';
+    (buckets[g] ??= { group: g, members: [], now: [], then: [] });
+    buckets[g].members.push(symbol);
+    buckets[g].now.push(r);
+    if (priorBySymbol[symbol] != null) buckets[g].then.push(priorBySymbol[symbol]);
+  }
+
+  const groups = Object.values(buckets)
+    .map(b => ({
+      group: b.group,
+      n: b.members.length,
+      members: b.members,
+      ret: mean(b.now),
+      priorRet: b.then.length ? mean(b.then) : null,
+    }))
+    .sort((a, b) => b.ret - a.ret);
+
+  // Rank movement between the two windows is the actual rotation measure.
+  const priorRanked = [...groups].filter(g => g.priorRet != null).sort((a, b) => b.priorRet - a.priorRet);
+  const priorRank = Object.fromEntries(priorRanked.map((g, i) => [g.group, i]));
+
+  return {
+    available: true, date, priorDate, window,
+    groups: groups.map((g, i) => ({
+      ...g,
+      rank: i,
+      priorRank: priorRank[g.group] ?? null,
+      rankChange: priorRank[g.group] != null ? priorRank[g.group] - i : null,
+    })),
+  };
+}
+
+/**
+ * Cross-asset relationships that have changed, not levels.
+ *
+ * For each factor pair, the current rolling correlation is compared with the
+ * immediately preceding window and placed in its own trailing-year
+ * distribution. A pair whose correlation has moved from +0.6 to -0.1 is a
+ * regime statement; both endpoints on their own are trivia.
+ */
+export function correlationShifts({ window = 60, limit = 8 } = {}) {
+  const names = Object.keys(FACTORS);
+  const series = {};
+  for (const name of names) {
+    const sym = FACTORS[name];
+    const rows = all(
+      `SELECT date, ret_1d FROM symbol_observations WHERE symbol = ? AND ret_1d IS NOT NULL
+       ORDER BY date DESC LIMIT ?`, sym, window * 2 + TRADING_DAYS);
+    if (rows.length >= window * 2) series[name] = { symbol: sym, rets: rows.reverse().map(r => r.ret_1d) };
+  }
+
+  const out = [];
+  const avail = Object.keys(series);
+  for (let i = 0; i < avail.length; i++) {
+    for (let j = i + 1; j < avail.length; j++) {
+      const a = series[avail[i]], b = series[avail[j]];
+      const n = Math.min(a.rets.length, b.rets.length);
+      const ra = a.rets.slice(-n), rb = b.rets.slice(-n);
+      if (n < window * 2) continue;
+
+      const now = correlation(ra.slice(-window), rb.slice(-window));
+      const then = correlation(ra.slice(-window * 2, -window), rb.slice(-window * 2, -window));
+      if (now == null || then == null) continue;
+
+      // Trailing distribution of this pair's own correlation, so "unusual" is
+      // judged against the pair rather than against a fixed threshold.
+      const history = [];
+      for (let k = window; k + window <= n; k += 5) {
+        const c = correlation(ra.slice(k - window, k), rb.slice(k - window, k));
+        if (c != null && isFinite(c)) history.push(c);
+      }
+      const pct = history.length >= 20
+        ? history.filter(h => h < now).length / history.length
+        : null;
+
+      out.push({
+        pair: `${avail[i]} / ${avail[j]}`,
+        symbols: [a.symbol, b.symbol],
+        now, previous: then, change: now - then, percentile: pct,
+        // Only a sign flip gets called out as a break — a correlation moving
+        // from 0.7 to 0.4 is still the same relationship, weaker.
+        flipped: Math.sign(now) !== Math.sign(then) && Math.abs(now - then) > 0.25,
+      });
+    }
+  }
+
+  return {
+    window,
+    available: out.length > 0,
+    pairs: out.sort((x, y) => Math.abs(y.change) - Math.abs(x.change)).slice(0, limit),
   };
 }
 

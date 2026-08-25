@@ -209,6 +209,8 @@ const routes = {
   }),
 
   'GET /memory': () => memory.memoryStats(),
+  'GET /leadership': q => memory.leadership({ window: Number(q.window) || 21 }),
+  'GET /relationships': q => memory.correlationShifts({ window: Number(q.window) || 60 }),
   'GET /memory/regime': q => ({ series: memory.regimeHistory({ days: Number(q.days) || 252 }) }),
   'GET /memory/symbol': q => ({
     symbol: q.symbol,
