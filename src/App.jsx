@@ -837,7 +837,7 @@ function AlertRow({ alert }) {
   );
 }
 
-function SectionHeader({ title, subtitle, action, onAction }) {
+function SectionHeader({ title, subtitle, action, onAction, extra }) {
   return (
     <div style={{
       display: "flex",
@@ -852,18 +852,21 @@ function SectionHeader({ title, subtitle, action, onAction }) {
         </span>
         {subtitle && <span style={{ fontSize: 12, color: "#3a4558", marginLeft: 10 }}>{subtitle}</span>}
       </div>
-      {action && (
-        <button onClick={onAction} style={{
-          background: "transparent",
-          border: "1px solid #1a2535",
-          color: "#4a6080",
-          fontSize: 12,
-          padding: "5px 12px",
-          borderRadius: 3,
-          cursor: "pointer",
-          fontFamily: "monospace",
-        }}>{action}</button>
-      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {extra}
+        {action && (
+          <button onClick={onAction} style={{
+            background: "transparent",
+            border: "1px solid #1a2535",
+            color: "#4a6080",
+            fontSize: 12,
+            padding: "5px 12px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontFamily: "monospace",
+          }}>{action}</button>
+        )}
+      </div>
     </div>
   );
 }
@@ -4664,7 +4667,7 @@ function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
   const trend = s?.ratingTrend;
   const trendTotal = trend ? trend.strongBuy + trend.buy + trend.hold + trend.sell + trend.strongSell : 0;
 
-  if (summaryLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading\u2026</div></Panel>;
+  if (summaryLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading…</div></Panel>;
   if (!a && !trend && !s?.upgrades?.length && !s?.earningsHistory?.length) {
     return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No analyst coverage data for {symbol} — common for indices, FX, commodities and many funds, which aren't individually rated.</div></Panel>;
   }
@@ -4683,7 +4686,7 @@ function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
           {price && a.targetMean && (
             <div style={{ padding: "0 14px 14px", fontSize: 12, color: a.targetMean >= price ? "#00d4aa" : "#ff4757" }}>
               Mean target implies {a.targetMean >= price ? "+" : ""}{(((a.targetMean - price) / price) * 100).toFixed(1)}% vs current price
-              {a.recommendationKey && <span style={{ color: "#7a8ba0" }}> \u00b7 consensus: <span style={{ fontFamily: "monospace", textTransform: "capitalize" }}>{a.recommendationKey.replace(/_/g, " ")}</span></span>}
+              {a.recommendationKey && <span style={{ color: "#7a8ba0" }}> · consensus: <span style={{ fontFamily: "monospace", textTransform: "capitalize" }}>{a.recommendationKey.replace(/_/g, " ")}</span></span>}
             </div>
           )}
         </Panel>
@@ -4720,10 +4723,10 @@ function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
                 <div>
                   <span style={{ fontSize: 12, color: "#c8d6e8" }}>{u.firm || "Unknown firm"}</span>
                   {u.fromGrade && u.toGrade && u.fromGrade !== u.toGrade && (
-                    <span style={{ fontSize: 11, color: "#4a6080" }}> \u00b7 {u.fromGrade} \u2192 {u.toGrade}</span>
+                    <span style={{ fontSize: 11, color: "#4a6080" }}> · {u.fromGrade} → {u.toGrade}</span>
                   )}
                   {(!u.fromGrade || u.fromGrade === u.toGrade) && u.toGrade && (
-                    <span style={{ fontSize: 11, color: "#4a6080" }}> \u00b7 {u.toGrade}</span>
+                    <span style={{ fontSize: 11, color: "#4a6080" }}> · {u.toGrade}</span>
                   )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -4760,7 +4763,7 @@ function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
 }
 
 function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
-  if (newsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Searching feed and live sources for {name}\u2026</div></Panel>;
+  if (newsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Searching feed and live sources for {name}…</div></Panel>;
   const stories = newsData?.news ?? [];
   if (!stories.length) {
     return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No news found for {name}. Try a broader company name in the search box above.</div></Panel>;
@@ -4768,7 +4771,7 @@ function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>
-        {newsData.feedCount} from your tracked feed \u00b7 {newsData.liveCount} from live search
+        {newsData.feedCount} from your tracked feed · {newsData.liveCount} from live search
       </div>
       {stories.map(story => {
         const sentiment = newsSentimentMeta(story.sentiment);
@@ -4787,7 +4790,7 @@ function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
               {story.summary && <div style={{ fontSize: 12, color: "#7a8ba0", marginTop: 5, lineHeight: 1.5 }}>{story.summary}</div>}
               {story.url && (
                 <a href={story.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#3d8bff", textDecoration: "none", marginTop: 6, display: "inline-block" }}>
-                  Read full story \u2197
+                  Read full story ↗
                 </a>
               )}
             </div>
@@ -4799,7 +4802,7 @@ function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
 }
 
 function ResearchFilingsTab({ symbol, filingsData, insidersData, filingsLoading }) {
-  if (filingsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading SEC data\u2026</div></Panel>;
+  if (filingsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading SEC data…</div></Panel>;
   if (filingsData?.error) {
     return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>{filingsData.error} SEC EDGAR only covers US-listed tickers, so this is expected for LSE and other non-US symbols.</div></Panel>;
   }
@@ -4819,7 +4822,7 @@ function ResearchFilingsTab({ symbol, filingsData, insidersData, filingsLoading 
                   <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "monospace", background: "#1a2535", color: "#7a8ba0", padding: "2px 7px", borderRadius: 3 }}>{f.form}</span>
                   <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
                 </div>
-                <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View filing \u2197</a>
+                <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View filing ↗</a>
               </div>
             ))}
           </div>
@@ -4837,7 +4840,7 @@ function ResearchFilingsTab({ symbol, filingsData, insidersData, filingsLoading 
                 <span style={{ fontSize: 12, color: "#c8d6e8" }}>{f.filer || symbol}</span>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
-                  <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View \u2197</a>
+                  <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View ↗</a>
                 </div>
               </div>
             ))}
@@ -5058,9 +5061,13 @@ Be specific and opinionated. No hedging filler.`;
 // used elsewhere in this file, so it doesn't look bolted on.
 // ============================================================
 
-function RiskMetric({ label, value, sub, color = "#c8d6e8" }) {
+function RiskMetric({ label, value, sub, color = "#c8d6e8", align = "left" }) {
+  const centered = align === "center";
   return (
-    <div style={{ padding: "18px 22px", borderRight: "1px solid #1a1f2e" }}>
+    <div style={{
+      padding: "18px 22px", borderRight: "1px solid #1a1f2e",
+      ...(centered && { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }),
+    }}>
       <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 8 }}>
         {label}
       </div>
@@ -5455,6 +5462,15 @@ async function detectCurrency(symbol) {
   );
 }
 
+// Shared by the header row and every HoldingRow so the columns always line
+// up. NAME/SYMBOL gets the lion's share since a fund's full name ("Fidelity
+// Index World Fund") plus ticker and market otherwise wraps to two lines;
+// the numeric columns are right-aligned and only as wide as their content
+// needs, which is what removes the dead space that used to sit in front of
+// the "···" menu.
+const HOLDINGS_GRID_COLUMNS = "22px minmax(280px, 2.6fr) 0.5fr 0.65fr 0.65fr 0.85fr 0.95fr 0.6fr 0.5fr 44px";
+const numCell = { textAlign: "right" };
+
 function HoldingRow({ p, coverage, onChanged }) {
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -5498,54 +5514,58 @@ function HoldingRow({ p, coverage, onChanged }) {
     <div style={{ borderBottom: "1px solid #12161f" }}>
       <div onClick={() => setExpanded(e => !e)} style={{
         display: "grid",
-        gridTemplateColumns: "22px minmax(120px, 1.6fr) 0.8fr 1fr 1fr 1.1fr 1.2fr 1fr 0.9fr 60px",
+        gridTemplateColumns: HOLDINGS_GRID_COLUMNS,
         alignItems: "center", padding: "14px 20px", gap: 8,
         fontSize: 14, fontFamily: "monospace", cursor: "pointer",
       }}>
         <span style={{ color: "#4a6080", fontSize: 11, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
 
-        <div>
-          <span style={{ color: "#c8d6e8", fontWeight: 700, fontSize: 15 }}>{p.name || p.symbol}</span>
-          <a href={`https://finance.yahoo.com/quote/${encodeURIComponent(p.symbol)}`}
-            target="_blank" rel="noopener noreferrer"
-            title="View on Yahoo Finance"
-            onClick={e => e.stopPropagation()}
-            style={{ marginLeft: 6, color: "#4a6080", fontSize: 12, textDecoration: "none" }}>
-            ↗
-          </a>
-          {thinHistory && (
-            <span title="Not enough stored history for risk analysis"
-              style={{ color: "#ffa502", marginLeft: 6, fontSize: 12 }}>⚠</span>
-          )}
-          <div style={{ fontSize: 11, color: "#4a6080", marginTop: 2 }}>{p.symbol}</div>
+        <div style={{ minWidth: 0, overflow: "hidden" }}>
+          <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <span style={{ color: "#c8d6e8", fontWeight: 700, fontSize: 15 }}>{p.name || p.symbol}</span>
+            <a href={`https://finance.yahoo.com/quote/${encodeURIComponent(p.symbol)}`}
+              target="_blank" rel="noopener noreferrer"
+              title="View on Yahoo Finance"
+              onClick={e => e.stopPropagation()}
+              style={{ marginLeft: 6, color: "#4a6080", fontSize: 12, textDecoration: "none" }}>
+              ↗
+            </a>
+            {thinHistory && (
+              <span title="Not enough stored history for risk analysis"
+                style={{ color: "#ffa502", marginLeft: 6, fontSize: 12 }}>⚠</span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "#4a6080", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {p.symbol}{p.exchange ? ` | ${p.exchange}` : ""}
+          </div>
         </div>
 
         {editing ? (
           <input style={{ ...fieldStyle("100%"), padding: "5px 7px" }} value={qty} onClick={e => e.stopPropagation()} onChange={e => setQty(e.target.value)} />
         ) : (
-          <div style={{ color: "#7a8ba0" }}>{p.qty}</div>
+          <div style={{ ...numCell, color: "#7a8ba0" }}>{p.qty}</div>
         )}
 
         {editing ? (
           <input style={{ ...fieldStyle("100%"), padding: "5px 7px" }} value={avg} onClick={e => e.stopPropagation()} onChange={e => setAvg(e.target.value)} />
         ) : (
-          <div style={{ color: "#7a8ba0" }}>{ccySymbol(p.currency)}{p.avgPrice?.toFixed(2)}</div>
+          <div style={{ ...numCell, color: "#7a8ba0" }}>{ccySymbol(p.currency)}{p.avgPrice?.toFixed(2)}</div>
         )}
 
-        <div style={{ color: "#c8d6e8" }}>
-          {ccySymbol(p.currency)}{p.price != null ? p.price.toFixed(p.price < 10 ? 4 : 2) : "—"}
+        <div style={{ ...numCell, color: "#c8d6e8" }}>
+          {ccySymbol(p.currency)}{p.price != null ? p.price.toFixed(2) : "—"}
           {p.priceSource === "ft" && (
             <span title={`Yahoo has no data for this fund — priced via FT fallback${p.priceAsOf ? `, as of ${p.priceAsOf}` : ""}`}
               style={{ marginLeft: 4, fontSize: 9, color: "#a855f7", border: "1px solid #a855f740", borderRadius: 2, padding: "0 3px" }}>FT</span>
           )}
         </div>
-        <div style={{ color: "#c8d6e8" }}>£{p.value?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
-        <div style={{ color: pnlColor }}>
+        <div style={{ ...numCell, color: "#c8d6e8" }}>£{p.value?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+        <div style={{ ...numCell, color: pnlColor }}>
           {p.pnl >= 0 ? "+" : ""}£{Math.abs(p.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           <div style={{ fontSize: 11, marginTop: 2 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct?.toFixed(1)}%</div>
         </div>
-        <div style={{ color: dayColor }}>{(p.dayChangePct ?? 0) >= 0 ? "+" : ""}{p.dayChangePct?.toFixed(2)}%</div>
-        <div style={{ color: "#7a8ba0" }}>{p.weight?.toFixed(1)}%</div>
+        <div style={{ ...numCell, color: dayColor }}>{(p.dayChangePct ?? 0) >= 0 ? "+" : ""}{p.dayChangePct?.toFixed(2)}%</div>
+        <div style={{ ...numCell, color: "#7a8ba0" }}>{p.weight?.toFixed(1)}%</div>
 
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", position: "relative" }} onClick={e => e.stopPropagation()}>
           {editing ? (
@@ -5958,7 +5978,7 @@ function Modal({ onClose, children }) {
   );
 }
 
-function CashTile({ cashAccounts, cash, onChanged }) {
+function CashTile({ cashAccounts, cash, onChanged, centered = false }) {
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState(cash);
 
@@ -5982,8 +6002,8 @@ function CashTile({ cashAccounts, cash, onChanged }) {
   }
 
   return (
-    <div style={{ padding: "10px 22px 13px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+    <div style={{ padding: "10px 22px 13px", textAlign: centered ? "center" : "left" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: centered ? "center" : "space-between", gap: 6 }}>
         <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1 }}>CASH</div>
         {!editing && (
           <button onClick={() => { setAmount(cash); setEditing(true); }} title="Edit cash balance"
@@ -5991,7 +6011,7 @@ function CashTile({ cashAccounts, cash, onChanged }) {
         )}
       </div>
       {editing ? (
-        <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", justifyContent: centered ? "center" : "flex-start" }}>
           <input autoFocus type="number" value={amount} onChange={e => setAmount(e.target.value)}
             onKeyDown={e => e.key === "Enter" && save()}
             style={{ ...fieldStyle(110), padding: "4px 7px", fontSize: 16 }} />
@@ -6013,6 +6033,8 @@ function PortfolioPageV2() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
+  const [namesBusy, setNamesBusy] = useState(false);
+  const [namesMsg, setNamesMsg] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -6038,6 +6060,25 @@ function PortfolioPageV2() {
     return () => clearInterval(t);
   }, [load]);
 
+  async function refreshNames() {
+    setNamesBusy(true);
+    setNamesMsg(null);
+    try {
+      const res = await fetch(`${API}/holdings/refresh-names`, { method: "POST" });
+      const d = await res.json();
+      // d.message only comes back when there was nothing to target at all —
+      // otherwise always report what happened, even a 0-resolved run with
+      // failures (checking `d.resolved` truthily would wrongly show the
+      // "nothing to target" message here since 0 is falsy).
+      setNamesMsg(d.message ?? `Resolved ${d.resolved} name${d.resolved === 1 ? "" : "s"}${d.failed?.length ? ` — couldn't resolve ${d.failed.join(", ")}` : ""}.`);
+      await load();
+    } catch {
+      setNamesMsg("Could not reach the server.");
+    } finally {
+      setNamesBusy(false);
+    }
+  }
+
   if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading portfolio…</div>;
   if (error) return <Panel style={{ padding: 20 }}><div style={{ color: "#ff4757", fontSize: 12 }}>⚠ {error}</div></Panel>;
 
@@ -6055,20 +6096,20 @@ function PortfolioPageV2() {
       {/* Summary strip */}
       <Panel>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
-          <RiskMetric label="TOTAL VALUE" value={`£${data.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
-          <div style={{ borderRight: "1px solid #1a1f2e", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "13px 22px 10px", borderBottom: "1px solid #1a1f2e" }}>
+          <RiskMetric align="center" label="TOTAL VALUE" value={`£${data.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+          <div style={{ borderRight: "1px solid #1a1f2e", display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ padding: "13px 22px 10px", borderBottom: "1px solid #1a1f2e", textAlign: "center" }}>
               <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 5 }}>INVESTED</div>
               <div style={{ fontSize: 23, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace" }}>
                 £{data.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
             </div>
-            <CashTile cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} />
+            <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} />
           </div>
-          <RiskMetric label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+          <RiskMetric align="center" label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%`}
             color={data.pnl >= 0 ? "#00d4aa" : "#ff4757"} />
-          <RiskMetric label="TODAY" value={`${data.dayChange >= 0 ? "+" : ""}£${Math.abs(data.dayChange).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+          <RiskMetric align="center" label="TODAY" value={`${data.dayChange >= 0 ? "+" : ""}£${Math.abs(data.dayChange).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.dayChangePct >= 0 ? "+" : ""}${data.dayChangePct.toFixed(2)}%`}
             color={data.dayChange >= 0 ? "#00d4aa" : "#ff4757"} />
         </div>
@@ -6094,15 +6135,27 @@ function PortfolioPageV2() {
       {/* Holdings table */}
       <Panel>
         <SectionHeader title="HOLDINGS" subtitle="click a row to expand · edit to adjust quantity or average price"
-          action="+ ADD POSITION" onAction={() => setAddOpen(true)} />
+          action="+ ADD POSITION" onAction={() => setAddOpen(true)}
+          extra={
+            <button onClick={refreshNames} disabled={namesBusy} title="Look up a proper name and listing venue for any holding that's still showing its raw ticker"
+              style={{
+                background: "transparent", border: "1px solid #1a2535",
+                color: namesBusy ? "#3a4558" : "#4a6080", fontSize: 12, padding: "5px 12px",
+                borderRadius: 3, cursor: namesBusy ? "default" : "pointer", fontFamily: "monospace",
+              }}>{namesBusy ? "RESOLVING…" : "↻ REFRESH NAMES"}</button>
+          } />
+        {namesMsg && (
+          <div style={{ padding: "0 20px 10px", fontSize: 11, color: "#7a8ba0" }}>{namesMsg}</div>
+        )}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "22px minmax(120px, 1.6fr) 0.8fr 1fr 1fr 1.1fr 1.2fr 1fr 0.9fr 60px",
+          gridTemplateColumns: HOLDINGS_GRID_COLUMNS,
           padding: "11px 20px", borderBottom: "1px solid #1a1f2e", gap: 8,
           fontSize: 11, color: "#4a6080", letterSpacing: 1,
         }}>
-          <div /><div>NAME / SYMBOL</div><div>QTY</div><div>AVG</div><div>PRICE</div>
-          <div>VALUE</div><div>P&L</div><div>TODAY</div><div>WEIGHT</div><div />
+          <div /><div>NAME / SYMBOL</div>
+          <div style={numCell}>QTY</div><div style={numCell}>AVG</div><div style={numCell}>PRICE</div>
+          <div style={numCell}>VALUE</div><div style={numCell}>P&L</div><div style={numCell}>TODAY</div><div style={numCell}>WEIGHT</div><div />
         </div>
         {data.positions.length === 0 ? (
           <div style={{ padding: 32, textAlign: "center", color: "#4a6080", fontSize: 14 }}>
@@ -6145,7 +6198,7 @@ function BreakdownPanel({ title, rows }) {
       </div>
 
       {view === "bars" ? (
-        <div style={{ padding: "18px 22px" }}>
+        <div style={{ padding: "18px 22px", minHeight: 316, display: "flex", flexDirection: "column", justifyContent: "center" }}>
           {rows.map(b => (
             <div key={b.label} style={{ marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 6 }}>
@@ -6159,7 +6212,7 @@ function BreakdownPanel({ title, rows }) {
           ))}
         </div>
       ) : (
-        <div style={{ padding: "18px 22px" }}>
+        <div style={{ padding: "18px 22px", minHeight: 280 }}>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={rows} dataKey="pct" nameKey="label" cx="50%" cy="50%"

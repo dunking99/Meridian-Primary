@@ -284,12 +284,13 @@ const routes = {
 
     if (existing && !body.allowDuplicate) {
       run(`UPDATE holdings SET qty = ?, avg_price = ?, sector = ?, geography = ?,
-           asset_class = ?, target_pct = ?, thesis = ?, name = ?, link = ?, isin = ? WHERE id = ?`,
+           asset_class = ?, target_pct = ?, thesis = ?, name = ?, link = ?, isin = ?, exchange = ? WHERE id = ?`,
           body.qty ?? existing.qty, body.avgPrice ?? existing.avg_price,
           body.sector ?? existing.sector, body.geography ?? existing.geography,
           body.assetClass ?? existing.asset_class, body.targetPct ?? existing.target_pct,
           body.thesis ?? existing.thesis, body.name ?? existing.name,
-          body.link ?? existing.link, body.isin ?? existing.isin, existing.id);
+          body.link ?? existing.link, body.isin ?? existing.isin,
+          body.exchange ?? existing.exchange, existing.id);
       return {
         ok: true, action: 'updated', id: existing.id,
         message: `${symbol} already existed in ${existing.wrapper}/${existing.account} — updated rather than duplicated.`,
@@ -297,14 +298,26 @@ const routes = {
       };
     }
 
-    run(`INSERT INTO holdings (symbol, name, qty, avg_price, currency, sector, geography,
-         asset_class, account, wrapper, acc_dist, link, target_pct, thesis, isin, added_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    const { lastInsertRowid } = run(`INSERT INTO holdings (symbol, name, qty, avg_price, currency, sector, geography,
+         asset_class, account, wrapper, acc_dist, link, target_pct, thesis, isin, exchange, added_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         symbol, body.name ?? null, body.qty ?? 0, body.avgPrice ?? 0,
         body.currency ?? 'GBP', body.sector ?? null, body.geography ?? null,
         body.assetClass ?? 'Equity', body.account ?? 'Main', body.wrapper ?? 'ISA',
         body.accDist ?? null, body.link ?? null, body.targetPct ?? null,
-        body.thesis ?? null, body.isin ?? null, Date.now());
+        body.thesis ?? null, body.isin ?? null, body.exchange ?? null, Date.now());
+
+    // A raw ticker like "0P0000WN7J.L" means nothing to a human — resolve its
+    // real name and listing venue from Yahoo unless the caller already
+    // supplied one, same "fill in what the user didn't have to type" spirit
+    // as the auto-sync below.
+    if (!body.name) {
+      const resolved = await yahoo.resolveNameAndExchange(symbol);
+      if (resolved.name || resolved.exchange) {
+        run('UPDATE holdings SET name = COALESCE(?, name), exchange = COALESCE(?, exchange) WHERE id = ?',
+            resolved.name ?? null, resolved.exchange ?? null, lastInsertRowid);
+      }
+    }
 
     // Auto-sync history if we have none. Without this a new holding shows a
     // live price but is invisible to Risk, Optimiser and Backtest until a
@@ -351,7 +364,8 @@ const routes = {
     }
     const fields = { qty: 'qty', avgPrice: 'avg_price', sector: 'sector', geography: 'geography',
                      assetClass: 'asset_class', account: 'account', wrapper: 'wrapper',
-                     targetPct: 'target_pct', thesis: 'thesis', name: 'name', link: 'link', isin: 'isin' };
+                     targetPct: 'target_pct', thesis: 'thesis', name: 'name', link: 'link', isin: 'isin',
+                     exchange: 'exchange' };
     for (const [k, col] of Object.entries(fields)) {
       if (body[k] !== undefined) run(`UPDATE holdings SET ${col} = ? WHERE id = ?`, body[k], body.id);
     }
@@ -359,6 +373,33 @@ const routes = {
   },
 
   'DELETE /holdings': q => { run('DELETE FROM holdings WHERE id = ?', Number(q.id)); return { ok: true }; },
+
+  // Backfills name + exchange for existing holdings — the same lookup a new
+  // holding gets automatically on POST /holdings, run retroactively. Scope
+  // with body.symbols to target specific rows (e.g. after fixing bad data);
+  // omit it to sweep everything with a missing name; body.force also
+  // re-resolves rows that already have a name, e.g. after a corporate rename.
+  'POST /holdings/refresh-names': async body => {
+    const targets = body?.symbols?.length
+      ? all(`SELECT DISTINCT symbol FROM holdings WHERE symbol IN (${body.symbols.map(() => '?').join(',')})`, ...body.symbols.map(s => String(s).toUpperCase()))
+      : body?.force
+        ? all('SELECT DISTINCT symbol FROM holdings')
+        : all('SELECT DISTINCT symbol FROM holdings WHERE name IS NULL OR exchange IS NULL');
+    const symbols = targets.map(r => r.symbol);
+    if (!symbols.length) return { ok: true, resolved: 0, message: 'Nothing to resolve.' };
+
+    const resolved = await yahoo.resolveNamesAndExchanges(symbols);
+    let updated = 0;
+    const failed = [];
+    for (const symbol of symbols) {
+      const r = resolved[symbol];
+      if (!r || (!r.name && !r.exchange)) { failed.push(symbol); continue; }
+      run('UPDATE holdings SET name = COALESCE(?, name), exchange = COALESCE(?, exchange) WHERE symbol = ?',
+          r.name ?? null, r.exchange ?? null, symbol);
+      updated++;
+    }
+    return { ok: true, resolved: updated, failed, holdings: pf.listHoldings() };
+  },
 
   'POST /cash': body => {
     run(`INSERT INTO cash (account, wrapper, currency, amount, updated_at) VALUES (?,?,?,?,?)`,
