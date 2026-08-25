@@ -72,53 +72,6 @@ async function callAI(prompt, maxTokens = 600) {
 // Degrades gracefully: partial data lowers confidence,
 // no data returns a neutral "awaiting data" state.
 // ============================================================
-function computeRegime(prices) {
-  const vix = prices?.["^VIX"]?.price;
-  const spx = prices?.["^GSPC"];
-  const spxDay = spx?.changePct;
-  const spxWeek = spx?.weekChangePct;
-
-  if (vix == null && spxDay == null) {
-    return { label: "AWAITING DATA", color: "#7a8ba0", confidence: 0,
-      rationale: "Live market data not yet loaded — start the price proxy to populate.",
-      subLabel: "No Signal" };
-  }
-
-  let score = 0;
-  const notes = [];
-
-  if (vix != null) {
-    if (vix < 14)      { score += 2; notes.push(`VIX ${vix.toFixed(1)} (calm)`); }
-    else if (vix < 18) { score += 1; notes.push(`VIX ${vix.toFixed(1)} (normal)`); }
-    else if (vix < 24) { score -= 1; notes.push(`VIX ${vix.toFixed(1)} (elevated)`); }
-    else               { score -= 2; notes.push(`VIX ${vix.toFixed(1)} (stressed)`); }
-  }
-
-  if (spxWeek != null) {
-    const s = (spxWeek >= 0 ? "+" : "") + spxWeek.toFixed(1);
-    if (spxWeek > 1.5)       { score += 2; notes.push(`S&P ${s}% on week`); }
-    else if (spxWeek > 0)    { score += 1; notes.push(`S&P ${s}% on week`); }
-    else if (spxWeek > -1.5) { score -= 1; notes.push(`S&P ${s}% on week`); }
-    else                     { score -= 2; notes.push(`S&P ${s}% on week`); }
-  } else if (spxDay != null) {
-    const s = (spxDay >= 0 ? "+" : "") + spxDay.toFixed(1);
-    if (spxDay >= 0) { score += 1; notes.push(`S&P ${s}% today`); }
-    else             { score -= 1; notes.push(`S&P ${s}% today`); }
-  }
-
-  let label, color, subLabel;
-  if (score >= 3)       { label = "RISK-ON / TRENDING";   color = "#00d4aa"; subLabel = "Constructive Tape"; }
-  else if (score >= 1)  { label = "MILDLY RISK-ON";       color = "#4ade80"; subLabel = "Grinding Higher"; }
-  else if (score >= -1) { label = "CHOPPY / MIXED";       color = "#fbbf24"; subLabel = "No Clear Edge"; }
-  else if (score >= -3) { label = "RISK-OFF / DEFENSIVE"; color = "#f87171"; subLabel = "Caution Warranted"; }
-  else                  { label = "RISK-OFF / STRESSED";  color = "#ff4757"; subLabel = "Elevated Stress"; }
-
-  const signals = (vix != null ? 1 : 0) + ((spxWeek != null || spxDay != null) ? 1 : 0);
-  const confidence = Math.min(88, 40 + Math.abs(score) * 10 + signals * 4);
-  const rationale = notes.join(", ");
-
-  return { label, color, confidence, rationale, subLabel };
-}
 
 
 // ============================================================
@@ -155,7 +108,7 @@ const DISPLAY_NAMES = {
 };
 
 const NAV_ITEMS = [
-  { id: "dashboard", label: "Dashboard", icon: "⬡" },
+  { id: "changed", label: "What Changed", icon: "⬡" },
   { id: "risk", label: "Risk", icon: "◉" },
   { id: "macro", label: "Macro", icon: "◈" },
   { id: "research", label: "Research", icon: "◎" },
@@ -168,37 +121,9 @@ const NAV_ITEMS = [
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
-const MOCK_MOVERS = [
-  { symbol: "NVDA", name: "NVIDIA Corp", change: 4.82, changeAmt: 42.18, price: 914.30, volume: "89.2M", reason: "AI chip demand upgrade" },
-  { symbol: "TSLA", name: "Tesla Inc", change: -3.21, changeAmt: -6.84, price: 206.15, volume: "112.4M", reason: "Delivery miss concerns" },
-  { symbol: "META", name: "Meta Platforms", change: 2.94, changeAmt: 15.22, price: 533.18, volume: "22.1M", reason: "Ad revenue beats" },
-  { symbol: "AAPL", name: "Apple Inc", change: -1.18, changeAmt: -2.14, price: 179.44, volume: "45.7M", reason: "iPhone demand weakness" },
-  { symbol: "AMD", name: "Advanced Micro", change: 3.67, changeAmt: 7.92, price: 223.84, volume: "38.9M", reason: "Data center expansion" },
-  { symbol: "AMZN", name: "Amazon.com", change: 1.89, changeAmt: 3.62, price: 195.22, volume: "28.3M", reason: "AWS growth outlook" },
-];
 
-const MOCK_CATALYSTS = [
-  { time: "08:30", type: "macro", importance: "high", title: "Non-Farm Payrolls", detail: "Est: 185K | Prev: 199K", assets: ["USD", "SPY", "Gold"] },
-  { time: "10:00", type: "macro", importance: "high", title: "ISM Manufacturing PMI", detail: "Est: 48.4 | Prev: 47.8", assets: ["USD", "IWM"] },
-  { time: "14:00", type: "fed", importance: "high", title: "Fed Governor Waller speaks", detail: "Monetary policy outlook", assets: ["USD", "Yields", "SPY"] },
-  { time: "After Close", type: "earnings", importance: "medium", title: "COST Earnings", detail: "EPS Est: $3.71", assets: ["COST", "XRT"] },
-  { time: "After Close", type: "earnings", importance: "medium", title: "LULU Earnings", detail: "EPS Est: $4.25", assets: ["LULU", "XLY"] },
-];
 
-const PORTFOLIO_ALERTS = [
-  { symbol: "NVDA", type: "news", message: "Breaking: AI chip export restrictions eased — direct catalyst", severity: "high" },
-  { symbol: "GLD", type: "level", message: "Approaching 52-week high resistance at $185.40", severity: "medium" },
-  { symbol: "AAPL", type: "earnings", message: "Earnings in 6 days — implied move ±4.2%", severity: "medium" },
-  { symbol: "TSLA", type: "concentration", message: "Position now 18.4% of portfolio — above 15% threshold", severity: "high" },
-];
 
-const REGIME_INDICATORS = {
-  label: "RISK-ON / TRENDING",
-  color: "#00d4aa",
-  confidence: 72,
-  rationale: "Breadth expanding, VIX compressing, momentum leadership intact",
-  subLabel: "Earnings-Heavy Week",
-};
 
 // ── MACRO PAGE DATA ──────────────────────────────────────────
 const MACRO_CALENDAR_EVENTS = [
@@ -516,60 +441,13 @@ function TickerTape({ prices, feed }) {
   );
 }
 
-function MarketCard({ symbol, prices, size = "normal" }) {
-  const d = prices[symbol];
-  if (!d) return null;
-  const up = d.changePct >= 0;
-  const isVIX = symbol === "^VIX";
-  const upColor = isVIX ? "#ff4757" : "#00d4aa";
-  const downColor = isVIX ? "#00d4aa" : "#ff4757";
-  const color = up ? upColor : downColor;
-  const weekUp = d.weekChangePct >= 0;
-  const weekColor = isVIX ? (weekUp ? "#ff4757" : "#00d4aa") : (weekUp ? "#00d4aa" : "#ff4757");
 
-  return (
-    <div style={{
-      background: "#0d1117",
-      border: `1px solid ${color}22`,
-      borderTop: `2px solid ${color}`,
-      borderRadius: 6,
-      padding: size === "large" ? "14px 16px" : "10px 12px",
-      minWidth: size === "large" ? 140 : 110,
-      flex: 1,
-      position: "relative",
-      overflow: "hidden",
-    }}>
-      <div style={{
-        position: "absolute", top: 0, right: 0, bottom: 0,
-        width: "40%",
-        background: `linear-gradient(to left, ${color}08, transparent)`,
-      }} />
-      <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", marginBottom: 4, letterSpacing: 1 }}>
-        {DISPLAY_NAMES[symbol]}
-      </div>
-      <div style={{ fontSize: size === "large" ? 20 : 15, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>
-        {formatPrice(d.price, symbol)}
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 3, alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <span style={{ fontSize: 8, color: "#3a4558", fontFamily: "monospace" }}>1D</span>
-          <span style={{ fontSize: 11, color, fontFamily: "monospace" }}>{formatChange(d.changePct)}</span>
-        </div>
-        {d.weekChangePct !== null && d.weekChangePct !== undefined && (
-          <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-            <span style={{ fontSize: 8, color: "#3a4558", fontFamily: "monospace" }}>1W</span>
-            <span style={{ fontSize: 11, color: weekColor, fontFamily: "monospace" }}>{formatChange(d.weekChangePct)}</span>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FearGreedGauge({ data }) {
+function FearGreedGauge({ data, tried = false }) {
+  // Once a fetch has been attempted and come back empty, this is unavailable —
+  // not still loading. Sitting on a spinner forever is its own small lie.
   if (!data || !data.score) return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 120, color: "#3a4558", fontSize: 11, fontFamily: "monospace" }}>
-      LOADING FEAR & GREED...
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center", justifyContent: "center", height: 120, color: "#3a4558", fontSize: 11, fontFamily: "monospace" }}>
+      {tried ? <><NoData reason="CNN Fear & Greed could not be reached" /><span>SOURCE UNREACHABLE</span></> : "LOADING FEAR & GREED..."}
     </div>
   );
 
@@ -658,148 +536,9 @@ function FearGreedGauge({ data }) {
   );
 }
 
-function RegimeBadge({ regime }) {
-  return (
-    <div style={{
-      background: `${regime.color}15`,
-      border: `1px solid ${regime.color}40`,
-      borderRadius: 6,
-      padding: "10px 16px",
-      display: "flex",
-      alignItems: "center",
-      gap: 12,
-    }}>
-      <div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: regime.color, boxShadow: `0 0 6px ${regime.color}` }} />
-          <span style={{ color: regime.color, fontFamily: "monospace", fontWeight: 700, fontSize: 12, letterSpacing: 1.5 }}>
-            {regime.label}
-          </span>
-          <span style={{
-            background: `${regime.color}20`,
-            color: regime.color,
-            fontSize: 10,
-            padding: "2px 6px",
-            borderRadius: 3,
-            fontFamily: "monospace",
-          }}>
-            {regime.confidence}% CONF
-          </span>
-          <span style={{
-            background: "#1a2535",
-            color: "#7a8ba0",
-            fontSize: 10,
-            padding: "2px 6px",
-            borderRadius: 3,
-            fontFamily: "monospace",
-          }}>
-            {regime.subLabel}
-          </span>
-        </div>
-        <div style={{ fontSize: 11, color: "#7a8ba0" }}>{regime.rationale}</div>
-      </div>
-    </div>
-  );
-}
 
-function MoverRow({ mover, i }) {
-  const up = mover.change >= 0;
-  return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      padding: "8px 12px",
-      borderBottom: "1px solid #0f1420",
-      gap: 12,
-      background: i % 2 === 0 ? "transparent" : "#0a0d14",
-    }}>
-      <div style={{ width: 52 }}>
-        <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#c8d6e8", fontSize: 13 }}>{mover.symbol}</div>
-        <div style={{ fontSize: 10, color: "#4a6080" }}>{mover.name}</div>
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 11, color: "#7a8ba0" }}>{mover.reason}</div>
-        <div style={{ fontSize: 10, color: "#3a4558", marginTop: 2 }}>Vol: {mover.volume}</div>
-      </div>
-      <div style={{ textAlign: "right" }}>
-        <div style={{ fontFamily: "monospace", color: "#c8d6e8", fontSize: 13 }}>${mover.price.toFixed(2)}</div>
-        <div style={{ fontFamily: "monospace", color: up ? "#00d4aa" : "#ff4757", fontSize: 12 }}>
-          {up ? "+" : ""}{mover.change.toFixed(2)}%
-        </div>
-      </div>
-    </div>
-  );
-}
 
-function CatalystRow({ catalyst }) {
-  const colors = { high: "#ff4757", medium: "#ffa502", low: "#4a6080" };
-  const typeColors = { macro: "#3d8bff", fed: "#a855f7", earnings: "#00d4aa" };
-  const color = colors[catalyst.importance];
-  const tColor = typeColors[catalyst.type] || "#4a6080";
 
-  return (
-    <div style={{
-      display: "flex",
-      alignItems: "flex-start",
-      padding: "8px 12px",
-      borderBottom: "1px solid #0f1420",
-      gap: 10,
-    }}>
-      <div style={{ minWidth: 70, fontFamily: "monospace", fontSize: 11, color: "#4a6080", paddingTop: 2 }}>
-        {catalyst.time}
-      </div>
-      <div style={{
-        minWidth: 6, width: 6, height: 6, borderRadius: "50%",
-        background: color, marginTop: 5, boxShadow: `0 0 4px ${color}`,
-      }} />
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-          <span style={{
-            fontSize: 9, background: `${tColor}20`, color: tColor,
-            padding: "1px 5px", borderRadius: 2, fontFamily: "monospace", letterSpacing: 0.5,
-          }}>
-            {catalyst.type.toUpperCase()}
-          </span>
-          <span style={{ fontSize: 12, color: "#c8d6e8", fontWeight: 600 }}>{catalyst.title}</span>
-        </div>
-        <div style={{ fontSize: 11, color: "#7a8ba0" }}>{catalyst.detail}</div>
-        <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-          {catalyst.assets.map(a => (
-            <span key={a} style={{
-              fontSize: 9, background: "#1a2535", color: "#4a6080",
-              padding: "1px 5px", borderRadius: 2, fontFamily: "monospace",
-            }}>{a}</span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AlertRow({ alert }) {
-  const colors = { high: "#ff4757", medium: "#ffa502" };
-  const typeIcons = { news: "◎", level: "◈", earnings: "▣", concentration: "⚠" };
-  const color = colors[alert.severity] || "#4a6080";
-
-  return (
-    <div style={{
-      display: "flex",
-      alignItems: "flex-start",
-      padding: "8px 12px",
-      borderBottom: "1px solid #0f1420",
-      gap: 10,
-      borderLeft: `2px solid ${color}`,
-    }}>
-      <span style={{ color, fontSize: 12, marginTop: 1 }}>{typeIcons[alert.type]}</span>
-      <div>
-        <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#c8d6e8", fontSize: 12, marginRight: 6 }}>
-          {alert.symbol}
-        </span>
-        <span style={{ fontSize: 11, color: "#7a8ba0" }}>{alert.message}</span>
-      </div>
-    </div>
-  );
-}
 
 function SectionHeader({ title, subtitle, action, onAction, extra }) {
   return (
@@ -853,305 +592,364 @@ function Panel({ children, style = {} }) {
 // DASHBOARD PAGE
 // ============================================================
 
-function DashboardPage({ prices, pulseCount, poll, feed }) {
-  const [aiBrief, setAiBrief] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [briefGenerated, setBriefGenerated] = useState(false);
-  const [activeMoversTab, setActiveMoversTab] = useState("gainers");
-  const [marketStatus, setMarketStatus] = useState({ lse: {}, nyse: {} });
-  const [fearGreed, setFearGreed] = useState(null);
+// ============================================================
+// WHAT CHANGED — the front page
+//
+// This replaced a dashboard whose movers, alerts, sector performance, market
+// internals and catalysts were all hardcoded constants. Rather than sourcing
+// the same panels for real — an index level and a sector table being things
+// any free site shows better — the page now answers the one question those
+// sites cannot: what is different, measured against this universe's own
+// history.
+//
+// Everything here comes from GET /changes, GET /leadership and
+// GET /relationships, all computed locally from stored daily bars. The page is
+// designed to be able to say "nothing happened", because most days nothing
+// does, and a front page that finds a headline daily is one you stop reading.
+// ============================================================
 
-  useEffect(() => {
-    fetchFearAndGreed().then(d => { if (d && d.score) setFearGreed(d); });
-    const t = setInterval(() => fetchFearAndGreed().then(d => { if (d && d.score) setFearGreed(d); }), 300000);
-    return () => clearInterval(t);
-  }, []);
+const TONE_STYLE = {
+  quiet:    { color: "#4a6080", label: "QUIET" },
+  mild:     { color: "#7a8ba0", label: "MILD" },
+  isolated: { color: "#ffa502", label: "ISOLATED MOVES" },
+  broad:    { color: "#3d8bff", label: "BROAD MOVE" },
+};
 
-  useEffect(() => {
-    const tick = () => {
-      const now = new Date();
-      const utcH = now.getUTCHours();
-      const utcM = now.getUTCMinutes();
-      const utcMins = utcH * 60 + utcM;
-      const day = now.getUTCDay();
-      const isWeekday = day >= 1 && day <= 5;
-      const lseOpen = 8 * 60, lseClose = 16 * 60 + 30;
-      const nyseOpen = 14 * 60 + 30, nyseClose = 21 * 60;
-      const lseIsOpen = isWeekday && utcMins >= lseOpen && utcMins < lseClose;
-      const nyseIsOpen = isWeekday && utcMins >= nyseOpen && utcMins < nyseClose;
-      const minsUntil = (target) => {
-        let diff = target - utcMins;
-        if (diff < 0) diff += 24 * 60;
-        return `${Math.floor(diff / 60)}h ${diff % 60}m`;
-      };
-      setMarketStatus({
-        lse: { open: lseIsOpen, label: lseIsOpen ? "OPEN" : "CLOSED", next: lseIsOpen ? `Closes ${minsUntil(lseClose)}` : `Opens ${minsUntil(lseOpen)}` },
-        nyse: { open: nyseIsOpen, label: nyseIsOpen ? "OPEN" : "CLOSED", next: nyseIsOpen ? `Closes ${minsUntil(nyseClose)}` : `Opens ${minsUntil(nyseOpen)}` },
-      });
-    };
-    tick();
-    const t = setInterval(tick, 30000);
-    return () => clearInterval(t);
-  }, []);
+const pct = (v, dp = 1) => v == null ? null : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(dp)}%`;
 
-  const gainers = [...MOCK_MOVERS].filter(m => m.change > 0).sort((a, b) => b.change - a.change);
-  const losers = [...MOCK_MOVERS].filter(m => m.change < 0).sort((a, b) => a.change - b.change);
-  const movers = activeMoversTab === "gainers" ? gainers : losers;
+/** 1st, 2nd, 3rd, 4th — including the 11-13 exception. */
+function ordinal(n) {
+  const r100 = n % 100, r10 = n % 10;
+  const suffix = (r100 >= 11 && r100 <= 13) ? "th"
+    : r10 === 1 ? "st" : r10 === 2 ? "nd" : r10 === 3 ? "rd" : "th";
+  return `${n}${suffix}`;
+}
+const pctPlain = (v, dp = 0) => v == null ? null : `${(v * 100).toFixed(dp)}%`;
 
+/** Colour a signed value, with an explicit neutral for exactly-zero. */
+function signColor(v, { invert = false } = {}) {
+  if (v == null) return "#3a4558";
+  if (v === 0) return "#7a8ba0";
+  const up = v > 0;
+  return (up !== invert) ? "#00d4aa" : "#ff4757";
+}
+
+/**
+ * One instrument that moved unusually.
+ *
+ * The sigma figure leads because it is the comparable number: a 1.9% day in a
+ * world equity fund and a 0.4% day in a short bond fund can be the same event
+ * in their own terms, and only the sigma says so.
+ */
+function ChangeRow({ n }) {
+  const c = signColor(n.ret1d);
+  const sigma = Math.abs(n.retZ);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-      {/* Regime + countdown bar */}
-      <div style={{ display: "flex", gap: 12, alignItems: "stretch" }}>
-        <div style={{ flex: 1 }}>
-          <RegimeBadge regime={computeRegime(prices)} />
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "minmax(90px,1.4fr) 74px 62px 1fr",
+      gap: 10, alignItems: "center",
+      padding: "8px 12px", borderBottom: "1px solid #10151f",
+    }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontFamily: "monospace", fontSize: 12, color: "#c8d6e8", fontWeight: 700,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {n.symbol}
         </div>
-        <div style={{
-          background: "#0d1117",
-          border: "1px solid #1a1f2e",
-          borderRadius: 6,
-          padding: "10px 16px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          minWidth: 160,
-        }}>
-          <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 6 }}>MARKET STATUS</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 5, width: "100%" }}>
-            {[{ key: "lse", label: "LSE" }, { key: "nyse", label: "NYSE" }].map(({ key, label }) => {
-              const s = marketStatus[key] || {};
-              const color = s.open ? "#00d4aa" : "#ff4757";
-              return (
-                <div key={key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 11, color: "#7a8ba0" }}>{label}</span>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color }}>{s.label}</span>
-                    <div style={{ fontSize: 9, color: "#4a6080" }}>{s.next}</div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-        <div style={{
-          background: "#0d1117",
-          border: "1px solid #1a1f2e",
-          borderRadius: 6,
-          padding: "10px 16px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          minWidth: 120,
-        }}>
-          <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>
-            NEXT POLL
-          </div>
-          <PulseIndicator pulseCount={pulseCount} feed={feed} />
-          <button onClick={poll} style={{
-            marginTop: 6, background: "transparent", border: "1px solid #1a2535",
-            color: "#4a6080", fontSize: 9, padding: "2px 8px", borderRadius: 3,
-            cursor: "pointer", fontFamily: "monospace",
-          }}>REFRESH NOW</button>
+        <div style={{ fontSize: 9, color: "#3a4558" }}>
+          {n.pctRank != null ? `${pctPlain(n.pctRank)} of 1y range` : "range unknown"}
         </div>
       </div>
 
-      {/* Global snapshot grid */}
-      <div>
-        <div style={{ fontSize: 10, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1.5, marginBottom: 8 }}>
-          GLOBAL MARKET SNAPSHOT
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {/* US Indices */}
-          <div>
-            <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>US INDICES</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {TICKERS.usIndices.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-            </div>
-          </div>
-          {/* International Indices */}
-          <div>
-            <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>INTERNATIONAL INDICES</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {TICKERS.intIndices.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-            </div>
-          </div>
-          {/* Gold + VIX row */}
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 2 }}>
-              <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>GOLD</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {TICKERS.gold.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-              </div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>VOLATILITY</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {TICKERS.volatility.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-              </div>
-            </div>
-          </div>
-          {/* Energy */}
-          <div>
-            <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>ENERGY</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {TICKERS.energy.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-            </div>
-          </div>
-          {/* Currencies */}
-          <div>
-            <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>CURRENCIES</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              {TICKERS.forex.map(s => <MarketCard key={s} symbol={s} prices={prices} />)}
-            </div>
-          </div>
-        </div>
+      <div style={{ textAlign: "right", fontFamily: "monospace", fontSize: 13, color: c, fontWeight: 700 }}>
+        {pct(n.ret1d, 2)}
       </div>
 
-      {/* Main content grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+      {/* Sigma is the headline measure, so it gets its own emphasised column. */}
+      <div style={{ textAlign: "right", fontFamily: "monospace", fontSize: 12,
+                    color: sigma >= 2.5 ? "#ffa502" : sigma >= 2 ? "#c8d6e8" : "#7a8ba0" }}>
+        {sigma.toFixed(1)}σ
+      </div>
 
-        {/* Fear & Greed + AI Brief row */}
-        <Panel style={{ gridColumn: "1 / 2" }}>
-          <SectionHeader title="FEAR & GREED INDEX" subtitle="CNN Market Sentiment" />
-          <FearGreedGauge data={fearGreed} />
-        </Panel>
-
-        {/* AI Daily Brief */}
-        <Panel style={{ gridColumn: "2 / 4" }}>
-          <SectionHeader
-            title="AI DAILY BRIEF"
-            subtitle="Generate on demand"
-            action={aiLoading ? "GENERATING..." : "GENERATE BRIEF"}
-            onAction={() => fetchAIBrief(prices, setAiBrief, setAiLoading)}
-          />
-          <div style={{ padding: 14 }}>
-            {aiLoading ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{
-                  width: 16, height: 16, border: "2px solid #1a2535",
-                  borderTop: "2px solid #00d4aa", borderRadius: "50%",
-                  animation: "spin 0.8s linear infinite",
-                }} />
-                <span style={{ color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>
-                  Analysing market conditions...
-                </span>
-              </div>
-            ) : aiBrief ? (
-              <div style={{
-                fontSize: 12, lineHeight: 1.7, color: "#a0b4c8",
-                fontFamily: "'Georgia', serif",
-                borderLeft: "2px solid #00d4aa30",
-                paddingLeft: 12,
-              }}>
-                {aiBrief.split("\n\n").map((para, i) => (
-                  <p key={i} style={{ margin: "0 0 10px 0" }}>{para}</p>
-                ))}
-              </div>
-            ) : (
-              <div style={{ color: "#3a4558", fontSize: 12, fontFamily: "monospace" }}>
-                Click GENERATE BRIEF for an AI-powered market summary using live prices and current conditions.
-              </div>
-            )}
-          </div>
-        </Panel>
-
-        {/* Portfolio Alerts */}
-        <Panel>
-          <SectionHeader title="PORTFOLIO ALERTS" subtitle={`${PORTFOLIO_ALERTS.length} active`} />
-          {PORTFOLIO_ALERTS.map((alert, i) => <AlertRow key={i} alert={alert} />)}
-        </Panel>
-
-        {/* Pre-market Movers */}
-        <Panel>
-          <SectionHeader title="PRE-MARKET MOVERS" />
-          <div style={{ display: "flex", borderBottom: "1px solid #1a1f2e" }}>
-            {["gainers", "losers"].map(tab => (
-              <button key={tab} onClick={() => setActiveMoversTab(tab)} style={{
-                flex: 1, padding: "7px 0", background: "transparent",
-                border: "none", borderBottom: activeMoversTab === tab ? "2px solid #00d4aa" : "2px solid transparent",
-                color: activeMoversTab === tab ? "#00d4aa" : "#4a6080",
-                fontFamily: "monospace", fontSize: 11, cursor: "pointer", letterSpacing: 1,
-              }}>
-                {tab === "gainers" ? "▲ GAINERS" : "▼ LOSERS"}
-              </button>
-            ))}
-          </div>
-          {movers.map((m, i) => <MoverRow key={m.symbol} mover={m} i={i} />)}
-        </Panel>
-
-        {/* Sector Heatmap */}
-        <Panel>
-          <SectionHeader title="SECTOR PERFORMANCE" subtitle="Today" />
-          <div style={{ padding: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {[
-              { name: "Tech", val: 1.42 }, { name: "Energy", val: -0.82 },
-              { name: "Financials", val: 0.31 }, { name: "Healthcare", val: -0.14 },
-              { name: "Consumer Disc", val: 0.88 }, { name: "Industrials", val: 0.22 },
-              { name: "Materials", val: -0.55 }, { name: "Utilities", val: -0.33 },
-              { name: "Real Estate", val: -0.67 }, { name: "Comm Svcs", val: 1.12 },
-              { name: "Staples", val: 0.08 },
-            ].map(s => {
-              const up = s.val >= 0;
-              const intensity = Math.min(Math.abs(s.val) / 2, 1);
-              const bg = up
-                ? `rgba(0, 212, 170, ${0.08 + intensity * 0.22})`
-                : `rgba(255, 71, 87, ${0.08 + intensity * 0.22})`;
-              return (
-                <div key={s.name} style={{
-                  background: bg, border: `1px solid ${up ? "#00d4aa30" : "#ff475730"}`,
-                  borderRadius: 4, padding: "6px 10px", minWidth: 80, flex: "1 1 80px",
-                }}>
-                  <div style={{ fontSize: 10, color: "#7a8ba0" }}>{s.name}</div>
-                  <div style={{ fontFamily: "monospace", fontSize: 12, color: up ? "#00d4aa" : "#ff4757" }}>
-                    {up ? "+" : ""}{s.val}%
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Panel>
-
-        {/* Market Internals */}
-        <Panel>
-          <SectionHeader title="MARKET INTERNALS" subtitle="Breadth snapshot" />
-          <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-            {[
-              { label: "% S&P Above 200DMA", val: 68.4, good: true },
-              { label: "% S&P Above 50DMA", val: 54.2, good: true },
-              { label: "A/D Line", val: "+842", good: true, raw: true },
-              { label: "New 52W Highs", val: 87, good: true, raw: true },
-              { label: "New 52W Lows", val: 23, good: true, raw: true },
-              { label: "AAII Bull/Bear Spread", val: "+12.4%", good: true, raw: true },
-            ].map(item => (
-              <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 11, color: "#4a6080" }}>{item.label}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {!item.raw && (
-                    <div style={{ width: 60, height: 4, background: "#1a2535", borderRadius: 2, overflow: "hidden" }}>
-                      <div style={{ width: `${item.val}%`, height: "100%", background: item.good ? "#00d4aa" : "#ff4757", borderRadius: 2 }} />
-                    </div>
-                  )}
-                  <span style={{ fontFamily: "monospace", fontSize: 12, color: item.good ? "#00d4aa" : "#ff4757", minWidth: 50, textAlign: "right" }}>
-                    {item.raw ? item.val : `${item.val}%`}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-
-        {/* Today's Catalysts */}
-        <Panel>
-          <SectionHeader title="TODAY'S CATALYSTS" subtitle="High-impact only" />
-          {MOCK_CATALYSTS.map((c, i) => <CatalystRow key={i} catalyst={c} />)}
-        </Panel>
-
+      <div style={{ fontSize: 10, color: "#4a6080", display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        {n.dist200dma != null && (
+          <span title="Distance from its own 200-day average">
+            200d {pct(n.dist200dma, 0)}
+          </span>
+        )}
+        {n.volRatio != null && n.volRatio > 1.25 && (
+          <span style={{ color: "#ffa502" }} title="21-day volatility versus its own 252-day volatility">
+            vol ×{n.volRatio.toFixed(1)}
+          </span>
+        )}
+        {n.drawdown != null && n.drawdown < -0.1 && (
+          <span style={{ color: "#ff4757" }} title="Below its own trailing 1-year high">
+            dd {pct(n.drawdown, 0)}
+          </span>
+        )}
       </div>
     </div>
   );
 }
+
+/** A universe-level statistic shown with its own historical percentile. */
+function RegimeStat({ label, value, percentile, hint, invert }) {
+  const p = percentile;
+  // The percentile is the interpretation. 0.94 means "higher than 94% of the
+  // last year" — that is what makes a bare correlation figure legible.
+  const extreme = p != null && (p >= 0.9 || p <= 0.1);
+  return (
+    <div style={{ flex: 1, minWidth: 120, padding: "10px 12px", background: "#0b0f18",
+                  border: `1px solid ${extreme ? "#ffa50240" : "#141b28"}`, borderRadius: 5 }}>
+      <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>{label}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 17, fontWeight: 700, color: value == null ? "#3a4558" : "#c8d6e8", marginTop: 3 }}>
+        {value ?? <NoData reason={hint ?? "Not enough stored history"} />}
+      </div>
+      {p != null ? (
+        <div style={{ fontSize: 9, color: extreme ? "#ffa502" : "#3a4558", marginTop: 2 }}>
+          {ordinal(Math.round(p * 100))} pct of past year
+        </div>
+      ) : (
+        <div style={{ fontSize: 9, color: "#2a3548", marginTop: 2 }}>no percentile yet</div>
+      )}
+    </div>
+  );
+}
+
+function WhatChangedPage({ prices, pulseCount, poll, feed }) {
+  const [data, setData] = useState(null);
+  const [lead, setLead] = useState(null);
+  const [rel, setRel] = useState(null);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [fearGreed, setFearGreed] = useState(null);
+  const [fgTried, setFgTried] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const [c, l, r] = await Promise.all([
+        fetch(`${API}/changes?limit=14`).then(x => x.json()),
+        fetch(`${API}/leadership?window=21`).then(x => x.json()),
+        fetch(`${API}/relationships`).then(x => x.json()),
+      ]);
+      setData(c); setLead(l); setRel(r);
+    } catch {
+      setErr("Could not reach the Meridian API. Start it with: npm run server");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const get = () => fetchFearAndGreed().then(d => { setFearGreed(d); setFgTried(true); });
+    get();
+    const t = setInterval(get, 300000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (err) {
+    return (
+      <Panel>
+        <SectionHeader title="WHAT CHANGED" action="RETRY" onAction={load} />
+        <div style={{ padding: 20, color: "#ff4757", fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+      </Panel>
+    );
+  }
+
+  if (loading && !data) {
+    return (
+      <Panel>
+        <SectionHeader title="WHAT CHANGED" />
+        <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Reading the memory…</div>
+      </Panel>
+    );
+  }
+
+  // The memory is empty until history has been synced at least once. Say what
+  // to run rather than rendering an empty page that looks broken.
+  if (data && !data.available) {
+    return (
+      <Panel>
+        <SectionHeader title="WHAT CHANGED" subtitle="No memory yet" action="RETRY" onAction={load} />
+        <div style={{ padding: 20, fontSize: 12, color: "#7a8ba0", lineHeight: 1.8, fontFamily: "monospace" }}>
+          {data.reason}
+          <div style={{ marginTop: 12, color: "#4a6080" }}>
+            curl -X POST http://localhost:3001/sync
+          </div>
+        </div>
+      </Panel>
+    );
+  }
+
+  const tone = TONE_STYLE[data.verdict?.tone] ?? TONE_STYLE.mild;
+  const r = data.regime;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* The verdict. Allowed to say nothing happened. */}
+      <div style={{
+        background: "#0d1117", border: `1px solid ${tone.color}35`, borderRadius: 6,
+        padding: "14px 18px", display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap",
+      }}>
+        <div>
+          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1.5 }}>SESSION VERDICT</div>
+          <div style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: tone.color, letterSpacing: 1, marginTop: 3 }}>
+            {tone.label}
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 260, fontSize: 13, color: "#a0b4c8", lineHeight: 1.6 }}>
+          {data.verdict?.text}
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace" }}>SESSION</div>
+          <div style={{ fontFamily: "monospace", fontSize: 12, color: "#7a8ba0" }}>{data.date}</div>
+          <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace" }}>
+            {data.observed} instruments · vs {data.previousDate ?? "—"}
+          </div>
+        </div>
+        <PulseIndicator pulseCount={pulseCount} feed={feed} />
+      </div>
+
+      {/* Universe-level state, each figure with its own historical percentile. */}
+      <Panel>
+        <SectionHeader
+          title="UNIVERSE STATE"
+          subtitle={r ? `${r.nSymbols} instruments · derived from stored daily bars` : "not enough coverage"}
+          action="REFRESH" onAction={load}
+        />
+        <div style={{ padding: 12, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <RegimeStat label="ABOVE 50DMA" value={pctPlain(r?.breadth50)} percentile={r?.breadth50Pct}
+                      hint="Needs 50 bars per symbol" />
+          <RegimeStat label="ABOVE 200DMA" value={pctPlain(r?.breadth200)} percentile={r?.breadth200Pct}
+                      hint="Needs 200 bars per symbol" />
+          <RegimeStat label="DISPERSION" value={r?.dispersion != null ? (r.dispersion * 100).toFixed(2) + "%" : null}
+                      percentile={r?.dispersionPct}
+                      hint="Cross-sectional spread of same-day returns" />
+          <RegimeStat label="AVG CORRELATION" value={r?.avgCorr != null ? r.avgCorr.toFixed(2) : null}
+                      percentile={r?.avgCorrPct}
+                      hint="Mean pairwise 60-day correlation" />
+          <RegimeStat label="ADVANCING" value={pctPlain(r?.pctUp)} percentile={null} />
+          <RegimeStat label="2σ DAYS" value={pctPlain(r?.pctExtreme)} percentile={null}
+                      hint="Share of the universe with an unusual move" />
+        </div>
+        {r?.breadth50Streak > 1 && (
+          <div style={{ padding: "0 14px 12px", fontSize: 11, color: "#7a8ba0" }}>
+            Breadth has been {r.breadth50 >= 0.5 ? "above" : "below"} half for{" "}
+            <span style={{ color: "#c8d6e8", fontWeight: 700 }}>{r.breadth50Streak}</span> consecutive sessions.
+          </div>
+        )}
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 14, alignItems: "start" }}>
+
+        {/* Instruments that moved beyond their own normal range. */}
+        <Panel>
+          <SectionHeader
+            title="MOVED UNUSUALLY"
+            subtitle="Ranked by standard deviations against each instrument's own trailing year"
+          />
+          {data.notable.length === 0 ? (
+            <div style={{ padding: 20, fontSize: 12, color: "#4a6080", fontFamily: "monospace", lineHeight: 1.7 }}>
+              Nothing moved beyond 1.5σ of its own normal range.
+              <div style={{ color: "#2a3548", marginTop: 6 }}>
+                That is the expected result on most days.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{
+                display: "grid", gridTemplateColumns: "minmax(90px,1.4fr) 74px 62px 1fr",
+                gap: 10, padding: "6px 12px", borderBottom: "1px solid #1a1f2e",
+                fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1,
+              }}>
+                <span>INSTRUMENT</span>
+                <span style={{ textAlign: "right" }}>DAY</span>
+                <span style={{ textAlign: "right" }}>SIGMA</span>
+                <span style={{ textAlign: "right" }}>CONTEXT</span>
+              </div>
+              {data.notable.map(n => <ChangeRow key={n.symbol} n={n} />)}
+            </>
+          )}
+        </Panel>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+          {/* Leadership rotation — needs two windows, so no quote page has it. */}
+          <Panel>
+            <SectionHeader title="LEADERSHIP" subtitle="21 sessions, and how the ranking has rotated" />
+            {!lead?.available ? (
+              <div style={{ padding: 16 }}><NoData reason="Not enough stored history" /></div>
+            ) : (
+              <div style={{ padding: "6px 0" }}>
+                {lead.groups.map(g => (
+                  <div key={g.group} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "6px 14px", fontSize: 11,
+                  }}>
+                    <span style={{ flex: 1, color: "#7a8ba0", fontFamily: "monospace" }}>{g.group}</span>
+                    <span style={{ fontFamily: "monospace", color: signColor(g.ret), minWidth: 58, textAlign: "right" }}>
+                      {pct(g.ret, 2)}
+                    </span>
+                    {/* Rank movement is the rotation signal; flat means no change. */}
+                    <span style={{
+                      minWidth: 34, textAlign: "right", fontFamily: "monospace", fontSize: 10,
+                      color: g.rankChange == null ? "#2a3548" : g.rankChange > 0 ? "#00d4aa" : g.rankChange < 0 ? "#ff4757" : "#3a4558",
+                    }} title={g.priorRank != null ? `Ranked ${g.priorRank + 1} a month ago, ${g.rank + 1} now` : "No prior window"}>
+                      {g.rankChange == null ? "·" : g.rankChange === 0 ? "—" : `${g.rankChange > 0 ? "▲" : "▼"}${Math.abs(g.rankChange)}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          {/* Relationships that changed — the reason to keep history at all. */}
+          <Panel>
+            <SectionHeader title="RELATIONSHIPS" subtitle="60-day correlation vs the preceding 60" />
+            {!rel?.available ? (
+              <div style={{ padding: 16 }}><NoData reason="Needs 120 sessions of overlapping history" /></div>
+            ) : (
+              <div style={{ padding: "6px 0" }}>
+                {rel.pairs.slice(0, 6).map(p => (
+                  <div key={p.pair} style={{ padding: "6px 14px", fontSize: 11 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ flex: 1, color: "#7a8ba0", fontFamily: "monospace", fontSize: 10 }}>{p.pair}</span>
+                      <span style={{ fontFamily: "monospace", color: "#3a4558" }}>{p.previous.toFixed(2)}</span>
+                      <span style={{ color: "#2a3548" }}>→</span>
+                      <span style={{ fontFamily: "monospace", color: p.flipped ? "#ffa502" : "#c8d6e8", fontWeight: 700 }}>
+                        {p.now.toFixed(2)}
+                      </span>
+                    </div>
+                    {p.percentile != null && (p.percentile >= 0.9 || p.percentile <= 0.1) && (
+                      <div style={{ fontSize: 9, color: "#ffa502", marginTop: 1 }}>
+                        {ordinal(Math.round(p.percentile * 100))} percentile of the past year
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <Panel>
+            <SectionHeader title="FEAR & GREED" subtitle="CNN — external source" />
+            <FearGreedGauge data={fearGreed} tried={fgTried} />
+          </Panel>
+        </div>
+      </div>
+
+      {/* Provenance, stated rather than implied. */}
+      <div style={{ fontSize: 10, color: "#2a3548", fontFamily: "monospace", padding: "0 4px" }}>
+        {data.source} · Fear &amp; Greed from CNN. Live quotes polled {ageLabel(feed?.upstreamAt)}.
+      </div>
+    </div>
+  );
+}
+
 
 // ============================================================
 // MACRO & REGIME DASHBOARD PAGE
@@ -5967,7 +5765,7 @@ function SettingsPage({ onApiKeySet }) {
 }
 
 export default function TradingTerminal() {
-  const [activePage, setActivePage] = useState("dashboard");
+  const [activePage, setActivePage] = useState("changed");
   const { prices, feed, pulseCount, poll } = useMarketData();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("meridian_gemini_key") || GEMINI_API_KEY);
@@ -6096,8 +5894,8 @@ export default function TradingTerminal() {
 
         {/* Main content */}
         <div style={{ flex: 1, padding: 20, overflowY: "auto", animation: "fadeIn 0.3s ease", minWidth: 0 }}>
-          {activePage === "dashboard" && (
-            <DashboardPage prices={prices} pulseCount={pulseCount} poll={poll} feed={feed} />
+          {activePage === "changed" && (
+            <WhatChangedPage prices={prices} pulseCount={pulseCount} poll={poll} feed={feed} />
           )}
           {activePage === "risk" && (
             <RiskPage />

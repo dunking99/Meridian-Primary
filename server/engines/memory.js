@@ -449,6 +449,11 @@ export function whatChanged({ limit = 12, zThreshold = 1.5 } = {}) {
     dispersionPct: percentileOf('regime_observations', 'dispersion', today.dispersion),
     avgCorr: today.avg_corr,
     avgCorrPct: percentileOf('regime_observations', 'avg_corr', today.avg_corr),
+    // Breadth against its own year matters more than the raw level: 54% above
+    // the 50-day sounds unremarkable and can still be the narrowest this
+    // universe has been in twelve months.
+    breadth50Pct: percentileOf('regime_observations', 'breadth_50', today.breadth_50),
+    breadth200Pct: percentileOf('regime_observations', 'breadth_200', today.breadth_200),
     pctUp: today.pct_up,
     pctExtreme: today.pct_extreme,
     breadth50Streak: today.breadth_50 != null
