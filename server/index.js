@@ -712,7 +712,22 @@ const routes = {
     const r = await edgar.syncInsiders(q.symbol);
     return { ...r, filings: edgar.getInsiders(q.symbol) };
   },
-  'GET /filings': async q => await edgar.fetchFilings(q.symbol, { type: q.type ?? '4', limit: 25 }),
+  // type=all lists every recent form, not only Form 4 — 8-K, 10-K and 10-Q are
+  // the ones worth seeing and were previously unreachable through this route.
+  'GET /filings': async q => await edgar.fetchFilings(q.symbol, {
+    type: q.type === 'all' ? null : (q.type ?? '4'),
+    limit: Math.min(Number(q.limit) || 25, 100),
+  }),
+
+  'GET /insiders/summary': q => edgar.insiderSummary(q.symbol, { days: Number(q.days) || 180 }),
+
+  // Reported annual fundamentals straight from the filed XBRL, plus the trends
+  // that need several years to exist at all.
+  'GET /fundamentals': async q => {
+    const facts = await edgar.fetchCompanyFacts(q.symbol, { years: Number(q.years) || 10 });
+    if (facts.error) return facts;
+    return { ...facts, trends: edgar.deriveTrends(facts) };
+  },
 
   // ── FT fund NAV fallback (for funds Yahoo has no data for) ──
   'GET /fund-nav': async q => {

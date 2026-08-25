@@ -3306,47 +3306,263 @@ function ResearchNewsTab({ symbol, name, newsData, newsLoading }) {
   );
 }
 
-function ResearchFilingsTab({ symbol, filingsData, insidersData, filingsLoading }) {
-  if (filingsLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading SEC data…</div></Panel>;
-  if (filingsData?.error) {
-    return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>{filingsData.error} SEC EDGAR only covers US-listed tickers, so this is expected for LSE and other non-US symbols.</div></Panel>;
+const FORM_COLORS = {
+  "10-K": "#00d4aa", "10-Q": "#4ade80", "8-K": "#ffa502",
+  "4": "#3d8bff", "DEF 14A": "#a855f7", "S-1": "#ff7043",
+};
+
+/** Compact money — EDGAR reports in full units, which are unreadable raw. */
+function edgarMoney(v) {
+  if (v == null) return null;
+  const abs = Math.abs(v);
+  const sign = v < 0 ? "-" : "";
+  if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}K`;
+  return `${sign}${abs.toFixed(2)}`;
+}
+
+/** A concept's reported annual history, as a sparkline-style bar row. */
+function FactRow({ concept, unit }) {
+  const vals = concept.series.map(s => s.value);
+  const max = Math.max(...vals.map(Math.abs), 1);
+  const isPerShare = unit === "USD/shares";
+  return (
+    <div style={{ padding: "8px 16px", borderBottom: "1px solid #12161f" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 }}>
+        <span style={{ fontSize: 11, color: "#7a8ba0" }}>{concept.label}</span>
+        <span style={{ fontSize: 11, fontFamily: "monospace", color: "#c8d6e8" }}>
+          {isPerShare ? `$${vals[vals.length - 1]?.toFixed(2)}` : edgarMoney(vals[vals.length - 1])}
+        </span>
+      </div>
+      {/* Zero baseline kept deliberately. Truncating the axis would make a
+          steady 8% grower look like a rocket, which is the standard way this
+          kind of chart misleads. Height instead of truncation gives the shape
+          room to read honestly. */}
+      <div style={{ display: "flex", gap: 3, alignItems: "flex-end", height: 46 }}>
+        {concept.series.map(s => (
+          <div key={s.fy} title={`FY${s.fy}: ${isPerShare ? `$${s.value.toFixed(2)}` : edgarMoney(s.value)}`}
+               style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}>
+            <div style={{
+              height: `${Math.max(3, (Math.abs(s.value) / max) * 100)}%`,
+              background: s.value < 0 ? "#ff4757" : "#3d8bff55",
+              borderTop: `1px solid ${s.value < 0 ? "#ff4757" : "#3d8bff"}`,
+              borderRadius: 1,
+            }} />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 3, marginTop: 2 }}>
+        {concept.series.map(s => (
+          <span key={s.fy} style={{ flex: 1, fontSize: 8, color: "#2a3548", textAlign: "center", fontFamily: "monospace" }}>
+            {String(s.fy).slice(2)}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ResearchFilingsTab({ symbol, filingsData, insidersData, fundamentals, filingsLoading }) {
+  const [formFilter, setFormFilter] = useState("all");
+
+  if (filingsLoading) {
+    return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading SEC data…</div></Panel>;
   }
+  if (filingsData?.error) {
+    return (
+      <Panel>
+        <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+          {filingsData.error}
+          <div style={{ color: "#2a3548", marginTop: 6 }}>
+            SEC EDGAR covers US registrants only, so this is expected for LSE-listed and other non-US symbols.
+          </div>
+        </div>
+      </Panel>
+    );
+  }
+
   const filings = filingsData?.filings ?? [];
   const insiders = insidersData?.filings ?? [];
+  const summary = insidersData?.summary;
+  const facts = fundamentals && !fundamentals.error ? fundamentals : null;
+  const trends = facts?.trends;
+
+  const forms = [...new Set(filings.map(f => f.form))].slice(0, 8);
+  const shown = formFilter === "all" ? filings : filings.filter(f => f.form === formFilter);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* Reported fundamentals — the part of EDGAR that needed history. */}
+      {facts && (
+        <>
+          {trends?.available && (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {[
+                ["REVENUE CAGR", trends.revenueCagr],
+                ["NET INCOME CAGR", trends.netIncomeCagr],
+                ["EPS CAGR", trends.epsCagr],
+              ].map(([label, v]) => (
+                <div key={label} style={{ flex: 1, minWidth: 150, background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 6, padding: "12px 16px" }}>
+                  <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>{label}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "monospace", marginTop: 3, color: v == null ? "#3a4558" : v >= 0 ? "#00d4aa" : "#ff4757" }}>
+                    {v == null ? <NoData reason="Not enough reported years" /> : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`}
+                  </div>
+                  <div style={{ fontSize: 9, color: "#2a3548", marginTop: 2 }}>
+                    {trends.years ? `over ${trends.years} reported year${trends.years === 1 ? "" : "s"}` : "annualised"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Dilution: invisible on a price chart, and the single most useful
+              thing in this dataset for someone holding for years. */}
+          {trends?.shareChange && (
+            <Panel>
+              <SectionHeader title="SHARE COUNT" subtitle="Diluted weighted average, as reported" />
+              <div style={{ padding: 14, fontSize: 12, color: trends.shareChange.changePct > 0 ? "#ffa502" : "#00d4aa", lineHeight: 1.6 }}>
+                {trends.shareChange.note}
+              </div>
+            </Panel>
+          )}
+
+          <Panel>
+            <SectionHeader
+              title="REPORTED FUNDAMENTALS"
+              subtitle={`${facts.company ?? symbol} · from filed XBRL, not a vendor summary`}
+            />
+            {Object.entries(facts.concepts).map(([id, c]) => (
+              <FactRow key={id} concept={c} unit={c.unit} />
+            ))}
+            {facts.missing?.length > 0 && (
+              <div style={{ padding: "10px 16px", fontSize: 10, color: "#2a3548", fontFamily: "monospace" }}>
+                Not reported under a recognised tag: {facts.missing.join(", ")}
+              </div>
+            )}
+            <div style={{ padding: "0 16px 12px", fontSize: 10, color: "#2a3548" }}>{facts.source}</div>
+          </Panel>
+        </>
+      )}
+
+      {/* Insider activity, with the open-market signal separated from the noise. */}
       <Panel>
-        <SectionHeader title="SEC FILINGS" subtitle={filingsData?.company ? `${filingsData.company} \u00b7 CIK ${filingsData.cik}` : undefined} />
-        {filings.length === 0 ? (
-          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No filings found.</div>
+        <SectionHeader
+          title="INSIDER ACTIVITY"
+          subtitle={summary?.available
+            ? `${summary.distinctInsiders} insider${summary.distinctInsiders === 1 ? "" : "s"} · last ${summary.days} days`
+            : "Form 4 transactions"}
+        />
+        {summary?.available ? (
+          <div style={{ padding: "12px 16px", display: "flex", gap: 20, flexWrap: "wrap", borderBottom: "1px solid #12161f" }}>
+            <div>
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>BOUGHT</div>
+              <div style={{ fontFamily: "monospace", fontSize: 15, color: "#00d4aa", fontWeight: 700 }}>
+                {edgarMoney(summary.buyValue)} <span style={{ fontSize: 10, color: "#4a6080" }}>({summary.buys})</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>SOLD</div>
+              <div style={{ fontFamily: "monospace", fontSize: 15, color: "#ff4757", fontWeight: 700 }}>
+                {edgarMoney(summary.sellValue)} <span style={{ fontSize: 10, color: "#4a6080" }}>({summary.sells})</span>
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>NET</div>
+              <div style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: summary.net >= 0 ? "#00d4aa" : "#ff4757" }}>
+                {summary.net >= 0 ? "+" : ""}{edgarMoney(summary.net)}
+              </div>
+            </div>
+            <div style={{ flex: 1, minWidth: 200, fontSize: 10, color: "#2a3548", alignSelf: "center" }}>
+              Open-market purchases and sales only. Awards, option exercises and tax withholding are excluded —
+              they are compensation mechanics, not a view on the price.
+            </div>
+          </div>
+        ) : summary?.reason ? (
+          <div style={{ padding: "12px 16px", fontSize: 11, color: "#4a6080" }}>{summary.reason}</div>
+        ) : null}
+
+        {insiders.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No Form 4 transactions on record.</div>
         ) : (
           <div style={{ padding: "4px 0" }}>
-            {filings.map((f, i) => (
-              <div key={f.accession} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < filings.length - 1 ? "1px solid #12161f" : "none" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, fontFamily: "monospace", background: "#1a2535", color: "#7a8ba0", padding: "2px 7px", borderRadius: 3 }}>{f.form}</span>
-                  <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
+            {insiders.slice(0, 20).map(f => {
+              const isBuy = f.tx_type === "Buy";
+              const isSell = f.tx_type === "Sell";
+              return (
+                <div key={f.id} style={{
+                  display: "grid", gridTemplateColumns: "1.4fr 90px 100px 90px 100px 50px",
+                  gap: 10, alignItems: "center", padding: "7px 16px", borderBottom: "1px solid #12161f",
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.filer || symbol}
+                    </div>
+                    {f.role && <div style={{ fontSize: 9, color: "#3a4558" }}>{f.role}</div>}
+                  </div>
+                  <span style={{ fontSize: 10, fontFamily: "monospace",
+                                 color: isBuy ? "#00d4aa" : isSell ? "#ff4757" : "#4a6080" }}>
+                    {f.tx_type}
+                  </span>
+                  <span style={{ fontSize: 11, fontFamily: "monospace", color: "#7a8ba0", textAlign: "right" }}>
+                    {f.shares != null ? f.shares.toLocaleString() : <NoData compact />}
+                  </span>
+                  <span style={{ fontSize: 11, fontFamily: "monospace", color: "#7a8ba0", textAlign: "right" }}>
+                    {f.price ? `$${f.price.toFixed(2)}` : <NoData compact reason="No price on this transaction type" />}
+                  </span>
+                  <span style={{ fontSize: 11, fontFamily: "monospace", color: "#c8d6e8", textAlign: "right" }}>
+                    {f.value ? edgarMoney(f.value) : <NoData compact />}
+                  </span>
+                  <a href={f.url} target="_blank" rel="noopener noreferrer"
+                     style={{ fontSize: 10, color: "#3d8bff", textDecoration: "none", textAlign: "right" }}>
+                    {f.date?.slice(5) ?? "↗"}
+                  </a>
                 </div>
-                <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View filing ↗</a>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Panel>
 
+      {/* Every recent form, not only Form 4 — 8-K and 10-K are where the news is. */}
       <Panel>
-        <SectionHeader title="INSIDER ACTIVITY" subtitle="Form 4 filings — filing index only, not parsed transaction detail" />
-        {insiders.length === 0 ? (
-          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No Form 4 filings on record.</div>
+        <SectionHeader
+          title="SEC FILINGS"
+          subtitle={filingsData?.company ? `${filingsData.company} · CIK ${filingsData.cik}` : undefined}
+        />
+        {forms.length > 1 && (
+          <div style={{ padding: "8px 16px", display: "flex", gap: 5, flexWrap: "wrap", borderBottom: "1px solid #12161f" }}>
+            {["all", ...forms].map(f => (
+              <button key={f} onClick={() => setFormFilter(f)} style={{
+                background: formFilter === f ? "#0d1421" : "transparent",
+                border: `1px solid ${formFilter === f ? (FORM_COLORS[f] ?? "#3d8bff") + "50" : "#1a2535"}`,
+                color: formFilter === f ? (FORM_COLORS[f] ?? "#3d8bff") : "#4a6080",
+                fontFamily: "monospace", fontSize: 10, padding: "2px 8px", borderRadius: 3, cursor: "pointer",
+              }}>{f === "all" ? "All" : f}</button>
+            ))}
+          </div>
+        )}
+        {shown.length === 0 ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No filings found.</div>
         ) : (
           <div style={{ padding: "4px 0" }}>
-            {insiders.map((f, i) => (
-              <div key={f.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < insiders.length - 1 ? "1px solid #12161f" : "none" }}>
-                <span style={{ fontSize: 12, color: "#c8d6e8" }}>{f.filer || symbol}</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {shown.slice(0, 30).map(f => (
+              <div key={f.accession} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 16px", borderBottom: "1px solid #12161f" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                  <span style={{
+                    fontSize: 10, fontWeight: 700, fontFamily: "monospace", minWidth: 46, textAlign: "center",
+                    background: "#1a2535", color: FORM_COLORS[f.form] ?? "#7a8ba0", padding: "2px 6px", borderRadius: 3,
+                  }}>{f.form}</span>
                   <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{f.date}</span>
-                  <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none" }}>View ↗</a>
+                  {f.description && (
+                    <span style={{ fontSize: 10, color: "#3a4558", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.description}
+                    </span>
+                  )}
                 </div>
+                <a href={f.url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3d8bff", textDecoration: "none", flexShrink: 0 }}>View ↗</a>
               </div>
             ))}
           </div>
@@ -3373,6 +3589,7 @@ function ResearchPage({ prices }) {
 
   const [filingsData, setFilingsData] = useState(null);
   const [insidersData, setInsidersData] = useState(null);
+  const [fundamentals, setFundamentals] = useState(null);
   const [filingsLoading, setFilingsLoading] = useState(false);
   const filingsCache = useRef({});
 
@@ -3441,18 +3658,25 @@ function ResearchPage({ prices }) {
     if (tab !== "filings") return;
     if (filingsCache.current[symbol]) {
       const c = filingsCache.current[symbol];
-      setFilingsData(c.filings); setInsidersData(c.insiders);
+      setFilingsData(c.filings); setInsidersData(c.insiders); setFundamentals(c.fundamentals);
       return;
     }
     setFilingsLoading(true);
+    // Four independent EDGAR reads. Each resolves to its own error object
+    // rather than rejecting, so one unavailable dataset cannot blank the
+    // other three — a company with no parsed Form 4s should still show its
+    // filings and its reported fundamentals.
     Promise.all([
-      fetch(`${API}/filings?symbol=${encodeURIComponent(symbol)}&type=`).then(r => r.json()),
-      fetch(`${API}/insiders?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
-    ]).then(([f, i]) => {
-      filingsCache.current[symbol] = { filings: f, insiders: i };
-      setFilingsData(f); setInsidersData(i);
+      fetch(`${API}/filings?symbol=${encodeURIComponent(symbol)}&type=all&limit=60`).then(r => r.json()).catch(() => ({ error: "Filings unavailable." })),
+      fetch(`${API}/insiders?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/insiders/summary?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+      fetch(`${API}/fundamentals?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
+    ]).then(([f, i, sum, fun]) => {
+      const insiders = i ? { ...i, summary: sum } : null;
+      filingsCache.current[symbol] = { filings: f, insiders, fundamentals: fun };
+      setFilingsData(f); setInsidersData(insiders); setFundamentals(fun);
     }).catch(() => {
-      setFilingsData({ error: "Could not reach the server." }); setInsidersData(null);
+      setFilingsData({ error: "Could not reach the server." }); setInsidersData(null); setFundamentals(null);
     }).finally(() => setFilingsLoading(false));
   }, [tab, symbol]);
 
@@ -3560,7 +3784,7 @@ Be specific and opinionated. No hedging filler.`;
       {tab === "overview" && <ResearchOverviewTab symbol={symbol} name={name} data={data} summary={summary} summaryLoading={summaryLoading} levels={levels} />}
       {tab === "analyst" && <ResearchAnalystTab symbol={symbol} price={price} summary={summary} summaryLoading={summaryLoading} />}
       {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
-      {tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} filingsLoading={filingsLoading} />}
+      {tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} fundamentals={fundamentals} filingsLoading={filingsLoading} />}
       {tab === "ai" && (
         <Panel>
           <SectionHeader title="AI RESEARCH NOTE" subtitle="Bull / bear / base case" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
