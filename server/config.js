@@ -6,7 +6,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DB_PATH = path.join(__dirname, '..', 'meridian.db');
+
+// MERIDIAN_DB lets a throwaway database be pointed at for testing, so engine
+// work never has to be tried out against the real holdings.
+export const DB_PATH = process.env.MERIDIAN_DB
+  ? path.resolve(process.env.MERIDIAN_DB)
+  : path.join(__dirname, '..', 'meridian.db');
 
 // Poll cadences (ms)
 export const CADENCE = {

@@ -1,4 +1,17 @@
 node_modules/
+dist/
 meridian.db
 meridian.db-shm
 meridian.db-wal
+
+# Throwaway databases used by scripts/seed-dev-db.js and manual testing.
+*.test.db
+*.test.db-shm
+*.test.db-wal
+
+# Repo-dump artefacts — regenerate them, don't commit them.
+repomix-output.xml
+
+.env
+.env.local
+.DS_Store

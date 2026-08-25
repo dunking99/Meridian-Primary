@@ -1,8 +1,16 @@
-# Meridian v2 — backend
+# Meridian
 
-A rebuild of Meridian's data and analytics layer. v1 fetched prices and rendered
-mock data on every other page. v2 stores history, computes real risk, and gives
-the AI layer a single view of everything at once.
+A personal, local, single-user markets terminal. Node + SQLite + React.
+
+v2 rebuilt the data and analytics layer: real storage, real history, real risk.
+v3 finished the job on the front end, which was still rendering fabricated data
+on most pages, and added the thing the analytics layer was missing — memory.
+
+**Levels are free everywhere.** Any site will tell you what gold costs. The
+point of this app is the part that requires keeping history: whether today's
+move is unusual *for that instrument*, whether breadth is narrow *by its own
+standard*, and which relationships have changed. That is what the memory layer
+computes and what the front page shows.
 
 ## What changed
 
@@ -20,6 +28,24 @@ the AI layer a single view of everything at once.
 | AI | 7 isolated per-page calls | one unified analyst brief |
 | Currency | pence bug | normalised at source |
 | Launch | `start.sh` (macOS only) | `npm start` (cross-platform) |
+
+### v3
+
+| | before | after |
+|---|---|---|
+| Front page | movers, alerts, breadth and catalysts all hardcoded | derived from stored history, and able to say nothing happened |
+| Missing prices | seeded from a constant, then moved by a random walk, labelled LIVE | absent, and rendered as absent |
+| Day change | recomputed against the previous poll (i.e. the last 60 seconds) | the API's own previous-close figure |
+| Memory | none | daily per-symbol and universe-wide observations, backfilled across all stored history |
+| Screener page | 21 hardcoded rows | the factor engine that already existed |
+| Watchlist page | 6 invented names in React state | the database table that already existed |
+| Calendar | invented events dated relative to today | real earnings and dividend dates; folded into the front page |
+| Macro page | breadth, regime and cross-asset all constants | deleted — done for real elsewhere |
+| Instrument types | every symbol treated as a US common stock | 8 types, each declaring which figures apply |
+| Tables | 15 | 17 |
+| Endpoints | 56 | 80 |
+| EDGAR | Form 4 dates, all detail columns NULL | parsed transactions + reported XBRL fundamentals |
+| AI prompts | "be opinionated, no hedging" | permitted, and expected, to conclude nothing happened |
 
 ## Requirements
 
@@ -52,12 +78,14 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 56 routes
+  index.js               HTTP server, 80 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
     news.js              RSS ingestion, symbol tagging, sentiment
-    edgar.js             SEC Form 4 insider filings
+    edgar.js             Form 4 parsing, XBRL company facts, filings
+    instruments.js       what kind of thing a ticker is, and what applies to it
+    ft.js                fund NAV fallback for funds Yahoo lacks
   engines/
     analytics.js         all quantitative primitives
     optimiser.js         FISTA-solved portfolio optimisation
@@ -70,9 +98,16 @@ server/
     alerts.js            10 alert condition types
     paper.js             signal tracking
     analyst.js           unified AI brief assembly
+    memory.js            daily observations, breadth, dispersion, leadership,
+                         correlation shifts — the "what changed" layer
+    calendar.js          dated events for held and watched instruments
+    integrity.js         bar validation and corruption repair
+    newsscore.js         AI relevance scoring for the news feed
 scripts/
   start.js               cross-platform launcher
   sync.js                history backfill
+  seed-dev-db.js         synthetic history for offline engine testing;
+                         refuses to run against anything but a *.test.db
 ```
 
 ## Key endpoints
@@ -94,8 +129,12 @@ scripts/
 
 **Tracking** — `GET|POST|PUT|DELETE /alerts` `/watchlist` `/paper`
 
-**News & filings** — `GET /news` `/insiders?symbol=` `/filings?symbol=` ·
-`POST /news/refresh`
+**Memory** — `GET /changes` `/memory` `/memory/regime` `/memory/symbol?symbol=`
+`/memory/latest?symbols=` `/leadership` `/relationships` · `POST /memory/rebuild`
+
+**News & filings** — `GET /news` `/insiders?symbol=` `/insiders/summary?symbol=`
+`/filings?symbol=&type=all` `/fundamentals?symbol=` `/calendar` ·
+`POST /news/refresh` `/calendar/refresh`
 
 **AI** — `GET /brief?kind=daily|risk|rebalance|position` · `GET|POST /ai/notes`
 
@@ -128,6 +167,21 @@ and a frontier that saturated because its return ceiling ignored the weight cap.
 - **Look-through US exposure** uses published fund geographies. It is an
   estimate, and typically 5–10pp above headline geography weights.
 - **Sentiment scoring is a lexicon count.** It is a filter aid, not a signal.
+- **Missing data is never filled in.** A symbol the API has not returned is
+  absent rather than estimated, and renders as absent. Nothing on any page is
+  a placeholder, a default, or a plausible-looking stand-in.
+- **Every derived figure returns null rather than a guess** when there is not
+  enough history to compute it honestly, so "not enough data" is visibly
+  different from zero.
+- **The memory layer is rebuilt from stored bars**, not accumulated live, so it
+  backfills across the whole history on first run and is idempotent. It runs on
+  boot and after every sync; about a second for 36k observations.
+- **The macro calendar is not covered.** No free structured feed for CPI,
+  payrolls or rate decisions is wired up, and Investing.com does it better. The
+  calendar says so rather than leaving the gap to be discovered.
+- **AI commentary can conclude that nothing happened**, and on most days should.
+  It is given sigma-scored moves and percentile ranks rather than raw levels,
+  and is instructed never to cite a figure it was not handed.
 
 ## Not available for free, and therefore not built
 
@@ -138,7 +192,23 @@ search *are* free and are included.
 
 ## API keys
 
-None required for any of the above. The AI layer uses your own Gemini or
-Anthropic key from the browser — no key is stored server-side. Set an EDGAR
-contact string via `POST /settings {"edgarUserAgent":"Your Name your@email"}`;
-the SEC rate-limits anonymous requests.
+None required for any of the above.
+
+The AI layer uses your own Gemini key, entered in Settings and held in browser
+localStorage. **It is also copied to the server** (`POST /settings/ai`, stored
+in the `settings` table) because news relevance scoring runs on the refresh
+loop with no browser attached. This is a single-user app on your own machine,
+so that is a reasonable trade — but the key is on disk in `meridian.db`, which
+is gitignored, and it is worth knowing rather than assuming otherwise.
+
+Set an EDGAR contact string via
+`POST /settings {"edgarUserAgent":"Your Name your@email"}`; the SEC rate-limits
+anonymous requests.
+
+## Running it on a synced folder
+
+Vite rewrites its dependency cache constantly, and OneDrive, Dropbox and iCloud
+hold file locks that make Windows refuse the rename — surfacing as an EPERM
+crash on whichever module was unlucky. The cache is kept in the OS temp
+directory to avoid this, and `npm start` warns if the project itself sits in a
+synced folder. Moving the project out of it is the only complete fix.

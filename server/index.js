@@ -26,6 +26,8 @@ import { backtest, walkForward, STRATEGIES as BT_STRATEGIES } from './engines/ba
 import * as paper from './engines/paper.js';
 import * as alerts from './engines/alerts.js';
 import * as analyst from './engines/analyst.js';
+import * as memory from './engines/memory.js';
+import * as calendar from './engines/calendar.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -193,8 +195,44 @@ const routes = {
   'POST /sync': async body => {
     const symbols = body.symbols?.length ? body.symbols : trackedSymbols();
     console.log(`  syncing history for ${symbols.length} symbols…`);
-    return await yahoo.syncAll(symbols, { years: body.years ?? 12, force: !!body.force });
+    const r = await yahoo.syncAll(symbols, { years: body.years ?? 12, force: !!body.force });
+    // New bars mean the derived memory is stale. Rebuilding is idempotent and
+    // costs about a second, so it happens here rather than being something to
+    // remember to trigger.
+    const mem = memory.rebuild();
+    return { ...r, memory: { observations: mem.observations, regimeDays: mem.regime?.dates ?? 0 } };
   },
+
+  // ── memory: what changed, not what is ──────────────────────
+  'GET /changes': q => memory.whatChanged({
+    limit: Math.min(Number(q.limit) || 12, 40),
+    zThreshold: Number(q.z) || 1.5,
+  }),
+
+  'GET /memory': () => memory.memoryStats(),
+  'GET /memory/latest': q => ({
+    observations: memory.latestFor(
+      String(q.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 200)),
+  }),
+  'GET /leadership': q => memory.leadership({ window: Number(q.window) || 21 }),
+
+  // ── calendar ───────────────────────────────────────────────
+  'GET /calendar': q => calendar.buildCalendar({ days: Math.min(Number(q.days) || 120, 400) }),
+  'POST /calendar/refresh': async body => {
+    const symbols = [...new Set([
+      ...all('SELECT DISTINCT symbol FROM holdings').map(r => r.symbol),
+      ...all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol),
+    ])];
+    const r = await calendar.refreshCorporateDates(symbols, { force: !!body?.force });
+    return { ...r, ...calendar.buildCalendar({ days: Math.min(Number(body?.days) || 120, 400) }) };
+  },
+  'GET /relationships': q => memory.correlationShifts({ window: Number(q.window) || 60 }),
+  'GET /memory/regime': q => ({ series: memory.regimeHistory({ days: Number(q.days) || 252 }) }),
+  'GET /memory/symbol': q => ({
+    symbol: q.symbol,
+    series: memory.symbolHistory(q.symbol, { days: Number(q.days) || 260 }),
+  }),
+  'POST /memory/rebuild': body => memory.rebuild({ symbols: body?.symbols ?? null }),
 
   'GET /quote': async q => await yahoo.fetchSummary(q.symbol),
   'GET /search': async q => ({ query: q.q, results: await yahoo.search(q.q) }),
@@ -674,7 +712,22 @@ const routes = {
     const r = await edgar.syncInsiders(q.symbol);
     return { ...r, filings: edgar.getInsiders(q.symbol) };
   },
-  'GET /filings': async q => await edgar.fetchFilings(q.symbol, { type: q.type ?? '4', limit: 25 }),
+  // type=all lists every recent form, not only Form 4 — 8-K, 10-K and 10-Q are
+  // the ones worth seeing and were previously unreachable through this route.
+  'GET /filings': async q => await edgar.fetchFilings(q.symbol, {
+    type: q.type === 'all' ? null : (q.type ?? '4'),
+    limit: Math.min(Number(q.limit) || 25, 100),
+  }),
+
+  'GET /insiders/summary': q => edgar.insiderSummary(q.symbol, { days: Number(q.days) || 180 }),
+
+  // Reported annual fundamentals straight from the filed XBRL, plus the trends
+  // that need several years to exist at all.
+  'GET /fundamentals': async q => {
+    const facts = await edgar.fetchCompanyFacts(q.symbol, { years: Number(q.years) || 10 });
+    if (facts.error) return facts;
+    return { ...facts, trends: edgar.deriveTrends(facts) };
+  },
 
   // ── FT fund NAV fallback (for funds Yahoo has no data for) ──
   'GET /fund-nav': async q => {
@@ -754,6 +807,19 @@ const server = http.createServer(async (req, res) => {
   const h = healthCheck();
   console.log(`  database   ${h.bars} bars across ${h.symbols} symbols, ${h.holdings} holdings`);
   console.log(`  symbols    ${trackedSymbols().length} tracked`);
+
+  // Derived memory is rebuilt from stored bars on every boot. It is idempotent
+  // and takes about a second, which buys the guarantee that "what changed"
+  // never reports against a stale or half-built history.
+  if (h.bars > 0) {
+    const t0 = Date.now();
+    try {
+      const mem = memory.rebuild();
+      console.log(`  memory     ${mem.observations} observations, ${mem.regime?.dates ?? 0} regime days in ${Date.now() - t0}ms`);
+    } catch (e) {
+      console.log(`  memory     rebuild failed: ${e.message}`);
+    }
+  }
 
   await refreshPrices();
   await refreshFearGreed();

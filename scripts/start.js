@@ -7,9 +7,28 @@
 // are launched differently on purpose.
 
 import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 const procs = [];
 let stopping = false;
+
+// OneDrive keeps handles open on files it is syncing. When that happens to a
+// file Node is importing or Vite is rewriting, Windows returns EPERM and the
+// server dies — the symptom being an apparently random lock on whichever
+// module was unlucky. Vite's own cache has been moved out of the folder (see
+// vite.config.js), but a synced project folder can still stall an import, so
+// say so plainly on startup rather than leaving it to be rediscovered.
+function warnIfSynced() {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const match = /OneDrive|Dropbox|Google Drive|iCloudDrive/i.exec(root);
+  if (!match) return;
+  console.log(`  ! This project sits inside a ${match[0]} folder:`);
+  console.log(`      ${root}`);
+  console.log('    Sync clients hold file locks that surface as EPERM crashes.');
+  console.log('    Either move the project outside the synced folder (recommended),');
+  console.log(`    or exclude it from syncing in the ${match[0]} settings.\n`);
+}
 
 function launch(name, cmd, args, useShell) {
   const p = spawn(cmd, args, { stdio: 'inherit', shell: useShell });
@@ -33,6 +52,7 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 console.log('Starting Meridian (API + UI). Press Ctrl+C to stop both.\n');
+warnIfSynced();
 
 launch('api', process.execPath, ['server/index.js'], false);
 
