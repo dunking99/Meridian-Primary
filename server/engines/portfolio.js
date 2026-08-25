@@ -49,6 +49,7 @@ export function valuePortfolio(prices) {
     return {
       id: h.id, symbol: h.symbol,
       name: h.name || meta.name || h.symbol,
+      exchange: h.exchange || null,
       qty: h.qty, avgPrice: h.avg_price, price,
       currency: ccy,
       priceSource,

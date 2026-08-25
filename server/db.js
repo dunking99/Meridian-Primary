@@ -204,6 +204,10 @@ try { db.exec('ALTER TABLE fund_nav_cache ADD COLUMN name TEXT'); } catch { /* a
 // isin lets a holding be priced via the FT fallback when Yahoo has nothing.
 try { db.exec('ALTER TABLE holdings ADD COLUMN isin TEXT'); } catch { /* already has it */ }
 
+// Listing venue (LSE, NASDAQ, NYSE...), resolved from Yahoo alongside the
+// holding's display name — see resolveNameAndExchange() in sources/yahoo.js.
+try { db.exec('ALTER TABLE holdings ADD COLUMN exchange TEXT'); } catch { /* already has it */ }
+
 // AI relevance scoring for news. Keyword tagging alone can't tell a market
 // story from a general-interest one that merely mentions a country, so each
 // story gets scored once by the AI and the result is cached here forever —

@@ -227,6 +227,72 @@ export async function fetchSummary(symbol) {
   }
 }
 
+// Yahoo returns exchange venue as a short code (NMS, NYQ...) or a longer
+// platform name (NasdaqGS, "New York Stock Exchange"...) depending on which
+// field and endpoint answered — normalised here to the short label people
+// actually recognise, e.g. for the holdings table. Unknown codes pass through
+// as-is rather than disappearing, since a raw code is still more useful than
+// nothing.
+const EXCHANGE_LABELS = {
+  LSE: 'LSE', 'London Stock Exchange': 'LSE', IOB: 'LSE',
+  NMS: 'NASDAQ', NGM: 'NASDAQ', NCM: 'NASDAQ',
+  NasdaqGS: 'NASDAQ', NasdaqGM: 'NASDAQ', NasdaqCM: 'NASDAQ',
+  NYQ: 'NYSE', 'New York Stock Exchange': 'NYSE',
+  ASE: 'AMEX', NYSEAmerican: 'AMEX', AMEX: 'AMEX',
+  PCX: 'NYSE Arca', NYSEArca: 'NYSE Arca',
+  TOR: 'TSX', 'Toronto Stock Exchange': 'TSX',
+  GER: 'XETRA', Xetra: 'XETRA',
+  FRA: 'Frankfurt', PAR: 'Euronext Paris', AMS: 'Euronext Amsterdam',
+  MIL: 'Borsa Italiana', SWX: 'SIX Swiss', HKG: 'HKEX',
+  TYO: 'TSE', 'Tokyo Stock Exchange': 'TSE',
+  ASX: 'ASX', SES: 'SGX', JNB: 'JSE',
+};
+const friendlyExchange = raw => (raw ? (EXCHANGE_LABELS[raw] ?? raw) : null);
+
+/**
+ * Name + listing venue for one symbol — funds like "0P0000WN7J.L" have no
+ * useful display name on their own, so this is what turns a raw ticker into
+ * something a human recognises. Uses the same lightweight quote() endpoint as
+ * fetchQuotes rather than the heavier quoteSummary() fetchSummary() calls,
+ * since this only needs two fields and may run across many holdings at once.
+ */
+export async function resolveNameAndExchange(symbol) {
+  try {
+    const res = await yf.quote(symbol, {}, { validateResult: false });
+    const q = Array.isArray(res) ? res[0] : res;
+    if (!q) return { symbol, error: 'No data returned for this symbol.' };
+    return {
+      symbol,
+      name: q.longName ?? q.shortName ?? null,
+      exchange: friendlyExchange(q.fullExchangeName ?? q.exchange ?? null),
+    };
+  } catch (e) {
+    return { symbol, error: e.message };
+  }
+}
+
+/** Batch form of resolveNameAndExchange, for backfilling many holdings at once. */
+export async function resolveNamesAndExchanges(symbols) {
+  const out = {};
+  for (const batch of chunk(symbols, 25)) {
+    try {
+      const res = await yf.quote(batch, {}, { validateResult: false });
+      for (const q of (Array.isArray(res) ? res : [res])) {
+        if (!q?.symbol) continue;
+        const key = symbols.find(s => s.toUpperCase() === q.symbol.toUpperCase()) || q.symbol;
+        out[key] = {
+          name: q.longName ?? q.shortName ?? null,
+          exchange: friendlyExchange(q.fullExchangeName ?? q.exchange ?? null),
+        };
+      }
+    } catch (e) {
+      console.log(`  name/exchange batch failed (${batch.length} symbols): ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 120));
+  }
+  return out;
+}
+
 export async function search(query) {
   try {
     const r = await yf.search(query, { quotesCount: 12, newsCount: 0 });
