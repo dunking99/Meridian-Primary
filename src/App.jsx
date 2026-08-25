@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { fetchLivePrices, fetchFearAndGreed, FALLBACK_PRICES } from "./prices.js";
+import { fetchLivePrices, fetchFearAndGreed } from "./prices.js";
 import { GEMINI_API_KEY, GEMINI_MODEL } from "./config.js";
 
 // ============================================================
@@ -115,8 +115,7 @@ function computeRegime(prices) {
 
   const signals = (vix != null ? 1 : 0) + ((spxWeek != null || spxDay != null) ? 1 : 0);
   const confidence = Math.min(88, 40 + Math.abs(score) * 10 + signals * 4);
-  const live = spx?.live || prices?.["^VIX"]?.live;
-  const rationale = notes.join(", ") + (live ? "" : " (fallback data)");
+  const rationale = notes.join(", ");
 
   return { label, color, confidence, rationale, subLabel };
 }
@@ -168,13 +167,6 @@ const NAV_ITEMS = [
   { id: "news", label: "News", icon: "◉" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
-
-function applyDrift(price, symbol) {
-  const v = { "^VIX": 0.004, "NG=F": 0.003, "CL=F": 0.002, "BZ=F": 0.002 }[symbol] || 0.0008;
-  return +(price * (1 + (Math.random() - 0.5) * v)).toFixed(
-    symbol.includes("=X") ? 4 : (symbol === "^TNX" || symbol === "^IRX") ? 3 : 2
-  );
-}
 
 const MOCK_MOVERS = [
   { symbol: "NVDA", name: "NVIDIA Corp", change: 4.82, changeAmt: 42.18, price: 914.30, volume: "89.2M", reason: "AI chip demand upgrade" },
@@ -344,58 +336,60 @@ const CORRELATION_CLUSTERS = [
 // UTILITY HOOKS & HELPERS
 // ============================================================
 
+/**
+ * The live price feed.
+ *
+ * Prices only ever come from the API. There is no seeded starting state and no
+ * synthesised movement: a symbol the API has not returned is simply absent
+ * from `prices`, and every consumer treats absent as "no data" rather than
+ * drawing a number.
+ *
+ * `feed` carries the provenance the numbers need to be trustworthy — whether
+ * the last poll succeeded, when the browser last heard from the API, and when
+ * the API itself last reached its upstream. Those last two differ whenever the
+ * API is up but its own fetches are failing, which is precisely the situation
+ * a single "last updated" timestamp hides.
+ */
 function useMarketData() {
-  const [prices, setPrices] = useState(() => {
-    const init = {};
-    ALL_SYMBOLS.forEach(s => {
-      init[s] = { price: FALLBACK_PRICES[s] || 100, prev: FALLBACK_PRICES[s] || 100, change: 0, changePct: 0, live: false };
-    });
-    return init;
+  const [prices, setPrices] = useState({});
+  const [feed, setFeed] = useState({
+    status: "loading",     // loading | live | stale | unavailable
+    polledAt: null,        // when the browser last got a good response
+    upstreamAt: null,      // when the API last reached Yahoo
+    reason: null,
+    count: 0,
   });
-  const [lastUpdate, setLastUpdate] = useState(new Date());
   const [pulseCount, setPulseCount] = useState(0);
-  const [dataSource, setDataSource] = useState("loading"); // "live" | "fallback" | "loading"
-  const liveRef = useRef({});
 
-  const fetchAndApply = useCallback(async () => {
-    const live = await fetchLivePrices();
-    const gotSome = live && Object.keys(live).length > 0;
-    if (gotSome) {
-      liveRef.current = live;
-      setDataSource("live");
-    } else if (dataSource === "loading") {
-      setDataSource("fallback");
+  const poll = useCallback(async () => {
+    const r = await fetchLivePrices();
+    if (r.ok && r.count > 0) {
+      // The API's own changePct is measured against the previous close, which
+      // is what a day change means. The previous implementation recomputed it
+      // against the last poll, so every "day change" on screen was really the
+      // change over the preceding sixty seconds.
+      setPrices(r.prices);
+      setFeed({ status: "live", polledAt: Date.now(), upstreamAt: r.lastFetch, reason: null, count: r.count });
+    } else {
+      // Whatever is already on screen stays — it was real when it arrived —
+      // but it stops being described as live, and keeps its original
+      // timestamp so its age is visible.
+      setFeed(f => ({
+        ...f,
+        status: f.count > 0 ? "stale" : "unavailable",
+        reason: r.reason,
+      }));
     }
-    setPrices(prev => {
-      const next = { ...prev };
-      ALL_SYMBOLS.forEach(s => {
-        if (live && live[s]?.price) {
-          const newPrice = live[s].price;
-          const oldPrice = prev[s].price || FALLBACK_PRICES[s] || newPrice;
-          const change = +(newPrice - oldPrice).toFixed(4);
-          const changePct = oldPrice ? +((change / oldPrice) * 100).toFixed(2) : 0;
-          next[s] = { price: newPrice, prev: oldPrice, change, changePct, live: true, weekChangePct: live[s].weekChangePct ?? null };
-        } else if (liveRef.current[s]?.price) {
-          const drifted = applyDrift(prev[s].price, s);
-          next[s] = { ...prev[s], price: drifted, live: true };
-        } else {
-          const drifted = applyDrift(prev[s].price, s);
-          next[s] = { ...prev[s], price: drifted, live: false };
-        }
-      });
-      return next;
-    });
-    setLastUpdate(new Date());
     setPulseCount(c => c + 1);
   }, []);
 
   useEffect(() => {
-    fetchAndApply();
-    const interval = setInterval(fetchAndApply, POLL_INTERVAL);
+    poll();
+    const interval = setInterval(poll, POLL_INTERVAL);
     return () => clearInterval(interval);
-  }, [fetchAndApply]);
+  }, [poll]);
 
-  return { prices, lastUpdate, pulseCount, poll: fetchAndApply, dataSource };
+  return { prices, feed, pulseCount, poll };
 }
 
 function formatPrice(price, symbol) {
@@ -492,7 +486,46 @@ Be direct, specific, and opinionated. No fluff. No hedging for the sake of it. W
 // COMPONENTS
 // ============================================================
 
-function PulseIndicator({ pulseCount, lastUpdate, dataSource }) {
+/**
+ * Renders an absent value.
+ *
+ * Missing data must not be able to look like a real reading. A dash in the
+ * muted "no data" colour reads as absence at a glance, and the title carries
+ * the reason so it is answerable rather than merely blank.
+ */
+function NoData({ reason = "No data", compact = false }) {
+  return (
+    <span
+      title={reason}
+      style={{
+        color: "#3a4558", fontFamily: "monospace",
+        fontSize: compact ? 11 : 12, letterSpacing: 1, cursor: "help",
+      }}
+    >
+      ——
+    </span>
+  );
+}
+
+/** Relative age of a timestamp, for provenance labels. */
+function ageLabel(ts) {
+  if (!ts) return "never";
+  const secs = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+}
+
+/**
+ * Feed status and provenance.
+ *
+ * Shows both timestamps, because they answer different questions: `polled` is
+ * whether the browser can reach the API, `upstream` is whether the API can
+ * reach Yahoo. A green light on the first while the second is hours old was
+ * previously indistinguishable from everything working.
+ */
+function PulseIndicator({ pulseCount, feed }) {
   const [pulse, setPulse] = useState(false);
   useEffect(() => {
     setPulse(true);
@@ -500,27 +533,55 @@ function PulseIndicator({ pulseCount, lastUpdate, dataSource }) {
     return () => clearTimeout(t);
   }, [pulseCount]);
 
-  const isLive = dataSource === "live";
-  const color = isLive ? "#00d4aa" : dataSource === "loading" ? "#ffa502" : "#ff4757";
-  const label = isLive ? "LIVE" : dataSource === "loading" ? "FETCHING..." : "FALLBACK";
+  const { status, polledAt, upstreamAt, reason, count } = feed;
+  const color = status === "live" ? "#00d4aa"
+              : status === "loading" ? "#ffa502"
+              : status === "stale" ? "#ffa502" : "#ff4757";
+  const label = status === "live" ? `LIVE · ${count}`
+              : status === "loading" ? "CONNECTING"
+              : status === "stale" ? "STALE" : "NO FEED";
+
+  const detail = status === "unavailable"
+    ? (reason ?? "API unreachable")
+    : `polled ${ageLabel(polledAt)} · upstream ${ageLabel(upstreamAt)}${reason ? ` · ${reason}` : ""}`;
 
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }} title={detail}>
       <div style={{
         width: 7, height: 7, borderRadius: "50%",
         background: pulse ? color : `${color}66`,
         boxShadow: pulse ? `0 0 8px ${color}` : "none",
         transition: "all 0.3s ease",
       }} />
-      <span style={{ fontSize: 10, color: "#4a5568", fontFamily: "monospace" }}>
-        {label} · {lastUpdate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+      <span style={{ fontSize: 10, color: status === "unavailable" ? "#ff4757" : "#4a5568", fontFamily: "monospace" }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace" }}>
+        {status === "unavailable" ? (reason ?? "") : ageLabel(upstreamAt)}
       </span>
     </div>
   );
 }
 
-function TickerTape({ prices }) {
-  const items = ALL_SYMBOLS.filter(s => DISPLAY_NAMES[s]);
+function TickerTape({ prices, feed }) {
+  const items = ALL_SYMBOLS.filter(s => DISPLAY_NAMES[s] && prices[s]);
+
+  // An empty tape scrolling silently reads as "the market is closed". Say what
+  // is actually wrong instead.
+  if (!items.length) {
+    return (
+      <div style={{
+        background: "#0a0c0f", borderBottom: "1px solid #1a1f2e",
+        padding: "7px 20px", fontSize: 11, fontFamily: "monospace",
+        color: feed?.status === "loading" ? "#4a6080" : "#ff4757",
+      }}>
+        {feed?.status === "loading"
+          ? "Connecting to the Meridian API…"
+          : `No live prices — ${feed?.reason ?? "the API returned nothing"}. Start it with: npm run server`}
+      </div>
+    );
+  }
+
   return (
     <div style={{
       background: "#0a0c0f",
@@ -889,7 +950,7 @@ function Panel({ children, style = {} }) {
 // DASHBOARD PAGE
 // ============================================================
 
-function DashboardPage({ prices, pulseCount, lastUpdate, poll, dataSource }) {
+function DashboardPage({ prices, pulseCount, poll, feed }) {
   const [aiBrief, setAiBrief] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [briefGenerated, setBriefGenerated] = useState(false);
@@ -984,7 +1045,7 @@ function DashboardPage({ prices, pulseCount, lastUpdate, poll, dataSource }) {
           <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, marginBottom: 4 }}>
             NEXT POLL
           </div>
-          <PulseIndicator pulseCount={pulseCount} lastUpdate={lastUpdate} dataSource={dataSource} />
+          <PulseIndicator pulseCount={pulseCount} feed={feed} />
           <button onClick={poll} style={{
             marginTop: 6, background: "transparent", border: "1px solid #1a2535",
             color: "#4a6080", fontSize: 9, padding: "2px 8px", borderRadius: 3,
@@ -6387,7 +6448,7 @@ function SettingsPage({ onApiKeySet }) {
 
 export default function TradingTerminal() {
   const [activePage, setActivePage] = useState("dashboard");
-  const { prices, lastUpdate, pulseCount, poll, dataSource } = useMarketData();
+  const { prices, feed, pulseCount, poll } = useMarketData();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("meridian_gemini_key") || GEMINI_API_KEY);
 
@@ -6458,7 +6519,7 @@ export default function TradingTerminal() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-          <PulseIndicator pulseCount={pulseCount} lastUpdate={lastUpdate} dataSource={dataSource} />
+          <PulseIndicator pulseCount={pulseCount} feed={feed} />
           <div style={{ fontSize: 11, color: "#3a4558", fontFamily: "monospace" }}>
             {new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
           </div>
@@ -6466,7 +6527,7 @@ export default function TradingTerminal() {
       </div>
 
       {/* Ticker tape */}
-      <TickerTape prices={prices} />
+      <TickerTape prices={prices} feed={feed} />
 
       {/* Body */}
       <div style={{ display: "flex", flex: 1 }}>
@@ -6516,7 +6577,7 @@ export default function TradingTerminal() {
         {/* Main content */}
         <div style={{ flex: 1, padding: 20, overflowY: "auto", animation: "fadeIn 0.3s ease", minWidth: 0 }}>
           {activePage === "dashboard" && (
-            <DashboardPage prices={prices} pulseCount={pulseCount} lastUpdate={lastUpdate} poll={poll} dataSource={dataSource} />
+            <DashboardPage prices={prices} pulseCount={pulseCount} poll={poll} feed={feed} />
           )}
           {activePage === "risk" && (
             <RiskPage />
