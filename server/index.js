@@ -27,6 +27,7 @@ import * as paper from './engines/paper.js';
 import * as alerts from './engines/alerts.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
+import * as calendar from './engines/calendar.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -214,6 +215,17 @@ const routes = {
       String(q.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 200)),
   }),
   'GET /leadership': q => memory.leadership({ window: Number(q.window) || 21 }),
+
+  // ── calendar ───────────────────────────────────────────────
+  'GET /calendar': q => calendar.buildCalendar({ days: Math.min(Number(q.days) || 120, 400) }),
+  'POST /calendar/refresh': async body => {
+    const symbols = [...new Set([
+      ...all('SELECT DISTINCT symbol FROM holdings').map(r => r.symbol),
+      ...all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol),
+    ])];
+    const r = await calendar.refreshCorporateDates(symbols, { force: !!body?.force });
+    return { ...r, ...calendar.buildCalendar({ days: Math.min(Number(body?.days) || 120, 400) }) };
+  },
   'GET /relationships': q => memory.correlationShifts({ window: Number(q.window) || 60 }),
   'GET /memory/regime': q => ({ series: memory.regimeHistory({ days: Number(q.days) || 252 }) }),
   'GET /memory/symbol': q => ({

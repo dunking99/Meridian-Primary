@@ -2466,380 +2466,190 @@ function YieldCurve({ prices }) {
 }
 
 // ============================================================
-// CALENDAR PAGE
+// CALENDAR
+//
+// The page this replaces invented its events. Apple reported in three days,
+// Tesla in nine, the FOMC met in twelve, with made-up EPS estimates and
+// made-up dividend amounts — and because every date was an offset from today,
+// it always looked current and was never right.
+//
+// This shows the dates that genuinely exist for the instruments in this
+// portfolio: earnings and dividend dates from Yahoo's calendar module for
+// everything held or watched, plus the UK ISA deadline, which is fixed in
+// statute and needs no source.
+//
+// Macro releases are deliberately absent. There is no free structured feed for
+// CPI, payrolls or rate decisions wired up here, and Investing.com does that
+// job better — inventing a version of it was how the old page got into
+// trouble. The page says so rather than leaving the gap to be inferred.
 // ============================================================
 
-const CAL_TYPE_META = {
-  earnings: { label: "EARNINGS", color: "#3d8bff" },
-  dividend: { label: "DIVIDEND", color: "#00d4aa" },
-  econ:     { label: "ECONOMIC", color: "#ffa502" },
-  fed:      { label: "CENTRAL BANK", color: "#a855f7" },
-  tax:      { label: "TAX DEADLINE", color: "#f472b6" },
+const CAL_TYPES = {
+  earnings:       { label: "Earnings",     color: "#3d8bff", icon: "▣" },
+  dividend:       { label: "Ex-dividend",  color: "#00d4aa", icon: "◈" },
+  "dividend-pay": { label: "Dividend paid", color: "#4ade80", icon: "◈" },
+  deadline:       { label: "Deadline",     color: "#ff4757", icon: "⚑" },
 };
 
-function calAddDays(base, n) {
-  const d = new Date(base);
-  d.setDate(d.getDate() + n);
-  return d;
+function calCountdown(days) {
+  if (days == null) return "";
+  if (days < 0) return "passed";
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days < 7) return `${days} days`;
+  if (days < 31) return `${Math.round(days / 7)} week${days >= 10.5 ? "s" : ""}`;
+  return `${Math.round(days / 30)} month${days >= 45 ? "s" : ""}`;
 }
 
-function calNextApril5(from) {
-  const y = from.getFullYear();
-  let d = new Date(y, 3, 5, 23, 59, 0);
-  if (d <= from) d = new Date(y + 1, 3, 5, 23, 59, 0);
-  return d;
+function calFmtDate(iso) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 }
 
-function calIsSameDay(a, b) {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
-
-function calFmtDate(d) {
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-}
-
-function calGroupLabel(d, now) {
-  if (calIsSameDay(d, now)) return "TODAY";
-  if (calIsSameDay(d, calAddDays(now, 1))) return "TOMORROW";
-  return d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).toUpperCase();
-}
-
-function calCountdown(target, now) {
-  const diff = target - now;
-  if (diff <= 0) return "now";
-  const mins = Math.floor(diff / 60000);
-  const days = Math.floor(mins / 1440);
-  const hrs = Math.floor((mins % 1440) / 60);
-  const m = mins % 60;
-  if (days > 0) return `${days}d ${hrs}h`;
-  if (hrs > 0) return `${hrs}h ${m}m`;
-  return `${m}m`;
-}
-
-function calMonthGrid(year, month) {
-  const first = new Date(year, month, 1);
-  const startOffset = (first.getDay() + 6) % 7; // Monday-first
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const cells = [];
-  for (let i = 0; i < startOffset; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
-  while (cells.length % 7 !== 0) cells.push(null);
-  const weeks = [];
-  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
-  return weeks;
-}
-
-function buildMockCalendarEvents(now) {
-  const at = (n, h = 8, m = 30) => { const d = calAddDays(now, n); d.setHours(h, m, 0, 0); return d; };
-  return [
-    { id: "e1", type: "earnings", symbol: "AAPL", title: "Apple Inc — Earnings", date: at(3, 16, 0), importance: "high",
-      detail: { time: "After Close", epsEst: "$1.82", epsPrev: "$1.64", revEst: "$94.2B" } },
-    { id: "e2", type: "earnings", symbol: "TSLA", title: "Tesla Inc — Earnings", date: at(9, 16, 0), importance: "high",
-      detail: { time: "After Close", epsEst: "$0.68", epsPrev: "$0.52", revEst: "$26.8B" } },
-    { id: "e3", type: "earnings", symbol: "JPM", title: "JPMorgan Chase — Earnings", date: at(14, 7, 0), importance: "high",
-      detail: { time: "Pre-Market", epsEst: "$4.31", epsPrev: "$4.17", revEst: "$43.1B" } },
-    { id: "e4", type: "earnings", symbol: "ASML", title: "ASML Holding — Earnings", date: at(21, 7, 0), importance: "high",
-      detail: { time: "Pre-Market (EU)", epsEst: "€6.12", epsPrev: "€5.28", revEst: "€7.5B" } },
-    { id: "d1", type: "dividend", symbol: "VOD.L", title: "Vodafone Group — Ex-Dividend", date: at(5, 0, 0), importance: "medium",
-      detail: { amount: "£0.027/share", payDate: calFmtDate(at(35)) } },
-    { id: "d2", type: "dividend", symbol: "JPM", title: "JPMorgan Chase — Ex-Dividend", date: at(18, 0, 0), importance: "medium",
-      detail: { amount: "$1.25/share", payDate: calFmtDate(at(48)) } },
-    { id: "c1", type: "econ", title: "US CPI (YoY)", date: at(2, 13, 30), importance: "high",
-      detail: { note: "Headline & core inflation print — key input for the Fed's rate path." } },
-    { id: "c2", type: "econ", title: "US Non-Farm Payrolls", date: at(6, 13, 30), importance: "high",
-      detail: { note: "Monthly jobs report — labour market strength gauge." } },
-    { id: "c3", type: "fed", title: "FOMC Rate Decision", date: at(12, 19, 0), importance: "high",
-      detail: { note: "Federal Reserve interest rate decision, followed by the Powell press conference." } },
-    { id: "c4", type: "econ", title: "UK CPI (YoY)", date: at(16, 7, 0), importance: "high",
-      detail: { note: "UK inflation print — directly relevant to a GBP-denominated portfolio and the BoE's policy path." } },
-    { id: "c5", type: "fed", title: "Bank of England Rate Decision (MPC)", date: at(20, 12, 0), importance: "high",
-      detail: { note: "BoE Monetary Policy Committee interest rate decision." } },
-    { id: "c6", type: "econ", title: "US Core PCE (Fed's preferred gauge)", date: at(27, 13, 30), importance: "high",
-      detail: { note: "The Fed's own preferred inflation measure." } },
-    { id: "tax1", type: "tax", title: "UK ISA Tax Year End", date: calNextApril5(now), importance: "high",
-      detail: { note: "Use-it-or-lose-it: any unused ISA allowance for this tax year expires at midnight. Current annual allowance is £20,000." } },
-  ];
-}
-
-async function calAskAI(ev, setText, setLoading) {
-  setLoading(true);
-  const d = ev.detail ?? {};
-  const context = ev.type === "earnings"
-    ? `EPS estimate ${d.epsEst} vs prior ${d.epsPrev}. Revenue estimate ${d.revEst}. Reports ${d.time}.`
-    : ev.type === "dividend"
-    ? `Amount ${d.amount}, paid ${d.payDate}.`
-    : d.note ?? "";
-  const prompt = `You are a markets analyst. Upcoming event: "${ev.title}"${ev.symbol ? ` (${ev.symbol})` : ""}, on ${calFmtDate(ev.date)}. ${context}
-
-Give a short, plain-text (no markdown) take in 3-4 sentences: why this matters and what to watch for.`;
-  const res = await callAI(prompt, 300);
-  setText(res.text);
-  setLoading(false);
-}
-
-function CalendarEventRow({ ev, now, held, watch, expanded, onToggle }) {
-  const meta = CAL_TYPE_META[ev.type];
-  const [aiText, setAiText] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const d = ev.detail ?? {};
-
+function CalendarEventRow({ ev }) {
+  const t = CAL_TYPES[ev.type] ?? { label: ev.type, color: "#7a8ba0", icon: "·" };
+  const imminent = ev.daysAway != null && ev.daysAway <= 7;
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div onClick={onToggle} style={{
-        display: "flex", alignItems: "center", gap: 14, padding: "13px 18px",
-        background: "#0d1117", borderRadius: expanded ? "6px 6px 0 0" : 6,
-        border: "1px solid #1a1f2e", borderLeft: `3px solid ${meta.color}`,
-        cursor: "pointer",
-      }}>
-        <span style={{
-          fontSize: 10, fontWeight: 700, color: meta.color, background: `${meta.color}18`,
-          padding: "3px 8px", borderRadius: 3, letterSpacing: 0.5, whiteSpace: "nowrap",
-        }}>{meta.label}</span>
+    <div style={{
+      display: "grid", gridTemplateColumns: "18px 150px 1fr 110px 84px",
+      gap: 12, alignItems: "center", padding: "10px 14px",
+      borderBottom: "1px solid #10151f",
+      borderLeft: `2px solid ${imminent ? t.color : "transparent"}`,
+    }}>
+      <span style={{ color: t.color, fontSize: 12 }}>{t.icon}</span>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            {ev.symbol && <span style={{ fontSize: 14, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>{ev.symbol}</span>}
-            <span style={{ fontSize: 13, color: "#c8d6e8" }}>{ev.title}</span>
-            {held && <span style={{ fontSize: 10, fontWeight: 700, color: "#00d4aa", background: "#00d4aa18", padding: "2px 7px", borderRadius: 3 }}>HELD</span>}
-            {watch && <span style={{ fontSize: 10, fontWeight: 700, color: "#3d8bff", background: "#3d8bff18", padding: "2px 7px", borderRadius: 3 }}>WATCHLIST</span>}
-          </div>
-        </div>
-
-        <div style={{ fontSize: 12, color: "#4a6080", fontFamily: "monospace", whiteSpace: "nowrap" }}>{calFmtDate(ev.date)}</div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#ffa502", fontFamily: "monospace", minWidth: 70, textAlign: "right" }}>
-          {calCountdown(ev.date, now)}
+      <div>
+        <div style={{ fontFamily: "monospace", fontSize: 11, color: "#c8d6e8" }}>{calFmtDate(ev.date)}</div>
+        <div style={{ fontSize: 9, color: imminent ? t.color : "#3a4558", fontFamily: "monospace" }}>
+          {calCountdown(ev.daysAway)}
         </div>
       </div>
 
-      {expanded && (
-        <div style={{ background: "#080b12", borderRadius: "0 0 6px 6px", padding: "16px 18px", border: "1px solid #1a1f2e", borderTop: "none" }}>
-          {ev.type === "earnings" && (
-            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12, fontSize: 13 }}>
-              <div><span style={{ color: "#4a6080" }}>Reports: </span><span style={{ color: "#c8d6e8" }}>{d.time}</span></div>
-              <div><span style={{ color: "#4a6080" }}>EPS est: </span><span style={{ color: "#3d8bff", fontWeight: 700 }}>{d.epsEst}</span><span style={{ color: "#4a6080" }}> (prev {d.epsPrev})</span></div>
-              <div><span style={{ color: "#4a6080" }}>Revenue est: </span><span style={{ color: "#c8d6e8", fontWeight: 700 }}>{d.revEst}</span></div>
-            </div>
-          )}
-          {ev.type === "dividend" && (
-            <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12, fontSize: 13 }}>
-              <div><span style={{ color: "#4a6080" }}>Amount: </span><span style={{ color: "#00d4aa", fontWeight: 700 }}>{d.amount}</span></div>
-              <div><span style={{ color: "#4a6080" }}>Pay date: </span><span style={{ color: "#c8d6e8" }}>{d.payDate}</span></div>
-            </div>
-          )}
-          {d.note && <div style={{ fontSize: 13, color: "#7a8ba0", marginBottom: 12, lineHeight: 1.6 }}>{d.note}</div>}
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: aiText ? 8 : 0 }}>
-            <span style={{ fontSize: 10, color: "#4a6080", letterSpacing: 1 }}>ASK AI</span>
-            <button onClick={() => calAskAI(ev, setAiText, setAiLoading)} disabled={aiLoading} style={{
-              background: aiLoading ? "#1a2535" : "#3d8bff20", border: "1px solid #3d8bff40", color: "#3d8bff",
-              padding: "5px 12px", borderRadius: 3, fontSize: 11, fontFamily: "monospace",
-              cursor: aiLoading ? "default" : "pointer",
-            }}>{aiLoading ? "THINKING…" : "ASK OPINION"}</button>
-          </div>
-          {aiText && (
-            <div style={{ background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, padding: 12, fontSize: 13, color: "#c8d6e8", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>
-              {aiText}
-            </div>
-          )}
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {ev.title}
         </div>
-      )}
+        {ev.note && <div style={{ fontSize: 10, color: "#4a6080", marginTop: 2 }}>{ev.note}</div>}
+      </div>
+
+      <span style={{ fontSize: 10, fontFamily: "monospace", color: t.color }}>{t.label}</span>
+
+      <span style={{
+        fontSize: 9, fontFamily: "monospace", textAlign: "right",
+        color: ev.relevance === "held" ? "#00d4aa" : ev.relevance === "watched" ? "#3d8bff" : "#7a8ba0",
+      }}>
+        {ev.relevance.toUpperCase()}
+      </span>
     </div>
   );
 }
 
 function CalendarPage() {
-  const [now, setNow] = useState(() => new Date());
-  const [events] = useState(() => buildMockCalendarEvents(new Date()));
-  const [view, setView] = useState("timeline");
-  const [relevance, setRelevance] = useState("all");
-  const [expandedId, setExpandedId] = useState(null);
-  const [heldSymbols, setHeldSymbols] = useState([]);
-  const [watchSymbols, setWatchSymbols] = useState([]);
-  const [gridMonth, setGridMonth] = useState(() => { const d = new Date(); d.setDate(1); return d; });
-  const [selectedDay, setSelectedDay] = useState(() => new Date());
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [filter, setFilter] = useState("all");
 
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 30000);
-    return () => clearInterval(t);
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      setData(await fetch(`${API}/calendar`).then(r => r.json()));
+    } catch {
+      setErr("Could not reach the Meridian API. Start it with: npm run server");
+    } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    fetch(`${API}/portfolio`).then(r => r.json()).then(d => setHeldSymbols((d.positions ?? []).map(p => p.symbol))).catch(() => {});
-    fetch(`${API}/watchlist`).then(r => r.json()).then(d => setWatchSymbols((d.watchlist ?? []).map(w => w.symbol))).catch(() => {});
-  }, []);
+  useEffect(() => { load(); }, [load]);
 
-  const isRelevant = ev => {
-    if (relevance === "held") return ev.symbol && heldSymbols.includes(ev.symbol);
-    if (relevance === "watchlist") return ev.symbol && watchSymbols.includes(ev.symbol);
-    if (relevance === "econ") return ev.type === "econ" || ev.type === "fed" || ev.type === "tax";
-    return true;
-  };
-
-  const relevantEvents = events.filter(isRelevant);
-  const upcoming = relevantEvents.filter(ev => ev.date >= now).sort((a, b) => a.date - b.date);
-  const nextEvent = upcoming[0];
-
-  const groups = [];
-  for (const ev of upcoming) {
-    const last = groups[groups.length - 1];
-    if (last && calIsSameDay(last.date, ev.date)) last.events.push(ev);
-    else groups.push({ date: ev.date, events: [ev] });
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      const res = await fetch(`${API}/calendar/refresh`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      setData(await res.json());
+    } catch {
+      setErr("Refresh failed — could not reach the API.");
+    } finally { setRefreshing(false); }
   }
 
-  const RELEVANCE_FILTERS = [
-    { key: "all", label: "ALL" },
-    { key: "held", label: "MY HOLDINGS" },
-    { key: "watchlist", label: "WATCHLIST" },
-    { key: "econ", label: "ECONOMIC" },
-  ];
-
-  const weeks = calMonthGrid(gridMonth.getFullYear(), gridMonth.getMonth());
-  const dayEvents = d => relevantEvents.filter(ev => calIsSameDay(ev.date, d));
-  const selectedDayEvents = dayEvents(selectedDay).sort((a, b) => a.date - b.date);
+  const events = (data?.events ?? []).filter(e =>
+    filter === "all" ? true : filter === "held" ? e.relevance === "held" : e.type === filter);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>CALENDAR</div>
-        <div style={{ fontSize: 13, color: "#4a6080", marginTop: 3 }}>
-          {upcoming.length} upcoming events · earnings, dividends, macro & tax dates
-        </div>
-      </div>
-
-      {/* Next Up hero */}
-      {nextEvent && (
-        <Panel>
-          <div style={{ padding: "18px 22px", display: "flex", alignItems: "center", gap: 20, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 6 }}>NEXT UP</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <span style={{
-                  fontSize: 10, fontWeight: 700, color: CAL_TYPE_META[nextEvent.type].color,
-                  background: `${CAL_TYPE_META[nextEvent.type].color}18`, padding: "3px 8px", borderRadius: 3,
-                }}>{CAL_TYPE_META[nextEvent.type].label}</span>
-                {nextEvent.symbol && <span style={{ fontSize: 18, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>{nextEvent.symbol}</span>}
-                <span style={{ fontSize: 16, color: "#c8d6e8" }}>{nextEvent.title}</span>
-              </div>
-              <div style={{ fontSize: 12, color: "#4a6080", marginTop: 4 }}>{calFmtDate(nextEvent.date)}</div>
-            </div>
-            <div style={{ marginLeft: "auto", textAlign: "right" }}>
-              <div style={{ fontSize: 30, fontWeight: 700, color: "#ffa502", fontFamily: "monospace" }}>{calCountdown(nextEvent.date, now)}</div>
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      {/* Controls */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px", flexWrap: "wrap", gap: 10 }}>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[{ key: "timeline", label: "TIMELINE" }, { key: "grid", label: "GRID" }].map(v => (
-              <button key={v.key} onClick={() => setView(v.key)} style={{
-                background: view === v.key ? "#0d1421" : "transparent",
-                border: `1px solid ${view === v.key ? "#3d8bff40" : "#1a2535"}`,
-                color: view === v.key ? "#c8d6e8" : "#4a6080",
-                fontSize: 12, fontWeight: 700, padding: "6px 13px", borderRadius: 3,
-                cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
-              }}>{v.label}</button>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {RELEVANCE_FILTERS.map(f => (
-              <button key={f.key} onClick={() => setRelevance(f.key)} style={{
-                background: relevance === f.key ? "#00d4aa20" : "transparent",
-                border: relevance === f.key ? "1px solid #00d4aa40" : "1px solid #1a2535",
-                color: relevance === f.key ? "#00d4aa" : "#4a6080",
-                fontSize: 12, padding: "5px 12px", borderRadius: 3,
-                cursor: "pointer", fontFamily: "monospace",
-              }}>{f.label}</button>
-            ))}
-          </div>
-        </div>
-      </Panel>
+        <SectionHeader
+          title="CALENDAR"
+          subtitle={data ? `Next ${data.horizonDays} days · ${data.symbols} instruments tracked` : "loading"}
+          action={refreshing ? "FETCHING…" : "↻ FETCH DATES"}
+          onAction={refresh}
+        />
 
-      {view === "timeline" ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {groups.length === 0 ? (
-            <Panel><div style={{ padding: 32, textAlign: "center", color: "#4a6080", fontSize: 13 }}>No upcoming events match this filter.</div></Panel>
-          ) : groups.map(g => (
-            <div key={g.date.toISOString()} style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, padding: "6px 2px", borderBottom: "1px solid #1a1f2e", marginBottom: 8 }}>
-                {calGroupLabel(g.date, now)}
-              </div>
-              {g.events.map(ev => (
-                <CalendarEventRow key={ev.id} ev={ev} now={now}
-                  held={ev.symbol && heldSymbols.includes(ev.symbol)}
-                  watch={ev.symbol && watchSymbols.includes(ev.symbol)}
-                  expanded={expandedId === ev.id}
-                  onToggle={() => setExpandedId(expandedId === ev.id ? null : ev.id)} />
-              ))}
-            </div>
+        <div style={{ padding: "8px 14px", display: "flex", gap: 6, borderBottom: "1px solid #1a1f2e", flexWrap: "wrap" }}>
+          {[["all", "All"], ["held", "Held only"], ["earnings", "Earnings"], ["dividend", "Ex-dividend"]].map(([id, label]) => (
+            <button key={id} onClick={() => setFilter(id)} style={{
+              background: filter === id ? "#0d2820" : "transparent",
+              border: `1px solid ${filter === id ? "#00d4aa50" : "#1a2535"}`,
+              color: filter === id ? "#00d4aa" : "#4a6080",
+              fontFamily: "monospace", fontSize: 11, padding: "3px 10px",
+              borderRadius: 3, cursor: "pointer",
+            }}>{label}</button>
           ))}
         </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <Panel>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px 11px", borderBottom: "1px solid #1a1f2e" }}>
-              <button onClick={() => setGridMonth(d => { const n = new Date(d); n.setMonth(n.getMonth() - 1); return n; })}
-                style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a8ba0", borderRadius: 3, padding: "4px 10px", cursor: "pointer", fontSize: 13 }}>‹</button>
-              <span style={{ fontSize: 14, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace", letterSpacing: 1 }}>
-                {gridMonth.toLocaleDateString("en-GB", { month: "long", year: "numeric" }).toUpperCase()}
-              </span>
-              <button onClick={() => setGridMonth(d => { const n = new Date(d); n.setMonth(n.getMonth() + 1); return n; })}
-                style={{ background: "transparent", border: "1px solid #1a2535", color: "#7a8ba0", borderRadius: 3, padding: "4px 10px", cursor: "pointer", fontSize: 13 }}>›</button>
-            </div>
-            <div style={{ padding: 16 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
-                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d => (
-                  <div key={d} style={{ fontSize: 11, color: "#4a6080", textAlign: "center", letterSpacing: 1 }}>{d.toUpperCase()}</div>
+
+        {err ? (
+          <div style={{ padding: 20, color: "#ff4757", fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+        ) : loading && !data ? (
+          <div style={{ padding: 20, color: "#4a6080", fontSize: 12, fontFamily: "monospace" }}>Loading…</div>
+        ) : !events.length ? (
+          <div style={{ padding: 22, color: "#4a6080", fontSize: 12, fontFamily: "monospace", lineHeight: 1.8 }}>
+            No dated events{filter !== "all" ? " matching that filter" : ""} in the next {data?.horizonDays ?? 120} days.
+            {data?.unresolved?.length > 0 && (
+              <div style={{ color: "#2a3548", marginTop: 8 }}>
+                {data.unresolved.length} instrument{data.unresolved.length === 1 ? " has" : "s have"} no dates yet —
+                press FETCH DATES to look them up.
+              </div>
+            )}
+          </div>
+        ) : (
+          events.map(ev => <CalendarEventRow key={ev.id} ev={ev} />)
+        )}
+      </Panel>
+
+      {/* What this page does not cover, said plainly rather than left to be discovered. */}
+      {data && (
+        <Panel>
+          <SectionHeader title="COVERAGE" />
+          <div style={{ padding: 14, fontSize: 11, color: "#4a6080", lineHeight: 1.8 }}>
+            {data.coverage}
+
+            {/* A lookup that was attempted and failed is a different state from
+                one never attempted, and the user has just pressed the button. */}
+            {data.failed?.length > 0 && (
+              <div style={{ marginTop: 10, color: "#ff4757" }}>
+                Lookup failed for {data.failed.join(", ")} — the API could not reach Yahoo.
+              </div>
+            )}
+
+            {data.unresolved?.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 10, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>
+                  NO DATES RESOLVED
+                </div>
+                {/* Named individually: a symbol absent because its lookup failed
+                    is otherwise indistinguishable from one with no events. */}
+                {data.unresolved.map(u => (
+                  <div key={u.symbol} style={{ fontSize: 10, fontFamily: "monospace", color: "#4a6080", marginTop: 3 }}>
+                    {u.symbol} — {u.reason}
+                  </div>
                 ))}
               </div>
-              {weeks.map((week, wi) => (
-                <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, marginBottom: 8 }}>
-                  {week.map((day, di) => {
-                    if (!day) return <div key={di} />;
-                    const dayEvs = dayEvents(day);
-                    const isToday = calIsSameDay(day, now);
-                    const isSelected = calIsSameDay(day, selectedDay);
-                    return (
-                      <div key={di} onClick={() => setSelectedDay(day)} style={{
-                        minHeight: 68, padding: "8px 10px", borderRadius: 5, cursor: "pointer",
-                        background: isSelected ? "#0d1421" : "#0d1117",
-                        border: `1px solid ${isSelected ? "#3d8bff60" : isToday ? "#00d4aa40" : "#1a1f2e"}`,
-                      }}>
-                        <div style={{ fontSize: 13, fontWeight: isToday ? 700 : 400, color: isToday ? "#00d4aa" : "#c8d6e8", marginBottom: 6 }}>
-                          {day.getDate()}
-                        </div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                          {dayEvs.slice(0, 6).map(ev => (
-                            <div key={ev.id} title={ev.title} style={{
-                              width: 7, height: 7, borderRadius: "50%", background: CAL_TYPE_META[ev.type].color,
-                            }} />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel>
-            <SectionHeader title={calFmtDate(selectedDay).toUpperCase()} subtitle={`${selectedDayEvents.length} event${selectedDayEvents.length === 1 ? "" : "s"}`} />
-            <div style={{ padding: 16 }}>
-              {selectedDayEvents.length === 0 ? (
-                <div style={{ padding: 16, textAlign: "center", color: "#4a6080", fontSize: 13 }}>Nothing on this day.</div>
-              ) : selectedDayEvents.map(ev => (
-                <CalendarEventRow key={ev.id} ev={ev} now={now}
-                  held={ev.symbol && heldSymbols.includes(ev.symbol)}
-                  watch={ev.symbol && watchSymbols.includes(ev.symbol)}
-                  expanded={expandedId === ev.id}
-                  onToggle={() => setExpandedId(expandedId === ev.id ? null : ev.id)} />
-              ))}
-            </div>
-          </Panel>
-        </div>
+            )}
+          </div>
+        </Panel>
       )}
     </div>
   );
