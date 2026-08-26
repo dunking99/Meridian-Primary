@@ -4674,7 +4674,7 @@ function PortfolioValueChart() {
 function ChartCaption({ hist }) {
   return (
     <div style={{ fontSize: 11, color: "#3a4558", marginTop: 10 }}>
-      {hist?.excluded?.length ? ` and ${hist.excluded.join(", ")} (insufficient history)` : ""}.
+      Reconstructed at current holdings weights — excludes cash{hist?.excluded?.length ? ` and ${hist.excluded.join(", ")} (insufficient history)` : ""}.
     </div>
   );
 }
