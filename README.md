@@ -227,3 +227,41 @@ hold file locks that make Windows refuse the rename — surfacing as an EPERM
 crash on whichever module was unlucky. The cache is kept in the OS temp
 directory to avoid this, and `npm start` warns if the project itself sits in a
 synced folder. Moving the project out of it is the only complete fix.
+
+## Auto-update (Windows)
+
+`scripts/windows/` makes this repo keep itself current with GitHub without
+manual `git pull`/`npm install`/restart cycles.
+
+**One-time setup:**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\setup-auto-update.ps1
+```
+This registers a Windows Scheduled Task that, every 5 minutes and once at
+every login:
+1. Checks GitHub for a new commit on `main`.
+2. If there's one, backs up every file about to change into
+   `_archive\<timestamp>\`, mirroring the repo's folder structure.
+3. Pulls (fast-forward only — it refuses rather than merges if the local copy
+   has been hand-edited).
+4. Runs `npm install` if `package.json` changed.
+5. Restarts the app.
+
+If there's nothing new, it just makes sure Meridian is actually running and
+starts it if not — so `npm start` by hand is no longer needed either.
+
+**If an update turns out to be broken:**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\restore-backup.ps1
+```
+Lists past backups and restores the one you pick. `meridian.db` — your
+holdings, cash and price history — is never touched by any of this, since it's
+gitignored and git pull doesn't go near it.
+
+**To stop auto-updating:**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\stop-auto-update.ps1
+```
+
+Progress is logged to `auto-update.log` in the repo root. Both that file and
+`_archive\` are gitignored — they're per-machine, not something to sync back.
