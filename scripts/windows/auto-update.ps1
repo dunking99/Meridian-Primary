@@ -2,11 +2,21 @@
 #
 # Run on a schedule (see setup-auto-update.ps1). Each run: check GitHub for a
 # new commit on main, and if there is one, back up every file about to change,
-# pull, reinstall dependencies if package.json moved, and restart the app.
-# If there is nothing new, it just makes sure the app is actually running.
+# pull, reinstall dependencies if package.json moved, and restart the app --
+# a real code change always restarts, whether or not -EnsureRunning is set,
+# since the running copy (if any) is now stale.
+#
+# -EnsureRunning additionally starts the app when nothing changed and it
+# isn't currently running. Only the login trigger passes this -- the plain
+# 5-minute check does not, on purpose: without this, a deliberately-closed
+# app got silently relaunched every single cycle regardless of whether an
+# update actually happened, which is what caused a PowerShell window to
+# flash every 5 minutes even when nothing had been pushed.
 #
 # Nothing here touches meridian.db -- it is gitignored and untouched by git
 # pull regardless.
+
+param([switch]$EnsureRunning)
 
 # Deliberately NOT 'Stop'. git (and other native tools) write routine status
 # text to stderr on a normal, successful run -- "From <url>", branch update
@@ -50,9 +60,14 @@ function Restart-Meridian {
             }
     }
     Start-Sleep -Seconds 2
-    # npm.cmd, not npm -- Start-Process doesn't go through a shell, and plain
-    # "npm" on Windows only resolves via PATHEXT inside a shell.
-    Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
+    # Launched through wscript.exe + run-hidden.vbs rather than
+    # Start-Process -WindowStyle Hidden directly. npm.cmd is a batch file,
+    # which Windows runs via cmd.exe, and cmd.exe -- like powershell.exe --
+    # still briefly allocates a console even under -WindowStyle Hidden.
+    # wscript.exe never allocates one at all, so there is nothing to flash.
+    $vbsPath = Join-Path $RepoRoot 'scripts\windows\run-hidden.vbs'
+    Start-Process -FilePath "wscript.exe" `
+        -ArgumentList "`"$vbsPath`" `"npm.cmd`" `"start`"" `
         -WorkingDirectory $RepoRoot -WindowStyle Hidden
     Log "Restart issued."
 }
@@ -60,7 +75,7 @@ function Restart-Meridian {
 git fetch origin main 2>&1 | ForEach-Object { Log "  git: $_" }
 if ($LASTEXITCODE -ne 0) {
     Log "git fetch failed (exit $LASTEXITCODE) -- no network, or GitHub unreachable. Leaving the app as-is."
-    if (-not (Test-PortOpen 5173)) { Restart-Meridian }
+    if ($EnsureRunning -and -not (Test-PortOpen 5173)) { Restart-Meridian }
     exit 0
 }
 
@@ -69,7 +84,7 @@ $remoteRev = (git rev-parse origin/main).Trim()
 
 if ($localRev -eq $remoteRev) {
     Log "No update available (up to date at $($localRev.Substring(0,7)))."
-    if (-not (Test-PortOpen 5173)) {
+    if ($EnsureRunning -and -not (Test-PortOpen 5173)) {
         Log "App isn't running -- starting it."
         Restart-Meridian
     }
