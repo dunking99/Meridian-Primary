@@ -1,12 +1,15 @@
-# Removes the scheduled task set up by setup-auto-update.ps1. Does not stop
+# Removes both scheduled tasks set up by setup-auto-update.ps1. Does not stop
 # Meridian itself if it's currently running -- just stops future automatic
-# updates and restarts.
+# updates, restarts, and login-time starts.
 
-$TaskName = 'MeridianAutoUpdate'
+$TaskNames = 'MeridianAutoUpdate', 'MeridianStartOnLogin'
 
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-    Write-Host "'$TaskName' removed. Meridian will no longer auto-update."
-} else {
-    Write-Host "No '$TaskName' task found -- nothing to remove."
+foreach ($name in $TaskNames) {
+    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false
+        Write-Host "'$name' removed."
+    } else {
+        Write-Host "No '$name' task found -- nothing to remove."
+    }
 }
+Write-Host "`nMeridian will no longer auto-update or auto-start."

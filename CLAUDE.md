@@ -89,6 +89,18 @@ Two real incidents, both in `scripts/windows/*.ps1`:
    failure — meaning auto-update was reporting failure on every successful
    run and never actually applying updates. Also didn't reproduce under
    `pwsh` in this sandbox.
+3. The idle-check path unconditionally restarted the app whenever it wasn't
+   listening on its port, even if the user had deliberately closed it and
+   nothing had actually updated — combined with `-WindowStyle Hidden` on
+   `powershell.exe`/`cmd.exe` being unreliable (both still briefly allocate a
+   console before the hidden style applies), this meant a PowerShell window
+   visibly flashed on screen every 5 minutes for no reason. Fixed by gating
+   the idle-restart behind an explicit `-EnsureRunning` switch (only the
+   login-time task passes it) and routing all launches through
+   `wscript.exe` + `run-hidden.vbs`, which never allocates a console at all.
+   The actual invisible-launch behavior couldn't be end-to-end verified in
+   this sandbox (no real Windows/Task Scheduler available) — flagged as such
+   rather than claimed as tested.
 
 Lessons applied going forward, not just for these two bugs:
 - For anything PowerShell: **fetch a real `pwsh` binary into the sandbox and

@@ -237,18 +237,34 @@ manual `git pull`/`npm install`/restart cycles.
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\windows\setup-auto-update.ps1
 ```
-This registers a Windows Scheduled Task that, every 5 minutes and once at
-every login:
-1. Checks GitHub for a new commit on `main`.
-2. If there's one, backs up every file about to change into
-   `_archive\<timestamp>\`, mirroring the repo's folder structure.
-3. Pulls (fast-forward only — it refuses rather than merges if the local copy
-   has been hand-edited).
-4. Runs `npm install` if `package.json` changed.
-5. Restarts the app.
+This registers two Windows Scheduled Tasks:
 
-If there's nothing new, it just makes sure Meridian is actually running and
-starts it if not — so `npm start` by hand is no longer needed either.
+- **`MeridianAutoUpdate`** — every 5 minutes:
+  1. Checks GitHub for a new commit on `main`.
+  2. If there's one, backs up every file about to change into
+     `_archive\<timestamp>\`, mirroring the repo's folder structure.
+  3. Pulls (fast-forward only — it refuses rather than merges if the local
+     copy has been hand-edited).
+  4. Runs `npm install` if `package.json` changed.
+  5. Restarts the app.
+
+  If there's nothing new, it does nothing else — in particular, it does
+  **not** relaunch the app if you've closed it yourself. Only a real update
+  restarts things.
+
+- **`MeridianStartOnLogin`** — once, at login: same update check, but also
+  starts the app if it isn't already running. This is the only place that
+  happens, so `npm start` by hand is no longer needed after a reboot or
+  sign-in, while deliberately closing Meridian during the day keeps it closed
+  until you next log in or start it yourself.
+
+Both tasks run via `wscript.exe` and `scripts\windows\run-hidden.vbs`
+instead of launching `powershell.exe`/`npm.cmd` directly. PowerShell's own
+`-WindowStyle Hidden` doesn't reliably stop a console window from briefly
+flashing on screen — `powershell.exe` and `cmd.exe` (which `npm.cmd` runs
+through) both still momentarily allocate a console even under that flag.
+`wscript.exe` never allocates one at all, so routing through it removes the
+flash rather than just trying to hide it.
 
 **If an update turns out to be broken:**
 ```powershell
