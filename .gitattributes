@@ -1,0 +1,12 @@
+# The repo is LF throughout. Uploading a file through GitHub's web UI from a
+# Windows editor rewrote src/App.jsx to CRLF once, which turned a seven-line
+# change into a 5,000-line diff and made the real edit impossible to review.
+# This normalises line endings on commit so that cannot happen again.
+* text=auto eol=lf
+
+# Binary — never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.db  binary
