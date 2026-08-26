@@ -15,3 +15,8 @@ repomix-output.xml
 .env
 .env.local
 .DS_Store
+
+# Local artefacts from scripts/windows/auto-update.ps1 — per-machine, never
+# something to sync back to the repo.
+_archive/
+auto-update.log
