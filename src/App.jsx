@@ -3529,6 +3529,555 @@ function ResearchFilingsTab({ symbol, filingsData, insidersData, fundamentals, f
   );
 }
 
+/**
+ * Net lean — a straight count of which way the computed signals point.
+ *
+ * Deliberately a count and not a score. A weighted 0-100 "conviction" number
+ * would imply the weights mean something, and there is no basis for any
+ * particular set of them; a count is honest about being a count. It sits next
+ * to the argument rather than above it because the argument is the product.
+ */
+function NetLean({ lean, compact = false }) {
+  if (!lean || (lean.bull + lean.bear) === 0) return null;
+  const total = lean.bull + lean.bear;
+  const bullPct = (lean.bull / total) * 100;
+  const label = lean.bull > lean.bear ? "BULL" : lean.bear > lean.bull ? "BEAR" : "SPLIT";
+  const color = lean.bull > lean.bear ? "#00d4aa" : lean.bear > lean.bull ? "#ff4757" : "#ffa502";
+
+  return (
+    <div
+      title={`${lean.bull} signal${lean.bull === 1 ? "" : "s"} point bullish, ${lean.bear} bearish${lean.neutral ? `, ${lean.neutral} neutral` : ""}. A count, not a score.`}
+      style={{ display: "flex", alignItems: "center", gap: 8, cursor: "help" }}
+    >
+      {!compact && (
+        <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1 }}>NET LEAN</span>
+      )}
+      <span style={{ fontSize: compact ? 10 : 12, fontWeight: 700, color, fontFamily: "monospace", letterSpacing: 1 }}>
+        {label}
+      </span>
+      <div style={{ display: "flex", width: compact ? 60 : 96, height: 4, borderRadius: 2, overflow: "hidden", background: "#141b28" }}>
+        <div style={{ width: `${bullPct}%`, background: "#00d4aa" }} />
+        <div style={{ width: `${100 - bullPct}%`, background: "#ff4757" }} />
+      </div>
+      <span style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+        {lean.bull}·{lean.bear}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Compact instrument header.
+ *
+ * Replaces a 90px-tall panel that held the same four facts on three lines.
+ * Everything sits on one row so the tab bar — and therefore the content — is
+ * visible without scrolling, which matters because this page is a place you
+ * move between tabs rather than read top to bottom.
+ */
+function InstrumentBar({ symbol, name, data, isTracked, instrument, lean }) {
+  const up = (data?.changePct ?? 0) >= 0;
+  return (
+    <div style={{
+      background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 6,
+      padding: "10px 16px", display: "flex", alignItems: "center",
+      gap: 16, flexWrap: "wrap",
+    }}>
+      <div style={{ minWidth: 0, flex: "1 1 240px" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 16, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>{name}</span>
+          <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{symbol}</span>
+          {instrument && (
+            <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", border: "1px solid #1a2535", borderRadius: 3, padding: "1px 5px" }}>
+              {instrument.toUpperCase()}
+            </span>
+          )}
+          <span style={{ fontSize: 9, color: isTracked ? "#00d4aa" : "#3a4558", fontFamily: "monospace" }}>
+            {isTracked ? "LIVE TRACKED" : "NOT TRACKED"}
+          </span>
+        </div>
+      </div>
+
+      {lean && <div style={{ marginLeft: "auto" }}><NetLean lean={lean} /></div>}
+
+      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginLeft: lean ? 6 : "auto", flexShrink: 0 }}>
+        <span style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>
+          {data ? formatPrice(data.price, symbol) : <NoData reason="No live price for this symbol in the terminal feed" />}
+        </span>
+        {data && (
+          <>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: up ? "#00d4aa" : "#ff4757" }}>
+              1D {formatChange(data.changePct)}
+            </span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: (data.weekChangePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757" }}>
+              1W {data.weekChangePct == null ? <NoData compact reason="No week-ago close stored" /> : formatChange(data.weekChangePct)}
+            </span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// BULL / BEAR
+//
+// The reasoning for and against an instrument: what has to be true for each
+// side, and what would prove each side wrong.
+//
+// Not a verdict. There is no overall score, no 0-100 conviction number and no
+// "VERDICT: BULLISH" banner, because none of those could be honest — they
+// would need weights nothing here can justify. The one aggregate shown is a
+// straight count of which way the signals point, sitting beside the argument
+// rather than above it.
+//
+// Every signal carries the date it was computed from and where it came from.
+// Signals that cannot be computed for this instrument are listed with the
+// reason instead of being dropped, so a thin case is visibly thin.
+// ============================================================
+
+const BB = { bull: "#00d4aa", bear: "#ff4757", neutral: "#ffa502", muted: "#4a6080", border: "#1a2535" };
+
+const SIGNAL_ICON = {
+  valuation: "◈", momentum: "◬", analyst: "◎", news: "◉", insider: "▣",
+};
+
+function bbAge(iso) {
+  if (!iso) return null;
+  const days = Math.round((Date.now() - Date.parse(`${iso}T12:00:00Z`)) / 86400_000);
+  if (!Number.isFinite(days)) return null;
+  if (days <= 0) return "today";
+  if (days === 1) return "1d ago";
+  if (days < 30) return `${days}d ago`;
+  return `${Math.round(days / 30)}mo ago`;
+}
+
+/** One grounding fact, with its provenance attached. */
+function SignalCard({ s }) {
+  const c = s.direction === "bull" ? BB.bull : s.direction === "bear" ? BB.bear : BB.neutral;
+  return (
+    <div style={{
+      borderLeft: `2px solid ${c}`, background: "#0b0f18",
+      borderRadius: "0 4px 4px 0", padding: "9px 12px", marginBottom: 6,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4 }}>
+        <span style={{ color: c, fontSize: 10 }}>{SIGNAL_ICON[s.category] ?? "·"}</span>
+        <span style={{
+          fontSize: 9, fontFamily: "monospace", letterSpacing: 0.5, color: c,
+          border: `1px solid ${c}35`, borderRadius: 3, padding: "1px 6px", textTransform: "uppercase",
+        }}>{s.label}</span>
+        <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace" }}>{bbAge(s.asOf)}</span>
+        <span style={{ flex: 1 }} />
+        <span title={`Source: ${s.source}`} style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", cursor: "help" }}>
+          {s.source}
+        </span>
+      </div>
+      <div style={{ fontSize: 12.5, color: "#c8d6e8", lineHeight: 1.5 }}>{s.claim}</div>
+    </div>
+  );
+}
+
+/** Bear / base / bull targets, plus where the price sits between them. */
+function ScenarioPanel({ scenario, symbol }) {
+  if (!scenario?.available) {
+    return (
+      <Panel>
+        <SectionHeader title="PRICE SCENARIOS" />
+        <div style={{ padding: 16, fontSize: 12, color: BB.muted, lineHeight: 1.7 }}>
+          {scenario?.reason ?? "No analyst targets available."}
+          <div style={{ color: "#2a3548", marginTop: 5 }}>
+            Scenario prices come from published analyst targets, which exist for individual
+            companies rather than for funds, indices, currencies or commodities.
+          </div>
+        </div>
+      </Panel>
+    );
+  }
+
+  const { bear, base, bull, current, pctToBear, pctToBase, pctToBull } = scenario;
+  // Position of the live price on the low-to-high track.
+  const span = (bull ?? 0) - (bear ?? 0);
+  const marker = span > 0 ? Math.max(0, Math.min(100, ((current - bear) / span) * 100)) : 50;
+
+  const card = (label, value, delta, color) => (
+    <div style={{
+      flex: 1, minWidth: 150, background: "#0b0f18",
+      border: `1px solid ${color}30`, borderTop: `2px solid ${color}`,
+      borderRadius: 5, padding: "12px 14px", textAlign: "center",
+    }}>
+      <div style={{ fontSize: 9, color, fontFamily: "monospace", letterSpacing: 1 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace", marginTop: 4 }}>
+        {value != null ? formatPrice(value, symbol) : <NoData reason="Not published" />}
+      </div>
+      <div style={{ fontSize: 11, color, fontFamily: "monospace", marginTop: 2 }}>
+        {delta != null ? `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}%` : ""}
+      </div>
+    </div>
+  );
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="PRICE SCENARIOS"
+        subtitle={`${scenario.analysts ? `${scenario.analysts} analysts · ` : ""}${scenario.source}`}
+      />
+      <div style={{ padding: 14 }}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {card("BEAR CASE", bear, pctToBear, BB.bear)}
+          {card("BASE CASE", base, pctToBase, "#7a8ba0")}
+          {card("BULL CASE", bull, pctToBull, BB.bull)}
+        </div>
+
+        {/* Where the traded price sits between the low and high target. */}
+        <div style={{ marginTop: 18, padding: "0 6px" }}>
+          <div style={{ position: "relative", height: 6, background: "linear-gradient(90deg,#ff475740,#7a8ba030,#00d4aa40)", borderRadius: 3 }}>
+            <div style={{ position: "absolute", left: `${marker}%`, top: -5, transform: "translateX(-50%)" }}>
+              <div style={{ width: 2, height: 16, background: "#e8f0fe", borderRadius: 1 }} />
+            </div>
+          </div>
+          {/* The current-price label tracks the marker. Sitting it in the
+              middle of a space-between row implied the price was halfway
+              between the targets no matter where it actually was. */}
+          <div style={{ position: "relative", height: 14, marginTop: 5 }}>
+            <span style={{
+              position: "absolute", left: `${marker}%`, transform: "translateX(-50%)",
+              fontSize: 10, color: "#c8d6e8", fontFamily: "monospace", whiteSpace: "nowrap",
+            }}>
+              {current != null ? formatPrice(current, symbol) : "—"}
+            </span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#3a4558", fontFamily: "monospace" }}>
+            <span>{bear != null ? formatPrice(bear, symbol) : "—"} low</span>
+            <span>high {bull != null ? formatPrice(bull, symbol) : "—"}</span>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 10, color: "#2a3548", lineHeight: 1.5 }}>
+          These are the range of published analyst targets, not a model output. The spread between
+          them is a measure of how much analysts disagree, not a probability distribution.
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+/** One side's argument: assumption, bullets, and what would disprove it. */
+function ThesisColumn({ side, thesis, signals, symbol, editing, draft, onDraft }) {
+  const isBull = side === "bull";
+  const c = isBull ? BB.bull : BB.bear;
+  const title = isBull ? "BULL CASE" : "BEAR CASE";
+  const sideSignals = signals.filter(s => s.direction === side);
+
+  const textarea = (value, onChange, rows = 3, placeholder = "") => (
+    <textarea
+      value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={placeholder}
+      style={{
+        width: "100%", background: "#080b12", border: `1px solid ${BB.border}`, borderRadius: 4,
+        color: "#c8d6e8", fontFamily: "monospace", fontSize: 12, padding: "7px 9px",
+        lineHeight: 1.6, resize: "vertical",
+      }}
+    />
+  );
+
+  return (
+    <div style={{
+      flex: 1, minWidth: 300, background: "#0b0f18",
+      border: `1px solid ${c}25`, borderRadius: 6, overflow: "hidden",
+    }}>
+      <div style={{
+        padding: "10px 14px", background: `${c}10`, borderBottom: `1px solid ${c}25`,
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "monospace", letterSpacing: 1 }}>{title}</span>
+        <span style={{ fontSize: 10, color: BB.muted, fontFamily: "monospace" }}>
+          {sideSignals.length} signal{sideSignals.length === 1 ? "" : "s"}
+          {thesis?.target != null && ` · ${formatPrice(thesis.target, symbol)}`}
+        </span>
+      </div>
+
+      <div style={{ padding: 14 }}>
+        {/* The load-bearing claim, given its own emphasis. */}
+        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, marginBottom: 5 }}>
+          THIS DEPENDS ON
+        </div>
+        {editing ? (
+          textarea(draft.keyAssumption, v => onDraft({ keyAssumption: v }), 2, "The single thing this side needs to be true")
+        ) : (
+          <div style={{ fontSize: 13, color: "#e8f0fc", lineHeight: 1.6, fontStyle: "italic" }}>
+            {thesis?.keyAssumption || <span style={{ color: "#3a4558", fontStyle: "normal" }}>Not stated.</span>}
+          </div>
+        )}
+
+        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, margin: "16px 0 6px" }}>
+          ARGUMENT
+        </div>
+        {editing ? (
+          textarea(draft.argument, v => onDraft({ argument: v }), 5, "One point per line")
+        ) : thesis?.argument?.length ? (
+          <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 7 }}>
+            {thesis.argument.map((a, i) => (
+              <li key={i} style={{ fontSize: 12.5, color: "#c8d6e8", lineHeight: 1.55 }}>{a}</li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{ fontSize: 12, color: "#3a4558" }}>Not written.</div>
+        )}
+
+        {/* Falsification is the part that makes this a thesis rather than a pitch. */}
+        <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, margin: "16px 0 6px" }}>
+          WHAT WOULD PROVE THIS WRONG
+        </div>
+        {editing ? (
+          textarea(draft.disproof, v => onDraft({ disproof: v }), 3, "One per line")
+        ) : thesis?.disproof?.length ? (
+          <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 6 }}>
+            {thesis.disproof.map((d, i) => (
+              <li key={i} style={{ fontSize: 12, color: "#7a8ba0", lineHeight: 1.5 }}>{d}</li>
+            ))}
+          </ul>
+        ) : (
+          <div style={{ fontSize: 12, color: "#3a4558" }}>Not stated.</div>
+        )}
+
+        {sideSignals.length > 0 && (
+          <>
+            <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", letterSpacing: 1, margin: "18px 0 7px" }}>
+              GROUNDED IN
+            </div>
+            {sideSignals.map(s => <SignalCard key={s.label} s={s} />)}
+          </>
+        )}
+
+        {thesis?.source && (
+          <div style={{ fontSize: 9, color: "#2a3548", fontFamily: "monospace", marginTop: 10 }}>
+            {thesis.source === "ai" ? "Drafted by AI from the signals above"
+              : thesis.source === "ai_edited" ? "AI draft, edited by hand"
+              : "Written by hand"}
+            {thesis.updatedAt ? ` · ${thesis.updatedAt.slice(0, 10)}` : ""}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ResearchBullBearTab({ symbol, name, bullbearData, bullbearLoading, onReload }) {
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [drafts, setDrafts] = useState({ bull: null, bear: null });
+
+  const d = bullbearData;
+
+  // Newline-separated text is the right editing affordance for a bullet list —
+  // one line per point, no list-item chrome to fight with.
+  const startEditing = () => {
+    const toDraft = side => ({
+      keyAssumption: d?.thesis?.[side]?.keyAssumption ?? "",
+      argument: (d?.thesis?.[side]?.argument ?? []).join("\n"),
+      disproof: (d?.thesis?.[side]?.disproof ?? []).join("\n"),
+    });
+    setDrafts({ bull: toDraft("bull"), bear: toDraft("bear") });
+    setEditing(true);
+  };
+
+  async function save() {
+    setSaving(true);
+    try {
+      for (const side of ["bull", "bear"]) {
+        const dr = drafts[side];
+        if (!dr) continue;
+        await fetch(`${API}/research/bullbear/thesis`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol, side,
+            keyAssumption: dr.keyAssumption.trim() || null,
+            argument: dr.argument.split("\n").map(x => x.trim()).filter(Boolean),
+            disproof: dr.disproof.split("\n").map(x => x.trim()).filter(Boolean),
+          }),
+        });
+      }
+      setEditing(false);
+      await onReload();
+    } finally { setSaving(false); }
+  }
+
+  async function generate() {
+    setGenerating(true); setGenError(null);
+    try {
+      const res = await fetch(`${API}/research/bullbear/generate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, name }),
+      });
+      const r = await res.json();
+      if (!r.ok) setGenError(r.message ?? "Generation failed.");
+      else await onReload();
+    } catch {
+      setGenError("Could not reach the Meridian API.");
+    } finally { setGenerating(false); }
+  }
+
+  if (bullbearLoading && !d) {
+    return <Panel><div style={{ padding: 24, textAlign: "center", color: BB.muted, fontSize: 12 }}>Reading signals…</div></Panel>;
+  }
+  if (!d || d.error) {
+    return (
+      <Panel>
+        <div style={{ padding: 16, fontSize: 12, color: "#ff4757" }}>{d?.error ?? "Could not load the bull / bear view."}</div>
+      </Panel>
+    );
+  }
+
+  const hasThesis = !!(d.thesis?.bull || d.thesis?.bear);
+  const neutral = d.signals.filter(s => s.direction === "neutral");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      <ScenarioPanel scenario={d.scenario} symbol={symbol} />
+
+      {/* The argument. */}
+      <Panel>
+        <SectionHeader
+          title="THE CASE"
+          subtitle={hasThesis ? "What has to be true, and what would prove it wrong" : "Not drafted yet"}
+          action={editing ? (saving ? "SAVING…" : "SAVE") : (generating ? "DRAFTING…" : hasThesis ? "REGENERATE" : "DRAFT FROM SIGNALS")}
+          onAction={editing ? save : generate}
+          extra={
+            hasThesis && !generating ? (
+              <button onClick={editing ? () => setEditing(false) : startEditing} style={{
+                background: "transparent", border: `1px solid ${BB.border}`, color: BB.muted,
+                fontSize: 10, padding: "3px 9px", borderRadius: 3, cursor: "pointer", fontFamily: "monospace",
+              }}>{editing ? "CANCEL" : "EDIT"}</button>
+            ) : null
+          }
+        />
+
+        {genError && (
+          <div style={{ padding: "10px 14px", fontSize: 11, color: "#ff4757", borderBottom: `1px solid ${BB.border}` }}>
+            {genError}
+          </div>
+        )}
+
+        {!hasThesis && !editing ? (
+          <div style={{ padding: 20, fontSize: 12, color: BB.muted, lineHeight: 1.8 }}>
+            {d.signals.length === 0 ? (
+              <>
+                No signal could be computed for {symbol}, so there is nothing to argue from yet.
+                <div style={{ color: "#2a3548", marginTop: 6 }}>
+                  Sync price history for this symbol and the range and momentum signals will appear.
+                </div>
+              </>
+            ) : !d.aiAvailable ? (
+              <>
+                {d.signals.length} signal{d.signals.length === 1 ? "" : "s"} computed below. Drafting the
+                argument needs a Gemini API key — add one in Settings, or write the case by hand.
+              </>
+            ) : (
+              <>
+                {d.signals.length} signal{d.signals.length === 1 ? "" : "s"} computed for {symbol}.
+                Draft the argument from them, then edit it by hand.
+                <div style={{ color: "#2a3548", marginTop: 6 }}>
+                  The model is given only the signals below — no prices, no company narrative — so it
+                  cannot argue from anything that is not on this page.
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <div style={{ padding: 14, display: "flex", gap: 14, flexWrap: "wrap" }}>
+            <ThesisColumn
+              side="bull" thesis={d.thesis?.bull} signals={d.signals} symbol={symbol}
+              editing={editing} draft={drafts.bull ?? {}}
+              onDraft={p => setDrafts(s => ({ ...s, bull: { ...s.bull, ...p } }))}
+            />
+            <ThesisColumn
+              side="bear" thesis={d.thesis?.bear} signals={d.signals} symbol={symbol}
+              editing={editing} draft={drafts.bear ?? {}}
+              onDraft={p => setDrafts(s => ({ ...s, bear: { ...s.bear, ...p } }))}
+            />
+          </div>
+        )}
+      </Panel>
+
+      {/* Where the two sides actually diverge. */}
+      {d.disagreement && (
+        <Panel>
+          <SectionHeader title="WHERE THEY DISAGREE" subtitle="The question that would settle it" />
+          <div style={{ padding: 16, fontSize: 13, lineHeight: 1.8, color: "#a0b4c8", borderLeft: "2px solid #3d8bff40", margin: "0 14px 14px", paddingLeft: 14 }}>
+            {d.disagreement}
+          </div>
+        </Panel>
+      )}
+
+      {/* Signals that point neither way, and those that could not be computed. */}
+      {(neutral.length > 0 || d.unavailable.length > 0) && (
+        <Panel>
+          <SectionHeader
+            title="OTHER SIGNALS"
+            subtitle={`${neutral.length} neutral · ${d.unavailable.length} not available for this instrument`}
+          />
+          <div style={{ padding: 14 }}>
+            {neutral.map(s => <SignalCard key={s.label} s={s} />)}
+            {d.unavailable.length > 0 && (
+              <div style={{ marginTop: neutral.length ? 12 : 0 }}>
+                {/* Listed rather than hidden: a case built on three signals
+                    instead of eight is a thinner case, and that should show. */}
+                {d.unavailable.map(s => (
+                  <div key={s.label} style={{ display: "flex", gap: 10, padding: "5px 0", fontSize: 11, alignItems: "baseline" }}>
+                    <span style={{ color: "#2a3548", fontFamily: "monospace", minWidth: 110, textTransform: "uppercase", fontSize: 9, letterSpacing: 0.5 }}>
+                      {s.label}
+                    </span>
+                    <span style={{ color: "#3a4558", lineHeight: 1.5 }}>{s.reason}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {/* Dated events behind the signals. */}
+      {d.timeline?.events?.length > 0 && (
+        <Panel>
+          <SectionHeader
+            title="WHAT HAPPENED"
+            subtitle={`Last ${d.timeline.days} days · ${d.timeline.counts.bull} bullish · ${d.timeline.counts.bear} bearish`}
+          />
+          <div style={{ padding: "6px 0" }}>
+            {d.timeline.events.map((e, i) => {
+              const c = e.direction === "bull" ? BB.bull : e.direction === "bear" ? BB.bear : BB.neutral;
+              const body = (
+                <>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: c, flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", minWidth: 64 }}>{e.date}</span>
+                  <span style={{
+                    fontSize: 8.5, fontFamily: "monospace", letterSpacing: 0.5, color: c,
+                    border: `1px solid ${c}30`, borderRadius: 3, padding: "1px 5px",
+                    textTransform: "uppercase", minWidth: 52, textAlign: "center", flexShrink: 0,
+                  }}>{e.category}</span>
+                  <span style={{ fontSize: 12, color: "#a0b4c8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {e.claim}
+                  </span>
+                </>
+              );
+              const style = { display: "flex", gap: 10, alignItems: "center", padding: "7px 16px", borderBottom: "1px solid #10151f", textDecoration: "none" };
+              return e.url && e.url !== "#"
+                ? <a key={i} href={e.url} target="_blank" rel="noopener noreferrer" style={style}>{body}</a>
+                : <div key={i} style={style}>{body}</div>;
+            })}
+          </div>
+        </Panel>
+      )}
+
+      <div style={{ fontSize: 10, color: "#2a3548", fontFamily: "monospace", padding: "0 4px", lineHeight: 1.6 }}>
+        Signals computed locally from stored bars, the news feed, SEC filings and Yahoo's analyst modules.
+        No overall score is shown — weighting these against each other would need weights nothing here can justify.
+      </div>
+    </div>
+  );
+}
+
 function ResearchPage({ prices }) {
   const trackedSymbols = Object.keys(DISPLAY_NAMES);
   const [query, setQuery] = useState("^GSPC");
@@ -3543,6 +4092,10 @@ function ResearchPage({ prices }) {
   const [newsData, setNewsData] = useState(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const newsCache = useRef({});
+
+  const [bullbearData, setBullbearData] = useState(null);
+  const [bullbearLoading, setBullbearLoading] = useState(false);
+  const bullbearCache = useRef({});
 
   const [filingsData, setFilingsData] = useState(null);
   const [insidersData, setInsidersData] = useState(null);
@@ -3610,6 +4163,26 @@ function ResearchPage({ prices }) {
       .finally(() => setNewsLoading(false));
   }, [tab, symbol, name]);
 
+  // Bull / Bear tab: same lazy-load-and-cache pattern. loadBullBear is also the
+  // reload path after generating or editing a thesis, so it takes a flag to
+  // bypass the cache rather than being duplicated.
+  const loadBullBear = useCallback(async (sym, { fresh = false } = {}) => {
+    if (!fresh && bullbearCache.current[sym]) { setBullbearData(bullbearCache.current[sym]); return; }
+    setBullbearLoading(true);
+    try {
+      const d = await fetch(`${API}/research/bullbear?symbol=${encodeURIComponent(sym)}`).then(r => r.json());
+      bullbearCache.current[sym] = d;
+      setBullbearData(d);
+    } catch {
+      setBullbearData({ error: "Could not reach the Meridian API." });
+    } finally { setBullbearLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "bullbear") return;
+    loadBullBear(symbol);
+  }, [tab, symbol, loadBullBear]);
+
   // Filings tab: same lazy-load-and-cache pattern.
   useEffect(() => {
     if (tab !== "filings") return;
@@ -3666,6 +4239,11 @@ blind spots is more useful than one that reads confidently past them.`;
   // an always-empty tab for an index or a currency pair, each tab declares
   // whether it applies to this instrument and why not when it doesn't.
   const inst = summary && !summary.error ? summary : null;
+  // Shown in the instrument bar once the Bull / Bear tab has been opened for
+  // this symbol. Not fetched eagerly: a lean is only meaningful next to the
+  // signals it counts, and the bar should not cost a request on every search.
+  const lean = bullbearData && !bullbearData.error && bullbearData.symbol === symbol
+    ? bullbearData.tally : null;
   const tabNA = {
     analyst: inst?.hasAnalystCoverage === false
       ? (inst.inapplicable?.analyst ?? `Analysts do not rate a ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} like this.`)
@@ -3711,23 +4289,10 @@ const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"]
         </div>
       </Panel>
 
-      <Panel>
-        <div style={{ padding: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>{name}</div>
-            <div style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace", marginTop: 2 }}>{symbol} {isTracked ? "\u00b7 LIVE TRACKED" : "\u00b7 NOT TRACKED"}</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 24, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>{data ? formatPrice(data.price, symbol) : "\u2014"}</div>
-            {data && (
-              <div style={{ display: "flex", gap: 14, justifyContent: "flex-end", marginTop: 4 }}>
-                <span style={{ fontSize: 12, fontFamily: "monospace", color: data.changePct >= 0 ? "#00d4aa" : "#ff4757" }}>1D {formatChange(data.changePct)}</span>
-                <span style={{ fontSize: 12, fontFamily: "monospace", color: data.weekChangePct >= 0 ? "#00d4aa" : "#ff4757" }}>1W {formatChange(data.weekChangePct)}</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </Panel>
+      <InstrumentBar
+        symbol={symbol} name={name} data={data} isTracked={isTracked}
+        instrument={inst?.instrumentLabel ?? null} lean={lean}
+      />
 
       <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
         {tabs.map(([id, label]) => (
@@ -3745,15 +4310,14 @@ const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"]
       {tab === "overview" && <ResearchOverviewTab symbol={symbol} name={name} data={data} summary={summary} summaryLoading={summaryLoading} levels={levels} />}
       {tab === "analyst" && <ResearchAnalystTab symbol={symbol} price={price} summary={summary} summaryLoading={summaryLoading} />}
       {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
-{tab === "bullbear" && (
-  <Panel>
-    <SectionHeader title="BULL / BEAR" subtitle="Case for and against" />
-    <div style={{ padding: 16 }}>
-      <div style={{ fontSize: 12, color: "#4a6080" }}>Coming soon.</div>
-    </div>
-  </Panel>
-)}
-{tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} fundamentals={fundamentals} filingsLoading={filingsLoading} />}
+      {tab === "bullbear" && (
+        <ResearchBullBearTab
+          symbol={symbol} name={name}
+          bullbearData={bullbearData} bullbearLoading={bullbearLoading}
+          onReload={() => loadBullBear(symbol, { fresh: true })}
+        />
+      )}
+      {tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} fundamentals={fundamentals} filingsLoading={filingsLoading} />}
       {tab === "ai" && (
         <Panel>
           <SectionHeader title="AI RESEARCH NOTE" subtitle="Bull / bear / base case" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
