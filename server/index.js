@@ -28,6 +28,7 @@ import * as alerts from './engines/alerts.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
+import * as bullbear from './engines/bullbear.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -684,6 +685,62 @@ const routes = {
 
     return { symbol, query: queryText, feedCount: feed.length, liveCount: live.length, news: combined };
   },
+
+  // ── bull / bear ────────────────────────────────────────────
+  // One read for the whole tab. The quoteSummary fetch is shared between the
+  // signals, the price scenario and the daily snapshot write, so the tab costs
+  // one upstream call rather than three.
+  'GET /research/bullbear': async q => {
+    const symbol = String(q.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+
+    const summary = await yahoo.fetchSummary(symbol);
+    const price = state.prices[symbol]?.price
+      ?? (summary && !summary.error ? summary.price : null);
+
+    // Snapshots accrue as a side effect of reading the tab. For a single-user
+    // app that beats a scheduled job: history builds for the instruments
+    // actually being looked at, and the unique constraint makes a second read
+    // on the same day free.
+    if (summary && !summary.error) {
+      try { bullbear.recordSnapshots(symbol, summary); }
+      catch (e) { console.log(`  bullbear snapshot failed for ${symbol}: ${e.message}`); }
+    }
+
+    return bullbear.readBullBear(symbol, {
+      summary: summary?.error ? null : summary,
+      price,
+      timeline: q.timeline !== '0',
+    });
+  },
+
+  'POST /research/bullbear/generate': async body => {
+    const symbol = String(body?.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { ok: false, error: 'bad-request', message: 'symbol is required.' };
+
+    const summary = await yahoo.fetchSummary(symbol);
+    const price = state.prices[symbol]?.price
+      ?? (summary && !summary.error ? summary.price : null);
+
+    return await bullbear.generateThesis(symbol, {
+      name: body?.name ?? (summary?.error ? symbol : summary?.name) ?? symbol,
+      summary: summary?.error ? null : summary,
+      price,
+    });
+  },
+
+  'PUT /research/bullbear/thesis': body => {
+    const symbol = String(body?.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+    return bullbear.editThesis(symbol, body?.side, {
+      target: body?.target,
+      keyAssumption: body?.keyAssumption,
+      argument: body?.argument,
+      disproof: body?.disproof,
+    });
+  },
+
+  'DELETE /research/bullbear': q => bullbear.clearThesis(String(q.symbol ?? '').toUpperCase().trim()),
 
   // Score on demand — lets the user fill in a backlog without waiting for the
   // next 10-minute cycle (e.g. right after first pasting their API key).
