@@ -8,7 +8,16 @@
 # Nothing here touches meridian.db -- it is gitignored and untouched by git
 # pull regardless.
 
-$ErrorActionPreference = 'Stop'
+# Deliberately NOT 'Stop'. git (and other native tools) write routine status
+# text to stderr on a normal, successful run -- "From <url>", branch update
+# lines, etc. Under 'Stop', PowerShell can promote that stderr text into a
+# terminating exception with no regard for the actual exit code, so a
+# perfectly successful "git fetch" gets caught as a failure. This was a real
+# bug here: every run logged "git fetch failed" and quietly skipped the
+# update check, even when the fetch had worked. Native command success is
+# checked via $LASTEXITCODE below instead, which is unambiguous regardless of
+# what anything wrote to which stream.
+$ErrorActionPreference = 'Continue'
 
 $RepoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
 Set-Location $RepoRoot
@@ -48,11 +57,9 @@ function Restart-Meridian {
     Log "Restart issued."
 }
 
-try {
-    git fetch origin main *>&1 | ForEach-Object { Log "  git: $_" }
-}
-catch {
-    Log "git fetch failed -- no network, or GitHub unreachable. Leaving the app as-is: $_"
+git fetch origin main 2>&1 | ForEach-Object { Log "  git: $_" }
+if ($LASTEXITCODE -ne 0) {
+    Log "git fetch failed (exit $LASTEXITCODE) -- no network, or GitHub unreachable. Leaving the app as-is."
     if (-not (Test-PortOpen 5173)) { Restart-Meridian }
     exit 0
 }
@@ -74,7 +81,7 @@ Log "Update available: $($localRev.Substring(0,7)) -> $($remoteRev.Substring(0,7
 # A tracked file edited by hand locally would make the pull unsafe to do
 # silently -- back off rather than overwrite or discard it.
 git diff --quiet
-if (-not $?) {
+if ($LASTEXITCODE -ne 0) {
     Log "Local edits found in tracked files -- not pulling automatically. Resolve manually (git status), then this will resume next cycle."
     exit 1
 }
@@ -100,24 +107,20 @@ foreach ($f in $changed) {
 }
 Log "Backed up $($changed.Count) file(s) to _archive\$stamp before updating."
 
-try {
-    # --ff-only: this machine never has local commits of its own, so a
-    # non-fast-forward here means something unexpected happened. Fail loudly
-    # rather than auto-merge.
-    git pull --ff-only origin main *>&1 | ForEach-Object { Log "  git: $_" }
-}
-catch {
-    Log "git pull failed: $_. Left at $($localRev.Substring(0,7)). Backup is in _archive\$stamp if needed -- check manually."
+# --ff-only: this machine never has local commits of its own, so a
+# non-fast-forward here means something unexpected happened. Fail loudly
+# rather than auto-merge.
+git pull --ff-only origin main 2>&1 | ForEach-Object { Log "  git: $_" }
+if ($LASTEXITCODE -ne 0) {
+    Log "git pull failed (exit $LASTEXITCODE). Left at $($localRev.Substring(0,7)). Backup is in _archive\$stamp if needed -- check manually."
     exit 1
 }
 
 if ($changed -contains 'package.json' -or $changed -contains 'package-lock.json') {
     Log "package.json changed -- running npm install (this can take a minute)."
-    try {
-        npm install *>&1 | ForEach-Object { Log "  npm: $_" }
-    }
-    catch {
-        Log "npm install failed: $_. The app may not start correctly until this is resolved."
+    npm install 2>&1 | ForEach-Object { Log "  npm: $_" }
+    if ($LASTEXITCODE -ne 0) {
+        Log "npm install failed (exit $LASTEXITCODE). The app may not start correctly until this is resolved."
     }
 }
 
