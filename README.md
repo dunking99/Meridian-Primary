@@ -42,8 +42,8 @@ computes and what the front page shows.
 | Calendar | invented events dated relative to today | real earnings and dividend dates; folded into the front page |
 | Macro page | breadth, regime and cross-asset all constants | deleted — done for real elsewhere |
 | Instrument types | every symbol treated as a US common stock | 8 types, each declaring which figures apply |
-| Tables | 15 | 17 |
-| Endpoints | 56 | 80 |
+| Tables | 15 | 21 |
+| Endpoints | 56 | 84 |
 | EDGAR | Form 4 dates, all detail columns NULL | parsed transactions + reported XBRL fundamentals |
 | AI prompts | "be opinionated, no hedging" | permitted, and expected, to conclude nothing happened |
 
@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 80 routes
+  index.js               HTTP server, 84 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -101,6 +101,8 @@ server/
     memory.js            daily observations, breadth, dispersion, leadership,
                          correlation shifts — the "what changed" layer
     calendar.js          dated events for held and watched instruments
+    bullbear.js          signals for and against an instrument, and the
+                         persisted thesis drafted from them
     integrity.js         bar validation and corruption repair
     newsscore.js         AI relevance scoring for the news feed
 scripts/
@@ -128,6 +130,10 @@ scripts/
 `/screener/strategies`
 
 **Tracking** — `GET|POST|PUT|DELETE /alerts` `/watchlist` `/paper`
+
+**Bull / bear** — `GET /research/bullbear?symbol=` ·
+`POST /research/bullbear/generate` · `PUT /research/bullbear/thesis` ·
+`DELETE /research/bullbear?symbol=`
 
 **Memory** — `GET /changes` `/memory` `/memory/regime` `/memory/symbol?symbol=`
 `/memory/latest?symbols=` `/leadership` `/relationships` · `POST /memory/rebuild`
@@ -179,6 +185,15 @@ and a frontier that saturated because its return ceiling ignored the weight cap.
 - **The macro calendar is not covered.** No free structured feed for CPI,
   payrolls or rate decisions is wired up, and Investing.com does it better. The
   calendar says so rather than leaving the gap to be discovered.
+- **The bull/bear view shows no overall verdict or score.** Weighting a
+  momentum signal against an analyst signal would need weights nothing here
+  can justify. The only aggregate is a straight count of which way the signals
+  point, and signals that cannot be computed are listed with the reason so a
+  thin case looks thin.
+- **The thesis model sees only the signal list** — no prices, no company
+  narrative, and an explicit list of what is not observable for that
+  instrument. A generation that fails or returns unparseable output writes
+  nothing, since a half-written thesis still reads as authored.
 - **AI commentary can conclude that nothing happened**, and on most days should.
   It is given sigma-scored moves and percentile ranks rather than raw levels,
   and is instructed never to cite a figure it was not handed.
