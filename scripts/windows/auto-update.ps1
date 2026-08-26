@@ -5,7 +5,7 @@
 # pull, reinstall dependencies if package.json moved, and restart the app.
 # If there is nothing new, it just makes sure the app is actually running.
 #
-# Nothing here touches meridian.db — it is gitignored and untouched by git
+# Nothing here touches meridian.db -- it is gitignored and untouched by git
 # pull regardless.
 
 $ErrorActionPreference = 'Stop'
@@ -41,7 +41,7 @@ function Restart-Meridian {
             }
     }
     Start-Sleep -Seconds 2
-    # npm.cmd, not npm — Start-Process doesn't go through a shell, and plain
+    # npm.cmd, not npm -- Start-Process doesn't go through a shell, and plain
     # "npm" on Windows only resolves via PATHEXT inside a shell.
     Start-Process -FilePath "npm.cmd" -ArgumentList "start" `
         -WorkingDirectory $RepoRoot -WindowStyle Hidden
@@ -52,7 +52,7 @@ try {
     git fetch origin main *>&1 | ForEach-Object { Log "  git: $_" }
 }
 catch {
-    Log "git fetch failed — no network, or GitHub unreachable. Leaving the app as-is: $_"
+    Log "git fetch failed -- no network, or GitHub unreachable. Leaving the app as-is: $_"
     if (-not (Test-PortOpen 5173)) { Restart-Meridian }
     exit 0
 }
@@ -63,7 +63,7 @@ $remoteRev = (git rev-parse origin/main).Trim()
 if ($localRev -eq $remoteRev) {
     Log "No update available (up to date at $($localRev.Substring(0,7)))."
     if (-not (Test-PortOpen 5173)) {
-        Log "App isn't running — starting it."
+        Log "App isn't running -- starting it."
         Restart-Meridian
     }
     exit 0
@@ -72,10 +72,10 @@ if ($localRev -eq $remoteRev) {
 Log "Update available: $($localRev.Substring(0,7)) -> $($remoteRev.Substring(0,7))"
 
 # A tracked file edited by hand locally would make the pull unsafe to do
-# silently — back off rather than overwrite or discard it.
+# silently -- back off rather than overwrite or discard it.
 git diff --quiet
 if (-not $?) {
-    Log "Local edits found in tracked files — not pulling automatically. Resolve manually (git status), then this will resume next cycle."
+    Log "Local edits found in tracked files -- not pulling automatically. Resolve manually (git status), then this will resume next cycle."
     exit 1
 }
 $untrackedNote = git status --porcelain --untracked-files=no
@@ -107,12 +107,12 @@ try {
     git pull --ff-only origin main *>&1 | ForEach-Object { Log "  git: $_" }
 }
 catch {
-    Log "git pull failed: $_. Left at $($localRev.Substring(0,7)). Backup is in _archive\$stamp if needed — check manually."
+    Log "git pull failed: $_. Left at $($localRev.Substring(0,7)). Backup is in _archive\$stamp if needed -- check manually."
     exit 1
 }
 
 if ($changed -contains 'package.json' -or $changed -contains 'package-lock.json') {
-    Log "package.json changed — running npm install (this can take a minute)."
+    Log "package.json changed -- running npm install (this can take a minute)."
     try {
         npm install *>&1 | ForEach-Object { Log "  npm: $_" }
     }

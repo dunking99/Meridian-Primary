@@ -7,7 +7,7 @@
 # and restart the app. Also runs once at login, so a restart picks up whatever
 # was missed while the machine was off.
 #
-# Safe to run again later — it just replaces the existing task definition.
+# Safe to run again later -- it just replaces the existing task definition.
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
