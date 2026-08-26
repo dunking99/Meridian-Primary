@@ -1,4 +1,4 @@
-# Restore files from an auto-update backup — for when an update turns out to
+# Restore files from an auto-update backup -- for when an update turns out to
 # be broken and you want the previous version back immediately, without
 # waiting on anything.
 #
@@ -9,7 +9,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\windows\restore-backup.ps1 -Timestamp 20260826-153000
 #     Restores that specific backup directly.
 #
-# This only restores files — it does not touch meridian.db (your holdings and
+# This only restores files -- it does not touch meridian.db (your holdings and
 # price history), which auto-update never touches either.
 
 param([string]$Timestamp)
@@ -19,7 +19,7 @@ $RepoRoot = (Get-Item $PSScriptRoot).Parent.Parent.FullName
 $ArchiveRoot = Join-Path $RepoRoot '_archive'
 
 if (-not (Test-Path $ArchiveRoot)) {
-    Write-Host "No backups found — _archive doesn't exist yet. Nothing has auto-updated on this machine."
+    Write-Host "No backups found -- _archive doesn't exist yet. Nothing has auto-updated on this machine."
     exit 0
 }
 
@@ -57,7 +57,7 @@ foreach ($f in $files) {
     Write-Host "  restored $rel"
 }
 
-Write-Host "`nDone — $($files.Count) file(s) restored."
+Write-Host "`nDone -- $($files.Count) file(s) restored."
 Write-Host "Note: this repo is now ahead of what git thinks is checked out. If auto-update"
 Write-Host "runs again it will re-pull the newer version unless you also pause it first:"
 Write-Host "  scripts\windows\stop-auto-update.ps1"
