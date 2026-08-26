@@ -2001,8 +2001,8 @@ WHAT WOULD CHANGE IT: The specific thing that would alter this picture.`;
         <div>
           <div style={{ fontSize: 20, fontWeight: 700, color: MK.ink, fontFamily: MK.mono, letterSpacing: 1 }}>MARKETS</div>
           <div style={{ fontSize: 12.5, color: MK.ink4, marginTop: 3 }}>
-            {liveCount} of {ALL_MARKET_SYMBOLS.length} instruments live
-            {histLoaded && ` · ${Object.keys(hist).length} with stored history`}
+            {liveCount} of {ALL_MARKET_SYMBOLS.length} Instruments Live
+            {histLoaded && ` · ${Object.keys(hist).length} With Stored History`}
           </div>
         </div>
       </div>
@@ -3677,19 +3677,18 @@ blind spots is more useful than one that reads confidently past them.`;
       ? `A ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} has no SEC filings.`
       : null,
   };
-  const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"], ["filings", "Filings"], ["ai", "AI Note"]];
-
+const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"], ["bullbear", "Bull / Bear"], ["filings", "Filings"], ["ai", "AI Note"]];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel>
-        <SectionHeader title="ASSET RESEARCH" subtitle="Look up any ticker or company — live fundamentals, analyst view, news, filings" />
+        <SectionHeader title="ASSET RESEARCH" subtitle="Any Ticker/Company" />
         <div style={{ padding: 14, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", position: "relative" }}>
           <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => e.key === "Enter" && runSearch()}
-              placeholder="Company name or symbol e.g. Apple, AAPL, ^GSPC, GC=F"
+              placeholder="Company Name or Symbol"
               style={{ ...inputStyle, width: "100%" }}
             />
             {suggestions.length > 0 && (
@@ -3746,7 +3745,15 @@ blind spots is more useful than one that reads confidently past them.`;
       {tab === "overview" && <ResearchOverviewTab symbol={symbol} name={name} data={data} summary={summary} summaryLoading={summaryLoading} levels={levels} />}
       {tab === "analyst" && <ResearchAnalystTab symbol={symbol} price={price} summary={summary} summaryLoading={summaryLoading} />}
       {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
-      {tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} fundamentals={fundamentals} filingsLoading={filingsLoading} />}
+{tab === "bullbear" && (
+  <Panel>
+    <SectionHeader title="BULL / BEAR" subtitle="Case for and against" />
+    <div style={{ padding: 16 }}>
+      <div style={{ fontSize: 12, color: "#4a6080" }}>Coming soon.</div>
+    </div>
+  </Panel>
+)}
+{tab === "filings" && <ResearchFilingsTab symbol={symbol} filingsData={filingsData} insidersData={insidersData} fundamentals={fundamentals} filingsLoading={filingsLoading} />}
       {tab === "ai" && (
         <Panel>
           <SectionHeader title="AI RESEARCH NOTE" subtitle="Bull / bear / base case" action={aiLoading ? "THINKING..." : "GENERATE"} onAction={runAI} />
@@ -4667,7 +4674,7 @@ function PortfolioValueChart() {
 function ChartCaption({ hist }) {
   return (
     <div style={{ fontSize: 11, color: "#3a4558", marginTop: 10 }}>
-      Reconstructed at current holdings weights — excludes cash{hist?.excluded?.length ? ` and ${hist.excluded.join(", ")} (insufficient history)` : ""}.
+      {hist?.excluded?.length ? ` and ${hist.excluded.join(", ")} (insufficient history)` : ""}.
     </div>
   );
 }
@@ -4801,7 +4808,7 @@ function PortfolioPageV2() {
       <div>
         <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>PORTFOLIO</div>
         <div style={{ fontSize: 13, color: "#4a6080", marginTop: 3 }}>
-          {data.positions.length} positions · live valuation in GBP
+          {data.positions.length} Positions
         </div>
       </div>
 
@@ -4846,7 +4853,7 @@ function PortfolioPageV2() {
 
       {/* Holdings table */}
       <Panel>
-        <SectionHeader title="HOLDINGS" subtitle="click a row to expand · edit to adjust quantity or average price"
+        <SectionHeader title="HOLDINGS"
           action="+ ADD POSITION" onAction={() => setAddOpen(true)}
           extra={
             <button onClick={refreshNames} disabled={namesBusy} title="Look up a proper name and listing venue for any holding that's still showing its raw ticker"
