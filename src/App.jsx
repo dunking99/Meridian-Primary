@@ -3091,6 +3091,7 @@ const EVENT_STYLE = {
   rating:   { color: "#a855f7", glyph: "R", title: "Rating change" },
   target:   { color: "#facc15", glyph: "T", title: "Consensus target revision" },
   move:     { color: "#ff8c42", glyph: "!", title: "Outsized single-day move" },
+  note:     { color: "#38bdf8", glyph: "N", title: "Your note" },
 };
 
 const shortDate = iso => {
@@ -4006,7 +4007,702 @@ function NoCoveragePanel({ summary, symbol }) {
 
 // ─── The tab ──────────────────────────────────────────────────
 
-function ResearchOverviewTab({ symbol, name, overview, loading, price }) {
+// ─── Ownership & short interest ───────────────────────────────
+
+/**
+ * Who holds it and who is against it. All fields come from Yahoo's
+ * defaultKeyStatistics; the whole panel hides when none apply, which is
+ * every non-equity — an index has no float to short.
+ */
+function OwnershipShortPanel({ summary }) {
+  const o = summary?.ownership;
+  const si = summary?.shortInterest;
+  const hasOwnership = o && (o.insidersPct != null || o.institutionsPct != null);
+  const hasShort = si && (si.shortPctOfFloat != null || si.sharesShort != null || si.shortRatio != null);
+  if (!hasOwnership && !hasShort) return null;
+
+  const shortDelta = si?.sharesShort != null && si?.sharesShortPriorMonth > 0
+    ? si.sharesShort / si.sharesShortPriorMonth - 1 : null;
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="OWNERSHIP & SHORT INTEREST"
+        subtitle={si?.dateShortInterest ? `Short data as of ${si.dateShortInterest}` : "Yahoo Finance"}
+      />
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+        {hasOwnership && (
+          <>
+            <MetricTile label="INSIDERS HOLD" value={o.insidersPct != null ? `${(o.insidersPct * 100).toFixed(2)}%` : null}
+              hint="Fraction of shares held by officers and directors." missing="Not reported for this instrument." />
+            <MetricTile label="INSTITUTIONS HOLD" value={o.institutionsPct != null ? `${(o.institutionsPct * 100).toFixed(1)}%` : null}
+              hint="Fraction of shares held by institutions (funds, banks, pensions)." missing="Not reported for this instrument." />
+          </>
+        )}
+        {hasShort && (
+          <>
+            <MetricTile label="SHORT % OF FLOAT" value={si.shortPctOfFloat != null ? `${(si.shortPctOfFloat * 100).toFixed(2)}%` : null}
+              color={si.shortPctOfFloat > 0.1 ? "#ff8c42" : "#c8d6e8"}
+              hint="Shares sold short as a fraction of the tradable float. Above ~10% is historically elevated."
+              missing="Not reported for this instrument." />
+            <MetricTile label="DAYS TO COVER" value={si.shortRatio != null ? si.shortRatio.toFixed(1) : null}
+              hint="Shares short divided by average daily volume — how many days of normal trading it would take shorts to buy back."
+              missing="Not reported for this instrument." />
+            <MetricTile label="SHARES SHORT" value={si.sharesShort != null ? formatBigNumber(si.sharesShort) : null}
+              sub={shortDelta != null ? `${shortDelta >= 0 ? "+" : ""}${(shortDelta * 100).toFixed(1)}% vs prior month` : null}
+              color={shortDelta > 0.1 ? "#ff8c42" : shortDelta < -0.1 ? "#4ade80" : "#c8d6e8"}
+              missing="Not reported for this instrument." />
+          </>
+        )}
+      </div>
+      <div style={{ padding: "0 16px 13px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.6 }}>
+        Exchange-reported short interest, published twice monthly with a lag — a level, not a live flow.
+      </div>
+    </Panel>
+  );
+}
+
+// ─── Dividends & splits ───────────────────────────────────────
+
+/** Payouts per calendar year, drawn as bars, plus the split record. */
+function DividendHistoryPanel({ symbol, corporate, loading, price }) {
+  const [wrapRef, width] = useElementWidth();
+  if (loading) {
+    return <Panel><SectionHeader title="DIVIDENDS & SPLITS" subtitle="Loading…" /><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>Fetching corporate actions…</div></Panel>;
+  }
+  if (!corporate) return null;
+  if (corporate.error) {
+    return <Panel><SectionHeader title="DIVIDENDS & SPLITS" subtitle="Unavailable" /><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>Could not fetch corporate actions: {corporate.error}</div></Panel>;
+  }
+
+  const divs = corporate.dividends ?? [];
+  const splits = corporate.splits ?? [];
+  if (!divs.length && !splits.length) {
+    return (
+      <Panel>
+        <SectionHeader title="DIVIDENDS & SPLITS" subtitle="Yahoo Finance" />
+        <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+          No dividends or splits in Yahoo's record for {symbol}. Normal for non-payers, indices, FX and futures — an absence of record, not a failed fetch.
+        </div>
+      </Panel>
+    );
+  }
+
+  const byYear = new Map();
+  for (const d of divs) {
+    const y = d.date.slice(0, 4);
+    byYear.set(y, (byYear.get(y) ?? 0) + d.amount);
+  }
+  const years = [...byYear.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-12);
+  const maxV = Math.max(...years.map(([, v]) => v), 0.0001);
+
+  // Trailing twelve months of actual payments — a realised yield, distinct
+  // from Yahoo's forward "dividend yield" stat in the rail.
+  const yearAgo = new Date(Date.now() - 365 * 86400_000).toISOString().slice(0, 10);
+  const ttm = divs.filter(d => d.date >= yearAgo).reduce((a, d) => a + d.amount, 0);
+
+  const W = Math.max(width || 0, 260), H = 120, padB = 18, padT = 8;
+  const bw = years.length ? Math.min(48, (W - 16) / years.length - 6) : 0;
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="DIVIDENDS & SPLITS"
+        subtitle={`${divs.length} payment${divs.length === 1 ? "" : "s"} on record${corporate.currency ? ` · ${corporate.currency}` : ""}`}
+        extra={ttm > 0 ? (
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#00d4aa", fontFamily: "monospace" }}>
+              {formatPrice(ttm, symbol)} / share TTM
+            </div>
+            {price > 0 && (
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>
+                {(ttm / price * 100).toFixed(2)}% trailing yield at current price
+              </div>
+            )}
+          </div>
+        ) : undefined}
+      />
+      {years.length > 0 && (
+        <div ref={wrapRef} style={{ padding: "6px 8px 0" }}>
+          <svg width={W} height={H} style={{ display: "block" }}>
+            {years.map(([y, v], i) => {
+              const x = 8 + (i + 0.5) * ((W - 16) / years.length) - bw / 2;
+              const h = Math.max((v / maxV) * (H - padB - padT), 2);
+              const isPartial = y === String(new Date().getFullYear());
+              return (
+                <g key={y}>
+                  <rect x={x} y={H - padB - h} width={bw} height={h} rx="2"
+                    fill={isPartial ? "#00d4aa55" : "#00d4aa"} opacity="0.85">
+                    <title>{y}{isPartial ? " (year to date)" : ""}: {v.toFixed(4)} per share</title>
+                  </rect>
+                  <text x={x + bw / 2} y={H - 5} textAnchor="middle" fontSize="8.5" fill="#3a4558" fontFamily="monospace">{y.slice(2)}</text>
+                </g>
+              );
+            })}
+          </svg>
+          <div style={{ fontSize: 9, color: "#3a4558", padding: "2px 8px 8px" }}>
+            Total paid per share, by calendar year. The current year is partial by construction, not a cut.
+          </div>
+        </div>
+      )}
+      {splits.length > 0 && (
+        <div style={{ padding: "4px 16px 13px", borderTop: years.length ? "1px solid #141b28" : "none" }}>
+          <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1, margin: "8px 0 5px" }}>SPLITS</div>
+          {splits.slice(-5).reverse().map((s, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, padding: "3px 0" }}>
+              <span style={{ color: "#c8d6e8", fontFamily: "monospace" }}>{s.ratio ?? "—"}</span>
+              <span style={{ color: "#4a6080", fontFamily: "monospace" }}>{s.date}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ─── Chart annotations ────────────────────────────────────────
+
+/**
+ * The user's own dated notes, pinned to the chart above. Kept deliberately
+ * primitive — a date and a sentence — because the structured version of this
+ * already exists (the Bull / Bear thesis); this is the margin scribble.
+ */
+function NotesPanel({ symbol, notes, onAdd, onDelete }) {
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const submit = async () => {
+    if (!text.trim() || busy) return;
+    setBusy(true); setErr(null);
+    const r = await onAdd(date, text.trim());
+    if (r?.error) setErr(r.error); else setText("");
+    setBusy(false);
+  };
+
+  const inputStyle = { background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, color: "#c8d6e8", fontFamily: "monospace", fontSize: 11.5, padding: "7px 10px" };
+
+  return (
+    <Panel>
+      <SectionHeader title="YOUR NOTES" subtitle={`Pinned to the chart above · stored locally, only for ${symbol}`} />
+      <div style={{ padding: "12px 16px 4px", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} style={{ ...inputStyle, colorScheme: "dark" }} />
+        <input
+          value={text} onChange={e => setText(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && submit()}
+          placeholder="Why does this date matter? (Enter to pin)"
+          style={{ ...inputStyle, flex: 1, minWidth: 200 }}
+        />
+        <button onClick={submit} disabled={busy || !text.trim()} style={{
+          background: "#38bdf820", border: "1px solid #38bdf840", color: text.trim() ? "#38bdf8" : "#2a3548",
+          padding: "7px 14px", borderRadius: 4, cursor: text.trim() ? "pointer" : "default", fontFamily: "monospace", fontSize: 11,
+        }}>PIN</button>
+      </div>
+      {err && <div style={{ padding: "4px 16px", fontSize: 11, color: "#ff8c42" }}>{err}</div>}
+      <div style={{ padding: "6px 0 6px" }}>
+        {(notes ?? []).length === 0 ? (
+          <div style={{ padding: "6px 16px 10px", fontSize: 11, color: "#3a4558" }}>
+            Nothing pinned yet. Notes land on the price chart as <span style={{ color: "#38bdf8" }}>N</span> markers — a note on a non-trading day has no bar to sit on and shows only in this list.
+          </div>
+        ) : (notes ?? []).map(nt => (
+          <div key={nt.id} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "6px 16px", borderBottom: "1px solid #10141d" }}>
+            <span style={{ fontSize: 10, color: "#38bdf8", fontFamily: "monospace", flexShrink: 0 }}>{nt.date}</span>
+            <span style={{ fontSize: 12, color: "#b8c6da", flex: 1, lineHeight: 1.5 }}>{nt.text}</span>
+            <button onClick={() => onDelete(nt.id)} title="Delete this note" style={{
+              background: "transparent", border: "none", color: "#4a6080", cursor: "pointer", fontSize: 12, padding: 2,
+            }}>×</button>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+// ─── Compare tab ──────────────────────────────────────────────
+
+const COMPARE_COLORS = ["#00d4aa", "#3d8bff", "#ffa502", "#a78bfa"];
+const COMPARE_WINDOWS = [["3M", 63], ["6M", 126], ["1Y", 252], ["3Y", 756], ["5Y", 1260]];
+
+/** Multi-line rebased chart with a shared hover readout. */
+function CompareChart({ data }) {
+  const [wrapRef, width] = useElementWidth();
+  const [hover, setHover] = useState(null);
+  if (!data?.available) return null;
+
+  const { dates, series, symbols } = data;
+  const n = dates.length;
+  const H = 300, padL = 46, padR = 14, padT = 12, padB = 22;
+  const W = Math.max(width || 0, 320);
+  const innerW = Math.max(W - padL - padR, 10), innerH = H - padT - padB;
+
+  const allVals = symbols.flatMap(s => series[s]);
+  let lo = Math.min(...allVals), hi = Math.max(...allVals);
+  if (!(hi > lo)) { hi = lo + 1; lo -= 1; }
+  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+
+  const x = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * innerH;
+  const path = arr => arr.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+
+  const onMove = e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const i = Math.round(((e.clientX - rect.left - padL) / innerW) * (n - 1));
+    setHover(i >= 0 && i < n ? i : null);
+  };
+
+  const yTicks = Array.from({ length: 5 }, (_, i) => lo + (i / 4) * (hi - lo));
+  const xTickIdx = Array.from({ length: Math.min(6, n) }, (_, i) => Math.round((i / (Math.min(6, n) - 1 || 1)) * (n - 1)));
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative" }}>
+      <svg width={W} height={H} onMouseMove={onMove} onMouseLeave={() => setHover(null)} style={{ display: "block", cursor: "crosshair" }}>
+        {yTicks.map((t, i) => (
+          <g key={i}>
+            <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke="#141b28" strokeWidth="1" />
+            <text x={padL - 7} y={y(t) + 3.5} textAnchor="end" fontSize="9" fill="#3a4558" fontFamily="monospace">{t.toFixed(0)}</text>
+          </g>
+        ))}
+        <line x1={padL} x2={W - padR} y1={y(100)} y2={y(100)} stroke="#2a3548" strokeWidth="1" strokeDasharray="4 4" />
+        {symbols.map((s, k) => (
+          <path key={s} d={path(series[s])} fill="none" stroke={COMPARE_COLORS[k % 4]} strokeWidth="1.6" strokeLinejoin="round" />
+        ))}
+        {hover != null && (
+          <line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + innerH} stroke="#4a6080" strokeWidth="1" strokeDasharray="3 3" />
+        )}
+        {xTickIdx.map(i => (
+          <text key={i} x={x(i)} y={H - 6} textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"} fontSize="9" fill="#3a4558" fontFamily="monospace">
+            {dates[i].slice(2)}
+          </text>
+        ))}
+      </svg>
+      {hover != null && (
+        <div style={{
+          position: "absolute", top: 8, left: Math.min(Math.max(x(hover) - 70, 4), Math.max(W - 190, 4)),
+          background: "#070a10", border: "1px solid #1a2535", borderRadius: 4, padding: "7px 10px", pointerEvents: "none",
+        }}>
+          <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>{dates[hover]}</div>
+          {symbols.map((s, k) => (
+            <div key={s} style={{ fontSize: 10.5, fontFamily: "monospace", color: COMPARE_COLORS[k % 4], marginTop: 2 }}>
+              {s} {series[s][hover].toFixed(1)} <span style={{ color: "#4a6080" }}>({(series[s][hover] - 100) >= 0 ? "+" : ""}{(series[s][hover] - 100).toFixed(1)}%)</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ResearchCompareTab({ symbol, peersData, peersLoading, onNavigate }) {
+  const [others, setOthers] = useState([]);
+  const [windowId, setWindowId] = useState("1Y");
+  const [addQuery, setAddQuery] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const cache = useRef({});
+
+  const symbols = [symbol, ...others.filter(s => s !== symbol)].slice(0, 4);
+  const days = COMPARE_WINDOWS.find(([id]) => id === windowId)?.[1] ?? 252;
+
+  useEffect(() => {
+    if (symbols.length < 2) { setData(null); return; }
+    const key = symbols.join(",") + "|" + days;
+    if (cache.current[key]) { setData(cache.current[key]); return; }
+    let cancelled = false;
+    setLoading(true);
+    fetch(`${API}/research/compare?symbols=${encodeURIComponent(symbols.join(","))}&days=${days}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) { cache.current[key] = d; setData(d); } })
+      .catch(() => { if (!cancelled) setData({ available: false, reason: "Could not reach the Meridian API." }); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [symbols.join(","), days]);
+
+  const addSymbol = s => {
+    const up = s.toUpperCase().trim();
+    if (!up || up === symbol || others.includes(up) || symbols.length >= 4) return;
+    setOthers(o => [...o, up]);
+    setAddQuery("");
+  };
+
+  const chip = (s, removable) => (
+    <span key={s} style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      background: "#0d1117", border: `1px solid ${COMPARE_COLORS[symbols.indexOf(s) % 4]}50`,
+      borderRadius: 4, padding: "4px 9px", fontFamily: "monospace", fontSize: 11,
+      color: COMPARE_COLORS[symbols.indexOf(s) % 4],
+    }}>
+      {s}
+      {removable && (
+        <button onClick={() => setOthers(o => o.filter(x => x !== s))} style={{ background: "none", border: "none", color: "#4a6080", cursor: "pointer", fontSize: 11, padding: 0 }}>×</button>
+      )}
+    </span>
+  );
+
+  const inputStyle = { background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, color: "#c8d6e8", fontFamily: "monospace", fontSize: 11.5, padding: "6px 10px" };
+  const peers = peersData?.peers ?? [];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Panel>
+        <SectionHeader
+          title="COMPARE"
+          subtitle="Rebased to 100 at the first shared date · stored daily closes, joined on dates both actually traded"
+          extra={
+            <div style={{ display: "flex", gap: 2 }}>
+              {COMPARE_WINDOWS.map(([id]) => (
+                <button key={id} onClick={() => setWindowId(id)} style={{
+                  background: "transparent", border: "none",
+                  borderBottom: windowId === id ? "2px solid #00d4aa" : "2px solid transparent",
+                  color: windowId === id ? "#00d4aa" : "#4a6080",
+                  padding: "3px 7px", cursor: "pointer", fontFamily: "monospace", fontSize: 10,
+                }}>{id}</button>
+              ))}
+            </div>
+          }
+        />
+        <div style={{ padding: "12px 16px 4px", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {symbols.map((s, i) => chip(s, i > 0))}
+          {symbols.length < 4 && (
+            <input
+              value={addQuery} onChange={e => setAddQuery(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && addSymbol(addQuery)}
+              placeholder="Add ticker (Enter)"
+              style={{ ...inputStyle, width: 150 }}
+            />
+          )}
+        </div>
+
+        {symbols.length < 2 ? (
+          <div style={{ padding: "12px 16px 16px", fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+            Add one to three more tickers to compare against {symbol}. Only symbols with stored history can be drawn — anything never synced here has no bars to compare.
+          </div>
+        ) : loading && !data ? (
+          <div style={{ padding: 24, textAlign: "center", fontSize: 12, color: "#4a6080" }}>Joining series…</div>
+        ) : data && !data.available ? (
+          <div style={{ padding: "12px 16px 16px", fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+            {data.reason}
+            {(data.missing ?? []).map(m => <div key={m.symbol} style={{ marginTop: 4, color: "#ff8c42" }}>{m.symbol}: {m.reason} Add it as a holding or watchlist entry and sync to store bars.</div>)}
+          </div>
+        ) : data ? (
+          <>
+            <CompareChart data={data} />
+            {(data.missing ?? []).length > 0 && (
+              <div style={{ padding: "0 16px 8px", fontSize: 10.5, color: "#ff8c42" }}>
+                Not drawn: {data.missing.map(m => `${m.symbol} (${m.reason.toLowerCase().replace(/\.$/, "")})`).join(", ")}.
+              </div>
+            )}
+            <div style={{ padding: "4px 16px 8px", fontSize: 9.5, color: "#3a4558" }}>
+              {data.overlapDays} shared trading days, {data.from} to {data.to}.
+            </div>
+          </>
+        ) : null}
+      </Panel>
+
+      {data?.available && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0,3fr) minmax(0,2fr)", gap: 14, alignItems: "start" }} className="research-grid">
+          <Panel>
+            <SectionHeader title="OVER THIS WINDOW" subtitle="Computed on the shared dates above" />
+            <div style={{ padding: "6px 8px 10px", overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                <thead>
+                  <tr style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 9 }}>
+                    {["", "RETURN", "ANN VOL", "MAX DD", "SHARPE"].map(h => (
+                      <th key={h} style={{ textAlign: h ? "right" : "left", padding: "6px 8px", fontWeight: 400, letterSpacing: 0.5 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.symbols.map((s, k) => {
+                    const st = data.stats[s];
+                    return (
+                      <tr key={s} style={{ borderTop: "1px solid #141b28" }}>
+                        <td style={{ padding: "7px 8px", fontFamily: "monospace", color: COMPARE_COLORS[k % 4] }}>{s}</td>
+                        <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: st.totalReturn >= 0 ? "#00d4aa" : "#ff4757" }}>{pctStr(st.totalReturn)}</td>
+                        <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{absPctStr(st.annVol, 0)}</td>
+                        <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#ff4757" }}>{absPctStr(st.maxDrawdown)}</td>
+                        <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{st.sharpe.toFixed(2)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          <Panel>
+            <SectionHeader title="RETURN CORRELATION" subtitle="Daily returns over the shared window" />
+            <div style={{ padding: "10px 16px 14px" }}>
+              {Object.entries(data.correlations).map(([pair, v]) => {
+                const [a, b] = pair.split("|");
+                return (
+                  <div key={pair} style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 0" }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 10.5, color: "#7a8ba0", width: 130, flexShrink: 0 }}>{a} · {b}</span>
+                    <div style={{ flex: 1, height: 5, background: "#141b28", borderRadius: 3, position: "relative" }}>
+                      <div style={{
+                        position: "absolute", top: 0, bottom: 0, borderRadius: 3,
+                        left: v >= 0 ? "50%" : `${50 + v * 50}%`, width: `${Math.abs(v) * 50}%`,
+                        background: v >= 0.5 ? "#ff8c42" : v >= 0 ? "#3d8bff" : "#00d4aa",
+                      }} />
+                      <div style={{ position: "absolute", left: "50%", top: -2, width: 1, height: 9, background: "#2a3548" }} />
+                    </div>
+                    <span style={{ fontFamily: "monospace", fontSize: 11, color: "#c8d6e8", width: 44, textAlign: "right" }}>{v.toFixed(2)}</span>
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 9.5, color: "#3a4558", marginTop: 8, lineHeight: 1.6 }}>
+                High positive correlation means holding both diversifies less than it looks. Computed here from stored bars, not quoted from anywhere.
+              </div>
+            </div>
+          </Panel>
+        </div>
+      )}
+
+      <Panel>
+        <SectionHeader
+          title="SIMILAR INSTRUMENTS"
+          subtitle={peersData?.error ? "Unavailable" : "Yahoo's similarity list, priced live — how Yahoo picks these is not published"}
+        />
+        {peersLoading ? (
+          <div style={{ padding: 20, textAlign: "center", fontSize: 12, color: "#4a6080" }}>Fetching peers…</div>
+        ) : peersData?.error ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>Could not fetch peers: {peersData.error}</div>
+        ) : !peers.length ? (
+          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>Yahoo lists no similar instruments for {symbol} — common for indices, FX and funds.</div>
+        ) : (
+          <div style={{ padding: "4px 8px 10px", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 9 }}>
+                  {["NAME", "PRICE", "1D", "P/E", "FWD P/E", "MKT CAP", "52W POS", ""].map((h, i) => (
+                    <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "6px 8px", fontWeight: 400, letterSpacing: 0.5 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {peers.map(p => (
+                  <tr key={p.symbol} style={{ borderTop: "1px solid #141b28" }}>
+                    <td style={{ padding: "7px 8px" }}>
+                      <button onClick={() => onNavigate(p.symbol, p.name)} title={`Research ${p.symbol}`} style={{
+                        background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0,
+                      }}>
+                        <span style={{ fontSize: 11.5, color: "#c8d6e8" }}>{p.name}</span>
+                        <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", marginLeft: 6 }}>{p.symbol}</span>
+                      </button>
+                    </td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{p.price != null ? formatPrice(p.price, p.symbol) : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: (p.changePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757" }}>{p.changePct != null ? formatChange(p.changePct) : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{p.pe != null ? p.pe.toFixed(1) : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{p.forwardPe != null ? p.forwardPe.toFixed(1) : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#c8d6e8" }}>{p.marketCap != null ? formatBigNumber(p.marketCap) : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: "#7a8ba0" }}>{p.rangePosition != null ? `${(p.rangePosition * 100).toFixed(0)}%` : "—"}</td>
+                    <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                      <button
+                        onClick={() => addSymbol(p.symbol)}
+                        disabled={symbols.includes(p.symbol) || symbols.length >= 4}
+                        title={symbols.includes(p.symbol) ? "Already on the chart" : symbols.length >= 4 ? "Chart is full (4 max)" : "Add to the comparison chart — needs stored history to draw"}
+                        style={{
+                          background: "transparent", border: "1px solid #1a2535", borderRadius: 3,
+                          color: symbols.includes(p.symbol) || symbols.length >= 4 ? "#2a3548" : "#3d8bff",
+                          padding: "2px 8px", cursor: symbols.includes(p.symbol) || symbols.length >= 4 ? "default" : "pointer",
+                          fontFamily: "monospace", fontSize: 9.5,
+                        }}>+ CHART</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// ─── Precedents tab ───────────────────────────────────────────
+
+const CLOSENESS_STYLE = {
+  close:    { color: "#00d4aa", label: "CLOSE" },
+  moderate: { color: "#ffa502", label: "MODERATE" },
+  loose:    { color: "#4a6080", label: "LOOSE" },
+};
+
+/** Spaghetti of the 21-bar paths that followed each matched setup. */
+function PrecedentPathsChart({ matches }) {
+  const [wrapRef, width] = useElementWidth();
+  const paths = matches.filter(m => m.path?.length > 1);
+  if (!paths.length) return null;
+
+  const H = 240, padL = 46, padR = 14, padT = 12, padB = 22;
+  const W = Math.max(width || 0, 320);
+  const innerW = Math.max(W - padL - padR, 10), innerH = H - padT - padB;
+
+  const allV = paths.flatMap(m => m.path);
+  let lo = Math.min(...allV, 0), hi = Math.max(...allV, 0);
+  const pad = (hi - lo) * 0.08 || 0.01; lo -= pad; hi += pad;
+  const x = k => padL + (k / 21) * innerW;
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * innerH;
+
+  // Median path across matches, bar by bar, over however many paths reach
+  // that bar — a truncated path simply stops contributing.
+  const median = [];
+  for (let k = 0; k <= 21; k++) {
+    const vals = paths.map(m => m.path[k]).filter(v => v != null).sort((a, b) => a - b);
+    if (!vals.length) break;
+    const mid = vals.length >> 1;
+    median.push(vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2);
+  }
+
+  const line = arr => arr.map((v, k) => `${k ? "L" : "M"}${x(k).toFixed(1)},${y(v).toFixed(1)}`).join("");
+
+  return (
+    <div ref={wrapRef}>
+      <svg width={W} height={H} style={{ display: "block" }}>
+        {[lo, (lo + hi) / 2, hi].map((t, i) => (
+          <text key={i} x={padL - 7} y={y(t) + 3.5} textAnchor="end" fontSize="9" fill="#3a4558" fontFamily="monospace">
+            {(t * 100).toFixed(0)}%
+          </text>
+        ))}
+        <line x1={padL} x2={W - padR} y1={y(0)} y2={y(0)} stroke="#2a3548" strokeWidth="1" />
+        {paths.map((m, i) => (
+          <path key={i} d={line(m.path)} fill="none"
+            stroke={CLOSENESS_STYLE[m.closeness].color}
+            strokeWidth="1" opacity={m.closeness === "close" ? 0.55 : m.closeness === "moderate" ? 0.35 : 0.2}>
+            <title>{m.date}: {m.fwd21 != null ? `${(m.fwd21 * 100).toFixed(1)}% after 21 bars` : "truncated"}</title>
+          </path>
+        ))}
+        <path d={line(median)} fill="none" stroke="#e8f0fc" strokeWidth="2" strokeLinejoin="round" />
+        {[0, 5, 10, 15, 21].map(k => (
+          <text key={k} x={x(k)} y={H - 6} textAnchor="middle" fontSize="9" fill="#3a4558" fontFamily="monospace">
+            {k === 0 ? "match" : `+${k}`}
+          </text>
+        ))}
+      </svg>
+      <div style={{ display: "flex", gap: 14, padding: "6px 8px 0", flexWrap: "wrap", alignItems: "center" }}>
+        <LegendDot color="#e8f0fc" label="Median path" />
+        <LegendDot color="#00d4aa" label="Close match" hollow />
+        <LegendDot color="#ffa502" label="Moderate" hollow />
+        <LegendDot color="#4a6080" label="Loose" hollow />
+        <span style={{ fontSize: 9.5, color: "#3a4558", marginLeft: "auto" }}>Trading days after each matched date</span>
+      </div>
+    </div>
+  );
+}
+
+function ResearchPrecedentsTab({ symbol, data, loading }) {
+  if (loading && !data) {
+    return <Panel><div style={{ padding: 28, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Matching against {symbol}'s own history…</div></Panel>;
+  }
+  if (!data) {
+    return <Panel><div style={{ padding: 20, fontSize: 12, color: "#4a6080" }}>Could not reach the Meridian API.</div></Panel>;
+  }
+  if (!data.available) {
+    return (
+      <Panel>
+        <SectionHeader title="PRECEDENTS" subtitle="Not computable" />
+        <div style={{ padding: 20, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>{data.reason}</div>
+      </Panel>
+    );
+  }
+
+  const s = data.setup;
+  const setupTiles = [
+    ["RSI (14)", s.rsi14.toFixed(0), null],
+    ["VS 50DMA", pctStr(s.dist50dma), dirColor(s.dist50dma)],
+    ["VS 200DMA", pctStr(s.dist200dma), dirColor(s.dist200dma)],
+    ["VOL VS ITS YEAR", `${s.volRatio.toFixed(2)}x`, s.volRatio > 1.35 ? "#ff8c42" : s.volRatio < 0.7 ? "#4a90d9" : "#c8d6e8"],
+    ["1M RETURN", pctStr(s.ret21d), dirColor(s.ret21d)],
+    ["RANGE POSITION", `${(s.rangePosition * 100).toFixed(0)}%`, null],
+  ];
+  const agg = data.aggregate;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Panel>
+        <SectionHeader
+          title="TODAY'S SETUP"
+          subtitle={`The six measurements being matched · bars to ${data.asOf}`}
+        />
+        <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8 }}>
+          {setupTiles.map(([label, value, color]) => (
+            <MetricTile key={label} label={label} value={value} color={color ?? "#c8d6e8"} />
+          ))}
+        </div>
+        {!data.hasClosePrecedent && (
+          <div style={{ margin: "0 14px 14px", padding: "10px 14px", background: "#ffa50210", border: "1px solid #ffa50230", borderRadius: 5, fontSize: 11.5, color: "#ffa502", lineHeight: 1.6 }}>
+            No close precedent: nothing in {symbol}'s own {data.bars.toLocaleString()}-bar history landed in the nearest decile of setups.
+            The matches below are the least-distant days, shown with their looseness stated — treat the sample accordingly.
+          </div>
+        )}
+      </Panel>
+
+      <Panel>
+        <SectionHeader
+          title="WHAT FOLLOWED SIMILAR SETUPS"
+          subtitle={`${data.matches.length} nearest days in ${symbol}'s own history, at least a month apart`}
+          extra={agg && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 12, fontFamily: "monospace", color: dirColor(agg.medianFwd21) }}>
+                median {pctStr(agg.medianFwd21)} after 21 bars
+              </div>
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", marginTop: 2 }}>
+                {agg.positiveFwd21} of {agg.n} were positive{agg.medianFwd63 != null ? ` · median ${pctStr(agg.medianFwd63)} after 63` : ""}
+              </div>
+            </div>
+          )}
+        />
+        <div style={{ padding: "8px 8px 0" }}>
+          <PrecedentPathsChart matches={data.matches} />
+        </div>
+        <div style={{ padding: "10px 8px 10px", overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+            <thead>
+              <tr style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 9 }}>
+                {["MATCHED DATE", "SIMILARITY", "+5 BARS", "+21 BARS", "+63 BARS"].map((h, i) => (
+                  <th key={h} style={{ textAlign: i === 0 ? "left" : "right", padding: "6px 8px", fontWeight: 400, letterSpacing: 0.5 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.matches.map(m => (
+                <tr key={m.date} style={{ borderTop: "1px solid #141b28" }}>
+                  <td style={{ padding: "7px 8px", fontFamily: "monospace", color: "#c8d6e8" }}>{m.date}</td>
+                  <td style={{ padding: "7px 8px", textAlign: "right" }}>
+                    <span title={`Distance ${m.distance} — nearer than ${((1 - m.distancePercentile) * 100).toFixed(0)}% of all comparable days`}
+                      style={{ fontFamily: "monospace", fontSize: 9.5, color: CLOSENESS_STYLE[m.closeness].color, cursor: "help" }}>
+                      {CLOSENESS_STYLE[m.closeness].label}
+                    </span>
+                  </td>
+                  {[m.fwd5, m.fwd21, m.fwd63].map((v, i) => (
+                    <td key={i} style={{ padding: "7px 8px", textAlign: "right", fontFamily: "monospace", color: v == null ? "#2a3548" : dirColor(v) }}
+                      title={v == null ? "Not enough bars after this date to measure" : undefined}>
+                      {v == null ? "—" : pctStr(v)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: "0 16px 14px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.7 }}>
+          {data.method}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function ResearchOverviewTab({ symbol, name, overview, loading, price, corporate, corporateLoading, notes, onAddNote, onDeleteNote }) {
+  // The user's pinned notes ride onto the chart as first-class event markers,
+  // beside the machine-derived ones. Computed unconditionally — hooks cannot
+  // sit behind the early returns below.
+  const events = useMemo(() => {
+    const noteEvents = (notes ?? []).map(nt => ({
+      date: nt.date, type: "note", label: nt.text, direction: "neutral", source: "Your note",
+    }));
+    return [...(overview?.events ?? []), ...noteEvents];
+  }, [overview, notes]);
+
   if (loading && !overview) {
     return <Panel><div style={{ padding: 28, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading {name}…</div></Panel>;
   }
@@ -4022,12 +4718,14 @@ function ResearchOverviewTab({ symbol, name, overview, loading, price }) {
          className="research-grid">
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
         <PriceChart
-          series={overview.series} events={overview.events}
+          series={overview.series} events={events}
           technicals={overview.technicals} symbol={symbol} name={name}
         />
+        <NotesPanel symbol={symbol} notes={notes} onAdd={onAddNote} onDelete={onDeleteNote} />
         <NarrativePanel narrative={overview.narrative} />
         <ResearchPerformancePanel tech={overview.technicals} symbol={symbol} />
         <SentimentTrend sentiment={overview.sentiment} />
+        <DividendHistoryPanel symbol={symbol} corporate={corporate} loading={corporateLoading} price={price} />
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
@@ -4041,6 +4739,7 @@ function ResearchOverviewTab({ symbol, name, overview, loading, price }) {
         ) : (
           <NoCoveragePanel summary={q} symbol={symbol} />
         )}
+        <OwnershipShortPanel summary={q} />
         <NextDatesPanel summary={q} />
         <KeyStatsPanel summary={q} symbol={symbol} />
         <EarningsRecordPanel summary={q} />
@@ -5015,6 +5714,26 @@ function ResearchPage({ prices }) {
   const [aiText, setAiText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
 
+  // Dividends & splits: a live Yahoo read, so lazy per symbol and cached.
+  const [corporate, setCorporate] = useState(null);
+  const [corporateLoading, setCorporateLoading] = useState(false);
+  const corporateCache = useRef({});
+
+  // Precedents: stored-bars only, fetched when its tab opens.
+  const [precedentsData, setPrecedentsData] = useState(null);
+  const [precedentsLoading, setPrecedentsLoading] = useState(false);
+  const precedentsCache = useRef({});
+
+  // Peers for the Compare tab: live Yahoo read, lazy and cached.
+  const [peersData, setPeersData] = useState(null);
+  const [peersLoading, setPeersLoading] = useState(false);
+  const peersCache = useRef({});
+
+  // The user's chart notes. Seeded from the overview payload, then kept in
+  // sync locally after each add/delete — the CRUD responses return the fresh
+  // list, so no refetch of the whole overview is ever needed.
+  const [notes, setNotes] = useState([]);
+
   const data = prices?.[symbol];
   const name = companyName || DISPLAY_NAMES[symbol] || symbol;
   const isTracked = trackedSymbols.includes(symbol);
@@ -5060,22 +5779,94 @@ function ResearchPage({ prices }) {
     const cached = overviewCache.current[symbol];
     if (cached) {
       setOverview(cached);
+      setNotes(cached.notes ?? []);
       if (cached.quote?.name && !cached.quote.error) setCompanyName(cached.quote.name);
       return;
     }
     setOverview(null);
+    setNotes([]);
     setSummaryLoading(true);
     fetch(`${API}/research/overview?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
       .then(d => {
         if (cancelled) return;
         overviewCache.current[symbol] = d;
         setOverview(d);
+        setNotes(d?.notes ?? []);
         if (d?.quote?.name && !d.quote.error) setCompanyName(d.quote.name);
       })
       .catch(() => { if (!cancelled) setOverview(null); })
       .finally(() => { if (!cancelled) setSummaryLoading(false); });
     return () => { cancelled = true; };
   }, [symbol]);
+
+  // Note add/delete: the API responds with the fresh list, which also gets
+  // written back into the overview cache so revisiting the symbol keeps them.
+  const syncNotes = useCallback((sym, fresh) => {
+    setNotes(fresh);
+    const cached = overviewCache.current[sym];
+    if (cached) overviewCache.current[sym] = { ...cached, notes: fresh };
+  }, []);
+
+  const addNote = useCallback(async (date, text) => {
+    try {
+      const r = await fetch(`${API}/research/notes`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, date, text }),
+      }).then(x => x.json());
+      if (r?.notes) syncNotes(symbol, r.notes);
+      return r;
+    } catch { return { error: "Could not reach the Meridian API." }; }
+  }, [symbol, syncNotes]);
+
+  const deleteNote = useCallback(async (id) => {
+    try {
+      const r = await fetch(`${API}/research/notes?id=${id}`, { method: "DELETE" }).then(x => x.json());
+      if (r?.notes) syncNotes(symbol, r.notes);
+    } catch { /* leave the list as-is; the delete button can be pressed again */ }
+  }, [symbol, syncNotes]);
+
+  // Dividends & splits: fetched once the Overview tab is (or becomes) active.
+  useEffect(() => {
+    if (tab !== "overview") return;
+    if (corporateCache.current[symbol]) { setCorporate(corporateCache.current[symbol]); return; }
+    let cancelled = false;
+    setCorporate(null);
+    setCorporateLoading(true);
+    fetch(`${API}/research/corporate?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(d => { if (!cancelled) { corporateCache.current[symbol] = d; setCorporate(d); } })
+      .catch(() => { if (!cancelled) setCorporate({ error: "Could not reach the Meridian API." }); })
+      .finally(() => { if (!cancelled) setCorporateLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, symbol]);
+
+  // Precedents tab: local computation server-side, still cached per symbol so
+  // flicking between tabs is free.
+  useEffect(() => {
+    if (tab !== "precedents") return;
+    if (precedentsCache.current[symbol]) { setPrecedentsData(precedentsCache.current[symbol]); return; }
+    let cancelled = false;
+    setPrecedentsData(null);
+    setPrecedentsLoading(true);
+    fetch(`${API}/research/precedents?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(d => { if (!cancelled) { precedentsCache.current[symbol] = d; setPrecedentsData(d); } })
+      .catch(() => { if (!cancelled) setPrecedentsData(null); })
+      .finally(() => { if (!cancelled) setPrecedentsLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, symbol]);
+
+  // Peers: fetched when the Compare tab opens.
+  useEffect(() => {
+    if (tab !== "compare") return;
+    if (peersCache.current[symbol]) { setPeersData(peersCache.current[symbol]); return; }
+    let cancelled = false;
+    setPeersData(null);
+    setPeersLoading(true);
+    fetch(`${API}/research/peers?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(d => { if (!cancelled) { peersCache.current[symbol] = d; setPeersData(d); } })
+      .catch(() => { if (!cancelled) setPeersData({ peers: [], error: "Could not reach the Meridian API." }); })
+      .finally(() => { if (!cancelled) setPeersLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, symbol]);
 
   // News tab: lazy-loaded on first visit per symbol, then cached.
   useEffect(() => {
@@ -5221,7 +6012,7 @@ restate a figure with a different value than the one given.`;
   // Overview now. Splitting "what the price did" from "what the street thinks"
   // across two tabs meant every research session was read in two halves with
   // a click in the middle.
-  const tabs = [["overview", "Overview"], ["news", "News"], ["bullbear", "Bull / Bear"], ["filings", "Filings"], ["ai", "AI Note"]];
+  const tabs = [["overview", "Overview"], ["compare", "Compare"], ["precedents", "Precedents"], ["news", "News"], ["bullbear", "Bull / Bear"], ["filings", "Filings"], ["ai", "AI Note"]];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel>
@@ -5278,7 +6069,18 @@ restate a figure with a different value than the one given.`;
         <ResearchOverviewTab
           symbol={symbol} name={name} overview={overview}
           loading={summaryLoading} price={price}
+          corporate={corporate} corporateLoading={corporateLoading}
+          notes={notes} onAddNote={addNote} onDeleteNote={deleteNote}
         />
+      )}
+      {tab === "compare" && (
+        <ResearchCompareTab
+          symbol={symbol} peersData={peersData} peersLoading={peersLoading}
+          onNavigate={(sym, nm) => selectSymbol(sym, nm)}
+        />
+      )}
+      {tab === "precedents" && (
+        <ResearchPrecedentsTab symbol={symbol} data={precedentsData} loading={precedentsLoading} />
       )}
       {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
       {tab === "bullbear" && (

@@ -229,6 +229,24 @@ export async function fetchSummary(symbol) {
       sector: r.assetProfile?.sector ?? null,
       industry: r.assetProfile?.industry ?? null,
       country: r.assetProfile?.country ?? null,
+      // Ownership and short interest, straight from defaultKeyStatistics —
+      // a module this call already fetches, so these cost nothing extra.
+      // Yahoo's basic short stats (shares short, % of float, days to cover)
+      // are free here; it is the flow-level short data (borrow rates, daily
+      // short volume) that sits behind paid feeds.
+      ownership: {
+        insidersPct: ks.heldPercentInsiders ?? null,
+        institutionsPct: ks.heldPercentInstitutions ?? null,
+        floatShares: ks.floatShares ?? null,
+      },
+      shortInterest: {
+        sharesShort: ks.sharesShort ?? null,
+        sharesShortPriorMonth: ks.sharesShortPriorMonth ?? null,
+        shortPctOfFloat: ks.shortPercentOfFloat ?? null,
+        // "Days to cover": shares short / average daily volume.
+        shortRatio: ks.shortRatio ?? null,
+        dateShortInterest: isoDate(ks.dateShortInterest),
+      },
       holdings: r.topHoldings?.holdings?.slice(0, 10) ?? null,
       sectorWeights: r.topHoldings?.sectorWeightings ?? null,
       rawCurrency: yCcy,
@@ -307,6 +325,82 @@ export async function resolveNamesAndExchanges(symbols) {
     await new Promise(r => setTimeout(r, 120));
   }
   return out;
+}
+
+/**
+ * Dividend and split history, from the same chart endpoint the bar sync uses,
+ * with events requested alongside. Not persisted: corporate actions are a
+ * few dozen rows per symbol and Yahoo serves the full history in one call,
+ * so a local copy would only be a cache that can go stale.
+ */
+export async function fetchCorporateActions(symbol, { years = 15 } = {}) {
+  try {
+    const period1 = new Date(Date.now() - years * 365.25 * 86400_000);
+    const res = await yf.chart(symbol, {
+      period1, period2: new Date(), interval: '1mo', events: 'div|split',
+    });
+    const yCcy = res?.meta?.currency ?? null;
+    const dividends = (res?.events?.dividends ?? [])
+      .map(d => ({
+        date: d.date instanceof Date ? d.date.toISOString().slice(0, 10) : String(d.date).slice(0, 10),
+        amount: normaliseByCurrency(d.amount, yCcy),
+      }))
+      .filter(d => d.amount != null && Number.isFinite(d.amount))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const splits = (res?.events?.splits ?? [])
+      .map(s => ({
+        date: s.date instanceof Date ? s.date.toISOString().slice(0, 10) : String(s.date).slice(0, 10),
+        ratio: s.splitRatio ?? (s.numerator && s.denominator ? `${s.numerator}:${s.denominator}` : null),
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    return {
+      symbol, currency: yCcy === 'GBp' ? 'GBP' : yCcy,
+      dividends, splits,
+      source: 'Yahoo Finance chart events',
+    };
+  } catch (e) {
+    return { symbol, error: e.message };
+  }
+}
+
+/**
+ * Instruments Yahoo considers similar to this one, priced up into a
+ * comparables table with one batch quote call. The peer list itself comes
+ * from Yahoo's recommendations-by-symbol endpoint — how Yahoo picks them is
+ * not published, which is why the response carries its source label and the
+ * UI should not present this as a curated sector peer set.
+ */
+export async function fetchPeers(symbol) {
+  try {
+    const rec = await yf.recommendationsBySymbol(symbol);
+    const first = Array.isArray(rec) ? rec[0] : rec;
+    const peers = (first?.recommendedSymbols ?? []).map(r => r.symbol).filter(Boolean).slice(0, 8);
+    if (!peers.length) return { symbol, peers: [], source: 'Yahoo Finance recommendationsBySymbol' };
+
+    const res = await yf.quote(peers, {}, { validateResult: false });
+    const rows = (Array.isArray(res) ? res : [res]).filter(q => q?.symbol).map(q => {
+      const yCcy = q.currency ?? null;
+      const price = normaliseByCurrency(q.regularMarketPrice, yCcy);
+      const lo = normaliseByCurrency(q.fiftyTwoWeekLow, yCcy);
+      const hi = normaliseByCurrency(q.fiftyTwoWeekHigh, yCcy);
+      return {
+        symbol: q.symbol,
+        name: q.shortName ?? q.longName ?? q.symbol,
+        price,
+        changePct: q.regularMarketChangePercent ?? null,
+        marketCap: q.marketCap ?? null,
+        pe: q.trailingPE ?? null,
+        forwardPe: q.forwardPE ?? null,
+        // Where it sits in its own yearly range, same definition as the
+        // Research technicals, so the two columns read consistently.
+        rangePosition: (price != null && lo != null && hi != null && hi > lo)
+          ? (price - lo) / (hi - lo) : null,
+      };
+    });
+    return { symbol, peers: rows, source: 'Yahoo Finance recommendationsBySymbol' };
+  } catch (e) {
+    return { symbol, peers: [], error: e.message };
+  }
 }
 
 export async function search(query) {
