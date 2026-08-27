@@ -2650,6 +2650,48 @@ function newsRelativeTime(ms) {
   return `${days}d ago`;
 }
 
+/**
+ * Where news tone and price disagree, across held and watched instruments.
+ *
+ * Renders only when there is something to say: symbols whose 90-day news
+ * tone points one way while the trailing month's price went the other. Most
+ * days it renders nothing — the divergence list is empty, and an empty
+ * warning strip is noise. Symbols with too little coverage to read a tone
+ * are counted in the footer rather than pretending to have been checked.
+ */
+function NewsDivergencePanel() {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/news/divergence`).then(r => r.json()).then(setData).catch(() => setData(null));
+  }, []);
+  if (!data) return null;
+  const diverging = (data.symbols ?? []).filter(s => s.diverging);
+  if (!diverging.length) return null;
+  return (
+    <Panel>
+      <SectionHeader
+        title="TONE / PRICE DIVERGENCE"
+        subtitle="Held and watched instruments where the news reads one way and the last month traded the other"
+      />
+      <div style={{ padding: "6px 0" }}>
+        {diverging.map(s => (
+          <div key={s.symbol} style={{ display: "flex", alignItems: "baseline", gap: 12, padding: "7px 16px", borderBottom: "1px solid #10141d" }}>
+            <span style={{ fontFamily: "monospace", fontSize: 12, color: "#e8f0fc", width: 70, flexShrink: 0 }}>{s.symbol}</span>
+            <span style={{ fontSize: 11.5, color: "#b8c6da", flex: 1, lineHeight: 1.5 }}>
+              News tone is <span style={{ color: s.tone === "positive" ? "#00d4aa" : "#ff4757" }}>{s.tone}</span> across {s.stories} scored stories,
+              but the price is <span style={{ color: s.ret21 >= 0 ? "#00d4aa" : "#ff4757", fontFamily: "monospace" }}>{s.ret21 >= 0 ? "+" : ""}{(s.ret21 * 100).toFixed(1)}%</span> over the last month.
+            </span>
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "4px 16px 12px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.6 }}>
+        A disagreement worth looking at, not a signal by itself — either side can be the one that's wrong.
+        {(data.unassessable ?? []).length > 0 && ` ${data.unassessable.length} other followed symbol${data.unassessable.length === 1 ? " has" : "s have"} too little scored coverage to read a tone at all.`}
+      </div>
+    </Panel>
+  );
+}
+
 function NewsPage() {
   const [stories, setStories] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2782,6 +2824,7 @@ function NewsPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <NewsDivergencePanel />
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
         <div>
           <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>NEWS</div>
@@ -5681,7 +5724,7 @@ function ResearchBullBearTab({ symbol, name, bullbearData, bullbearLoading, onRe
   );
 }
 
-function ResearchPage({ prices }) {
+function ResearchPage({ prices, jumpTo }) {
   const trackedSymbols = Object.keys(DISPLAY_NAMES);
   const [query, setQuery] = useState("^GSPC");
   const [symbol, setSymbol] = useState("^GSPC");
@@ -5764,6 +5807,15 @@ function ResearchPage({ prices }) {
     setSymbol(sym); setQuery(sym); setCompanyName(nm || DISPLAY_NAMES[sym] || null);
     setSuggestions([]); setAiText("");
   };
+
+  // Arriving from the command palette: land on the requested symbol's
+  // Overview. The timestamp in jumpTo makes re-selecting the same symbol
+  // still fire, since the object identity changes each time.
+  useEffect(() => {
+    if (!jumpTo?.symbol) return;
+    selectSymbol(jumpTo.symbol.toUpperCase(), jumpTo.name ?? null);
+    setTab("overview");
+  }, [jumpTo?.ts]);
 
   const runSearch = () => {
     const s = query.trim();
@@ -7224,10 +7276,39 @@ function PortfolioPageV2() {
         )}
       </Panel>
 
+      {/* Concentration flags — surfaced here, where trades get decided,
+          rather than only on the Risk page where they were easy to miss. */}
+      {data.concentration && (() => {
+        const c = data.concentration;
+        const flags = [
+          c.largestPosition > 25 && `Largest position is ${c.largestPosition.toFixed(1)}% of the portfolio`,
+          c.top3 > 60 && `Top three positions are ${c.top3.toFixed(1)}% combined`,
+          c.lookThroughUS > 65 && `Look-through US exposure is ~${c.lookThroughUS.toFixed(0)}% — well above the headline geography split`,
+          c.effectiveHoldings < 4 && data.positions?.length >= 4 && `Effectively ${c.effectiveHoldings} holdings once weights are accounted for, despite ${data.positions.length} lines`,
+        ].filter(Boolean);
+        return flags.length > 0 && (
+          <Panel>
+            <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 5 }}>
+              {flags.map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, color: "#ffa502" }}>
+                  <span style={{ fontFamily: "monospace" }}>⚠</span>
+                  <span style={{ lineHeight: 1.5 }}>{f}</span>
+                </div>
+              ))}
+              <div style={{ fontSize: 9.5, color: "#3a4558", marginTop: 2 }}>
+                Thresholds are conventions (25% single, 60% top-three, 65% look-through US), not advice. Full diagnostics on the Risk page.
+              </div>
+            </div>
+          </Panel>
+        );
+      })()}
+
       {/* Breakdowns */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <BreakdownPanel title="GEOGRAPHY" rows={data.breakdowns.geography} />
         <BreakdownPanel title="SECTOR" rows={data.breakdowns.sector} />
+        <BreakdownPanel title="CURRENCY" rows={data.breakdowns.currency} />
+        <BreakdownPanel title="WRAPPER" rows={data.breakdowns.wrapper} />
       </div>
     </div>
   );
@@ -7300,6 +7381,211 @@ function BreakdownPanel({ title, rows }) {
 // ============================================================
 // SETTINGS PAGE
 // ============================================================
+
+/**
+ * Per-symbol data freshness in one table, with resync on the spot.
+ *
+ * "Is my data current?" was previously answerable only by curl or by noticing
+ * a chart looked wrong. Staleness is calendar days since the last stored bar
+ * — weekends legitimately show 1-2 days everywhere, so the flag threshold is
+ * 4, past any normal market closure.
+ */
+function DataHealthPanel() {
+  const [health, setHealth] = useState(null);
+  const [syncing, setSyncing] = useState(null); // symbol being synced, or "*"
+  const [showAll, setShowAll] = useState(false);
+
+  const load = useCallback(() => {
+    fetch(`${API}/system/health`).then(r => r.json()).then(setHealth).catch(() => setHealth(null));
+  }, []);
+  useEffect(load, [load]);
+
+  const resync = async symbols => {
+    setSyncing(symbols ? symbols[0] : "*");
+    try {
+      await fetch(`${API}/sync`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(symbols ? { symbols } : {}),
+      });
+      load();
+    } finally { setSyncing(null); }
+  };
+
+  if (!health) {
+    return <Panel><SectionHeader title="DATA HEALTH" subtitle="Loading…" /><div style={{ padding: 14, fontSize: 11, color: "#4a6080" }}>Reading the store…</div></Panel>;
+  }
+
+  const stale = health.coverage.filter(c => c.stale);
+  const rows = showAll ? health.coverage : health.coverage.filter(c => c.stale).concat(health.coverage.filter(c => !c.stale).slice(0, 6));
+  const newsAge = health.news.latestPublished ? Math.round((Date.now() - health.news.latestPublished) / 3_600_000) : null;
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="DATA HEALTH"
+        subtitle={`${health.symbols.stored} symbols stored · ${health.totalBars.toLocaleString()} bars · memory to ${health.memory.latestDate ?? "never"}`}
+        action={syncing === "*" ? "SYNCING…" : "SYNC ALL"}
+        onAction={() => syncing || resync(null)}
+      />
+      <div style={{ padding: "10px 14px 4px", display: "flex", gap: 14, flexWrap: "wrap", fontSize: 10.5, fontFamily: "monospace" }}>
+        <span style={{ color: stale.length ? "#ff8c42" : "#00d4aa" }}>
+          {stale.length ? `${stale.length} symbol${stale.length === 1 ? "" : "s"} stale (>4 days)` : "All stored history current"}
+        </span>
+        {health.symbols.unstored.length > 0 && (
+          <span style={{ color: "#ffa502" }} title={health.symbols.unstored.join(", ")}>
+            {health.symbols.unstored.length} tracked with no bars at all
+          </span>
+        )}
+        <span style={{ color: "#4a6080" }}>
+          news feed: {health.news.stories} stories{newsAge != null ? `, newest ${newsAge}h old` : ""}
+        </span>
+        <span style={{ color: "#4a6080" }}>
+          overnight sync: {health.lastOvernightSync ?? "not yet run — runs 5-8am while the app is up"}
+        </span>
+      </div>
+      <div style={{ padding: "6px 8px 6px", overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+          <thead>
+            <tr style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 9 }}>
+              {["SYMBOL", "BARS", "FIRST", "LAST", "AGE", ""].map((h, i) => (
+                <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "5px 8px", fontWeight: 400, letterSpacing: 0.5 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(c => (
+              <tr key={c.symbol} style={{ borderTop: "1px solid #10141d" }}>
+                <td style={{ padding: "5px 8px", fontFamily: "monospace", color: "#c8d6e8" }}>{c.symbol}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#7a8ba0" }}>{c.bars.toLocaleString()}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#4a6080" }}>{c.first}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#4a6080" }}>{c.last}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: c.stale ? "#ff8c42" : "#00d4aa" }}>
+                  {c.staleDays}d
+                </td>
+                <td style={{ padding: "5px 8px", textAlign: "right" }}>
+                  <button onClick={() => syncing || resync([c.symbol])} style={{
+                    background: "transparent", border: "1px solid #1a2535", borderRadius: 3,
+                    color: syncing === c.symbol ? "#ffa502" : "#3d8bff", padding: "1px 7px",
+                    cursor: "pointer", fontFamily: "monospace", fontSize: 9,
+                  }}>{syncing === c.symbol ? "…" : "SYNC"}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {health.coverage.length > rows.length && (
+          <button onClick={() => setShowAll(true)} style={{
+            background: "none", border: "none", color: "#3d8bff", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 10, padding: "8px",
+          }}>show all {health.coverage.length} symbols</button>
+        )}
+        {showAll && (
+          <button onClick={() => setShowAll(false)} style={{
+            background: "none", border: "none", color: "#4a6080", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 10, padding: "8px",
+          }}>collapse</button>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * One-click export of everything that exists nowhere else.
+ *
+ * Prices, news and observations are all rebuildable from their sources. The
+ * holdings, cash and transaction rows are not — they live only in
+ * meridian.db, which is gitignored, excluded from auto-update's backups, and
+ * has no version history. This is the app's own answer to that gap.
+ */
+function BackupPanel() {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+
+  const download = (filename, text, type = "text/csv") => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const toCsv = rows => {
+    if (!rows?.length) return "";
+    const cols = Object.keys(rows[0]);
+    const esc = v => v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+    return [cols.join(","), ...rows.map(r => cols.map(c => esc(r[c])).join(","))].join("\n");
+  };
+
+  const exportAll = async () => {
+    setBusy(true); setDone(null);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const [holdings, portfolio, transactions] = await Promise.all([
+        fetch(`${API}/holdings`).then(r => r.json()),
+        fetch(`${API}/portfolio`).then(r => r.json()),
+        fetch(`${API}/transactions`).then(r => r.json()),
+      ]);
+      const h = holdings.holdings ?? [];
+      const cash = portfolio.cashAccounts ?? portfolio.cash ?? [];
+      const tx = transactions.transactions ?? [];
+      download(`meridian-backup-${stamp}.json`, JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        holdings: h, cash: Array.isArray(cash) ? cash : [], transactions: tx,
+      }, null, 2), "application/json");
+      if (h.length) download(`meridian-holdings-${stamp}.csv`, toCsv(h));
+      if (tx.length) download(`meridian-transactions-${stamp}.csv`, toCsv(tx));
+      setDone(`Exported ${h.length} holdings, ${tx.length} transactions.`);
+    } catch {
+      setDone("Export failed — is the API running?");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="BACKUP"
+        subtitle="Holdings, cash and transactions — the only data with no other copy anywhere"
+        action={busy ? "EXPORTING…" : "EXPORT"}
+        onAction={() => busy || exportAll()}
+      />
+      <div style={{ padding: 14, fontSize: 11.5, color: "#7a8ba0", lineHeight: 1.7 }}>
+        Everything else Meridian holds (prices, news, observations) can be re-fetched or recomputed.
+        These rows cannot: they exist only in <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>meridian.db</code>,
+        which is deliberately outside git and outside the auto-update backups. Export writes a dated
+        JSON bundle plus CSVs to your Downloads folder — keep one somewhere safe after any change to
+        your holdings.
+        {done && <div style={{ marginTop: 8, color: done.startsWith("Export failed") ? "#ff8c42" : "#00d4aa", fontFamily: "monospace", fontSize: 11 }}>{done}</div>}
+      </div>
+    </Panel>
+  );
+}
+
+/** What changed in the app itself — git history, read from the local clone. */
+function ChangelogPanel() {
+  const [log, setLog] = useState(null);
+  useEffect(() => {
+    fetch(`${API}/changelog?limit=20`).then(r => r.json()).then(setLog).catch(() => setLog({ commits: [], error: "Could not reach the API." }));
+  }, []);
+  if (!log) return null;
+  return (
+    <Panel>
+      <SectionHeader title="WHAT'S CHANGED IN MERIDIAN" subtitle="Recent updates, from this clone's git history" />
+      {log.error ? (
+        <div style={{ padding: 14, fontSize: 11.5, color: "#4a6080" }}>{log.error}</div>
+      ) : (
+        <div style={{ padding: "6px 0", maxHeight: 300, overflowY: "auto" }}>
+          {log.commits.filter(c => !c.subject.startsWith("Merge pull request")).map(c => (
+            <div key={c.hash} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 16px", borderBottom: "1px solid #0f1420" }}>
+              <span style={{ fontSize: 9.5, color: "#3a4558", fontFamily: "monospace", flexShrink: 0 }}>{c.date}</span>
+              <span style={{ fontSize: 11.5, color: "#b8c6da", lineHeight: 1.5 }}>{c.subject}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
 
 function SettingsPage({ onApiKeySet }) {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("meridian_gemini_key") || "");
@@ -7402,23 +7688,125 @@ function SettingsPage({ onApiKeySet }) {
         </div>
       </Panel>
 
-      {/* How to use */}
+      <DataHealthPanel />
+      <BackupPanel />
+      <ChangelogPanel />
+
+      {/* This text predated the auto-update system and described manual
+          startup in a folder that no longer exists — replaced with what the
+          machine actually does now. */}
       <Panel>
-        <SectionHeader title="HOW TO START MERIDIAN" subtitle="Run these commands in Terminal each time" />
-        <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-          {[
-            { label: "Navigate to app folder", cmd: "cd ~/meridian" },
-            { label: "Start the app", cmd: "npm run dev" },
-            { label: "Then open Chrome and go to", cmd: "http://localhost:3000" },
-          ].map(item => (
-            <div key={item.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #0f1420" }}>
-              <span style={{ fontSize: 11, color: "#7a8ba0" }}>{item.label}</span>
-              <code style={{ fontFamily: "monospace", fontSize: 12, color: "#00d4aa", background: "#080b12", padding: "3px 8px", borderRadius: 3 }}>{item.cmd}</code>
-            </div>
-          ))}
+        <SectionHeader title="HOW MERIDIAN RUNS" subtitle="Nothing to start by hand" />
+        <div style={{ padding: 14, fontSize: 11.5, color: "#7a8ba0", lineHeight: 1.8 }}>
+          Meridian starts itself at login and checks GitHub for updates every 5 minutes, applying them
+          automatically with a backup of every changed file in <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>_archive\</code>.
+          Closing it keeps it closed until the next login. The UI lives at{" "}
+          <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>http://localhost:5173</code>.
+          To stop the automation entirely: <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>scripts\windows\stop-auto-update.ps1</code>.
         </div>
       </Panel>
 
+    </div>
+  );
+}
+
+/**
+ * Ctrl/Cmd+K jump box: pages first, then live symbol search once the query
+ * stops looking like a page name. One list, arrow keys + Enter, Escape out.
+ */
+function CommandPalette({ onClose, onPage, onSymbol }) {
+  const [query, setQuery] = useState("");
+  const [symbolResults, setSymbolResults] = useState([]);
+  const [sel, setSel] = useState(0);
+  const inputRef = useRef(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const q = query.trim().toLowerCase();
+  const pageHits = NAV_ITEMS.filter(p => !q || p.label.toLowerCase().includes(q) || p.id.includes(q));
+
+  // Symbol search kicks in from two characters — same debounce discipline as
+  // the Research box, and skipped entirely while the query is empty.
+  useEffect(() => {
+    if (q.length < 2) { setSymbolResults([]); return; }
+    const t = setTimeout(() => {
+      fetch(`${API}/search?q=${encodeURIComponent(query.trim())}`).then(r => r.json())
+        .then(d => setSymbolResults((d.results ?? []).slice(0, 6)))
+        .catch(() => setSymbolResults([]));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, query]);
+
+  const items = [
+    ...pageHits.map(p => ({ kind: "page", id: p.id, label: p.label, icon: p.icon })),
+    ...symbolResults.map(r => ({ kind: "symbol", id: r.symbol, label: r.name, sub: `${r.symbol}${r.exchange ? ` · ${r.exchange}` : ""}` })),
+  ];
+  const clampedSel = Math.min(sel, Math.max(items.length - 1, 0));
+
+  const activate = item => {
+    if (!item) return;
+    if (item.kind === "page") onPage(item.id);
+    else onSymbol(item.id, item.label);
+  };
+
+  const onKey = e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setSel(s => Math.min(s + 1, items.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setSel(s => Math.max(s - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); activate(items[clampedSel]); }
+  };
+
+  return (
+    <div onMouseDown={onClose} style={{
+      position: "fixed", inset: 0, background: "#04060acc", zIndex: 300,
+      display: "flex", justifyContent: "center", paddingTop: "14vh",
+    }}>
+      <div onMouseDown={e => e.stopPropagation()} style={{
+        width: "min(560px, 92vw)", height: "fit-content",
+        background: "#0b0f16", border: "1px solid #1a2535", borderRadius: 8,
+        boxShadow: "0 18px 60px #000c", overflow: "hidden",
+      }}>
+        <input
+          ref={inputRef} value={query}
+          onChange={e => { setQuery(e.target.value); setSel(0); }}
+          onKeyDown={onKey}
+          placeholder="Jump to a page, or search any ticker or company…"
+          style={{
+            width: "100%", background: "transparent", border: "none", outline: "none",
+            borderBottom: "1px solid #141b28", color: "#e8f0fc",
+            fontFamily: "monospace", fontSize: 14, padding: "14px 18px",
+          }}
+        />
+        <div style={{ maxHeight: 320, overflowY: "auto", padding: "6px 0" }}>
+          {items.length === 0 && (
+            <div style={{ padding: "14px 18px", fontSize: 12, color: "#4a6080" }}>
+              {q.length >= 2 ? "Nothing matches." : "Type to filter pages, or a ticker/company name."}
+            </div>
+          )}
+          {items.map((item, i) => (
+            <div
+              key={`${item.kind}-${item.id}`}
+              onMouseEnter={() => setSel(i)}
+              onMouseDown={() => activate(item)}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, padding: "8px 18px",
+                cursor: "pointer", background: i === clampedSel ? "#111726" : "transparent",
+                borderLeft: i === clampedSel ? "2px solid #00d4aa" : "2px solid transparent",
+              }}
+            >
+              {item.kind === "page"
+                ? <span style={{ fontSize: 13, width: 18, textAlign: "center" }}>{item.icon}</span>
+                : <span style={{ fontSize: 8.5, width: 18, textAlign: "center", color: "#3d8bff", fontFamily: "monospace" }}>◎</span>}
+              <span style={{ fontSize: 12.5, color: "#c8d6e8", flex: 1 }}>{item.label}</span>
+              <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace" }}>
+                {item.kind === "page" ? "page" : item.sub}
+              </span>
+            </div>
+          ))}
+        </div>
+        <div style={{ padding: "7px 18px", borderTop: "1px solid #141b28", fontSize: 9, color: "#3a4558", fontFamily: "monospace", display: "flex", gap: 14 }}>
+          <span>↑↓ move</span><span>↵ open</span><span>esc close</span>
+          <span style={{ marginLeft: "auto" }}>tickers open in Research</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -7433,6 +7821,22 @@ export default function TradingTerminal() {
   // it to the backend once on load so ranking works without re-saving it.
   useEffect(() => { syncKeyToServerIfNeeded(); }, []);
 
+  // Command palette (Ctrl/Cmd+K): jump to any page, or straight to a symbol
+  // on the Research page. researchJump carries a timestamp so selecting the
+  // same symbol twice still re-triggers the effect listening to it.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [researchJump, setResearchJump] = useState(null);
+  useEffect(() => {
+    const onKey = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(o => !o);
+      }
+      if (e.key === "Escape") setPaletteOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div style={{
@@ -7459,6 +7863,18 @@ export default function TradingTerminal() {
           .research-grid { grid-template-columns: minmax(0, 1fr) !important; }
         }
       `}</style>
+
+      {paletteOpen && (
+        <CommandPalette
+          onClose={() => setPaletteOpen(false)}
+          onPage={id => { setActivePage(id); setPaletteOpen(false); }}
+          onSymbol={(sym, nm) => {
+            setResearchJump({ symbol: sym, name: nm, ts: Date.now() });
+            setActivePage("research");
+            setPaletteOpen(false);
+          }}
+        />
+      )}
 
       {/* Top bar */}
       <div style={{
@@ -7557,7 +7973,7 @@ export default function TradingTerminal() {
             <RiskPage />
           )}
           {activePage === "research" && (
-            <ResearchPage prices={prices} />
+            <ResearchPage prices={prices} jumpTo={researchJump} />
           )}
           {activePage === "portfolio" && (
             <PortfolioPageV2 />

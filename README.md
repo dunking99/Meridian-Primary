@@ -163,6 +163,11 @@ split history, live from Yahoo chart events) · `GET /research/peers?symbol=`
 
 **AI** — `GET /brief?kind=daily|risk|rebalance|position` · `GET|POST /ai/notes`
 
+**System** — `GET /system/health` (per-symbol bar coverage with staleness,
+feed and memory freshness, last overnight sync) · `GET /changelog` (recent
+commits from the local clone) · `GET /news/divergence` (held/watched symbols
+whose news tone and trailing-month price disagree)
+
 ## Notes on correctness
 
 The maths is unit-tested against analytic solutions rather than eyeballed:
@@ -334,3 +339,13 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\stop-auto-update.ps1
 
 Progress is logged to `auto-update.log` in the repo root. Both that file and
 `_archive\` are gitignored — they're per-machine, not something to sync back.
+
+The server also syncs price history itself once a day (between 5 and 8am
+local, while the app is running) and rebuilds the memory layer afterwards, so
+stored bars stay at most a day old without any manual `POST /sync`. Settings →
+Data Health shows per-symbol freshness and offers one-click resyncs; Settings →
+Backup exports holdings, cash and transactions — the only data in this project
+with no other copy anywhere — as dated JSON + CSV files.
+
+`Ctrl+K` (or `Cmd+K`) anywhere opens a command palette: jump to any page, or
+type a ticker or company name to land straight on its Research page.
