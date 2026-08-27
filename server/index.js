@@ -3,7 +3,12 @@
 // Run: node server/index.js
 
 import http from 'http';
+import { execSync } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { PORT, CADENCE, CORE_SYMBOLS, SYMBOLS, SCENARIOS, WRAPPERS } from './config.js';
+
+const __dirnameSafe = path.dirname(fileURLToPath(import.meta.url));
 import { db, all, one, run, getBars, healthCheck, getSetting, setSetting, recordTicks, getSnapshots, purgeBars, allStoredSymbols } from './db.js';
 import { auditStored } from './engines/integrity.js';
 
@@ -148,6 +153,67 @@ const routes = {
   }),
 
   'GET /health': () => ({ ...healthCheck(), status: state.status, lastFetch: state.lastFetch, errors: state.errors.slice(-5) }),
+
+  // Everything about the data itself in one read: per-symbol bar coverage
+  // with staleness, feed freshness, memory recency, and when the overnight
+  // sync last ran. Built for the Settings page's Data Health section, so
+  // "is my data current?" is a glance rather than a set of curl calls.
+  'GET /system/health': () => {
+    const today = new Date();
+    const coverage = all(
+      'SELECT symbol, COUNT(*) bars, MIN(date) first, MAX(date) last FROM ohlcv GROUP BY symbol ORDER BY symbol'
+    ).map(r => {
+      const staleDays = r.last
+        ? Math.floor((today - new Date(r.last + 'T00:00:00Z')) / 86400_000) : null;
+      return {
+        ...r, staleDays,
+        // Calendar days, so a weekend read shows 1-2 days stale on everything
+        // — expected, and better than a trading-day guess that needs every
+        // exchange's holiday calendar to be right.
+        stale: staleDays != null && staleDays > 4,
+      };
+    });
+    const latestNews = one('SELECT MAX(published) t, COUNT(*) n FROM news');
+    const latestObs = one('SELECT MAX(date) d, COUNT(*) n FROM symbol_observations');
+    const tracked = trackedSymbols();
+    const stored = new Set(coverage.map(c => c.symbol));
+    return {
+      generatedAt: new Date().toISOString(),
+      symbols: {
+        tracked: tracked.length,
+        stored: coverage.length,
+        // Tracked but with no bars at all — invisible to every engine.
+        unstored: tracked.filter(s => !stored.has(s)),
+        stale: coverage.filter(c => c.stale).map(c => c.symbol),
+      },
+      coverage,
+      totalBars: coverage.reduce((a, c) => a + c.bars, 0),
+      news: { stories: latestNews?.n ?? 0, latestPublished: latestNews?.t ?? null },
+      memory: { observations: latestObs?.n ?? 0, latestDate: latestObs?.d ?? null },
+      lastOvernightSync: getSetting('lastOvernightSync'),
+      feed: { status: state.status, lastFetch: state.lastFetch },
+    };
+  },
+
+  // Recent commits, straight from git on the user's machine — the auto-update
+  // system already guarantees git and a real clone are present. Read-only and
+  // failure-tolerant: a zip-downloaded folder without .git just gets an
+  // explanatory message instead of a broken panel.
+  'GET /changelog': q => {
+    try {
+      const out = execSync(
+        `git log --pretty=format:%h%x09%ad%x09%s --date=short -${Math.min(Number(q.limit) || 25, 100)}`,
+        { cwd: path.join(__dirnameSafe, '..'), encoding: 'utf8', timeout: 5000 }
+      );
+      const commits = out.split('\n').filter(Boolean).map(line => {
+        const [hash, date, ...rest] = line.split('\t');
+        return { hash, date, subject: rest.join('\t') };
+      });
+      return { commits };
+    } catch (e) {
+      return { commits: [], error: 'Could not read git history — this folder may not be a git clone.' };
+    }
+  },
 
   'GET /prices': () => ({
     prices: state.prices, lastFetch: state.lastFetch,
@@ -730,6 +796,36 @@ const routes = {
     };
   },
 
+  // Where news tone and price are pulling in opposite directions, across the
+  // instruments the user actually follows (holdings + watchlist). Both sides
+  // of the comparison are local: the scored feed and stored bars. Symbols
+  // whose news coverage is too thin for a tone reading are listed as
+  // unassessable rather than silently dropped — an absence of signal and an
+  // absence of coverage are different facts.
+  'GET /news/divergence': () => {
+    const symbols = [...new Set([
+      ...all('SELECT DISTINCT symbol FROM holdings').map(r => r.symbol),
+      ...all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol),
+    ])];
+    const rows = [], thin = [];
+    for (const sym of symbols) {
+      const sent = research.sentimentTrend(sym);
+      if (!sent.available) { thin.push({ symbol: sym, reason: sent.reason }); continue; }
+      const bars = getBars(sym);
+      const closes = bars.map(b => b.close).filter(c => typeof c === 'number' && isFinite(c));
+      const ret21 = closes.length > 21 ? closes[closes.length - 1] / closes[closes.length - 22] - 1 : null;
+      const diverging = ret21 != null && (
+        (sent.nowBand === 'positive' && ret21 < -0.02) ||
+        (sent.nowBand === 'negative' && ret21 > 0.02));
+      rows.push({
+        symbol: sym, tone: sent.nowBand, toneValue: sent.now,
+        stories: sent.stories, ret21, diverging,
+      });
+    }
+    rows.sort((a, b) => (b.diverging ? 1 : 0) - (a.diverging ? 1 : 0));
+    return { symbols: rows, unassessable: thin, generatedAt: new Date().toISOString() };
+  },
+
   // Historical analogs to today's technical setup, from stored bars only —
   // no network involved, so it is fast enough to compute on every request.
   'GET /research/precedents': q => {
@@ -969,6 +1065,30 @@ const server = http.createServer(async (req, res) => {
   setInterval(refreshFearGreed, CADENCE.feargreed);
   setInterval(() => refreshNewsFeed().catch(() => {}), CADENCE.news);
   setInterval(snapshot, CADENCE.snapshot);
+
+  // Overnight history sync. The app already runs continuously on the user's
+  // machine (Task Scheduler starts it at login and restarts it on update), so
+  // the server itself is the right place for a daily job — no new scheduled
+  // task, no PowerShell, nothing else to install or go stale. Checked every
+  // half hour; fires once per calendar day in the 05:00-07:59 local window,
+  // when no market that matters here is open. If the machine was off all
+  // night nothing is missed permanently — the next manual sync or tomorrow's
+  // window catches up, since syncHistory is incremental from the last bar.
+  setInterval(async () => {
+    const hour = new Date().getHours();
+    const today = new Date().toISOString().slice(0, 10);
+    if (hour < 5 || hour > 7) return;
+    if (getSetting('lastOvernightSync') === today) return;
+    setSetting('lastOvernightSync', today);
+    console.log('  overnight sync: starting…');
+    try {
+      const r = await yahoo.syncAll(trackedSymbols(), { years: 12 });
+      const mem = memory.rebuild();
+      console.log(`  overnight sync: ${r.synced} symbols updated, ${r.failed.length} failed, memory rebuilt (${mem.observations} observations).`);
+    } catch (e) {
+      console.log(`  overnight sync failed: ${e.message}`);
+    }
+  }, 30 * 60_000);
 
   server.listen(PORT, () => {
     console.log(`  listening  http://localhost:${PORT}`);
