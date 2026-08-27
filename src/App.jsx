@@ -3867,12 +3867,17 @@ function NextDatesPanel({ summary }) {
   );
 }
 
-function RatingChangesPanel({ summary }) {
+function RatingChangesPanel({ summary, symbol }) {
   const rows = summary?.upgrades ?? [];
   if (!rows.length) return null;
+  // Yahoo's upgrade/downgrade history carries no per-item article link — just
+  // the firm, the grades and the date, not which piece reported it. The
+  // honest link is to where this data itself comes from, same as the ↗ on
+  // each holdings row, rather than pretending to point at a specific story.
+  const sourceUrl = symbol ? `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/analysis` : null;
   return (
     <Panel>
-      <SectionHeader title="RECENT RATING CHANGES" subtitle={`Last ${rows.length}`} />
+      <SectionHeader title="RECENT RATING CHANGES" subtitle={`Last ${rows.length} · Yahoo Finance`} />
       <div style={{ padding: "4px 0" }}>
         {rows.map((u, i) => {
           const col = u.action === "up" ? "#00d4aa" : u.action === "down" ? "#ff4757" : "#7a8ba0";
@@ -3882,8 +3887,13 @@ function RatingChangesPanel({ summary }) {
               padding: "8px 16px", borderBottom: i < rows.length - 1 ? "1px solid #12161f" : "none",
             }}>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 11.5, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {u.firm || "Unknown firm"}
+                <div style={{ fontSize: 11.5, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{u.firm || "Unknown firm"}</span>
+                  {sourceUrl && (
+                    <a href={sourceUrl} target="_blank" rel="noopener noreferrer"
+                      title="View analyst ratings on Yahoo Finance — the source of this data, not a specific article"
+                      style={{ color: "#4a6080", fontSize: 11, textDecoration: "none", flexShrink: 0 }}>↗</a>
+                  )}
                 </div>
                 <div style={{ fontSize: 9.5, color: col, fontFamily: "monospace", marginTop: 1 }}>
                   {u.fromGrade && u.toGrade && u.fromGrade !== u.toGrade ? `${u.fromGrade} → ${u.toGrade}` : (u.toGrade || "—")}
@@ -4026,7 +4036,7 @@ function ResearchOverviewTab({ symbol, name, overview, loading, price }) {
             <ConsensusPanel summary={q} price={price} symbol={symbol} />
             <RatingPanel summary={q} />
             <ScenarioPanelCompact summary={q} price={price} symbol={symbol} />
-            <RatingChangesPanel summary={q} />
+            <RatingChangesPanel summary={q} symbol={symbol} />
           </>
         ) : (
           <NoCoveragePanel summary={q} symbol={symbol} />
