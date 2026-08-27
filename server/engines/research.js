@@ -19,10 +19,26 @@
 //   any point, so there is nothing here that can drift away from the numbers
 //   shown beside it.
 
-import { all, one, getBars } from '../db.js';
+import { db, all, one, run, getBars } from '../db.js';
 import { TRADING_DAYS } from '../config.js';
 import { getNews } from '../sources/news.js';
 import * as A from './analytics.js';
+
+// User-authored chart annotations: a date, a sentence, nothing else. These
+// are the user's own record of why a day mattered ("trimmed here", "earnings
+// looked weak"), drawn on the price chart beside the machine-derived events.
+// Deliberately separate from bullbear theses — a thesis is an argument with
+// structure, a note is a pin on a date.
+db.exec(`
+CREATE TABLE IF NOT EXISTS research_notes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol     TEXT NOT NULL,
+  date       TEXT NOT NULL,
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_notes_symbol ON research_notes(symbol, date DESC);
+`);
 
 const iso = d => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d ?? '').slice(0, 10));
 const finite = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -489,6 +505,275 @@ export function narrative({ symbol, name, summary, tech, sentiment, events }) {
   };
 }
 
+// ─── Annotations ──────────────────────────────────────────────
+
+export function listNotes(symbol) {
+  return all('SELECT * FROM research_notes WHERE symbol = ? ORDER BY date DESC', String(symbol).toUpperCase().trim());
+}
+
+export function addNote(symbol, date, text) {
+  const sym = String(symbol ?? '').toUpperCase().trim();
+  const d = String(date ?? '').slice(0, 10);
+  const t = String(text ?? '').trim().slice(0, 500);
+  if (!sym) return { error: 'symbol is required.' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return { error: 'date must be YYYY-MM-DD.' };
+  if (!t) return { error: 'text is required.' };
+  run('INSERT INTO research_notes (symbol, date, text, created_at) VALUES (?,?,?,?)',
+      sym, d, t, new Date().toISOString());
+  return { ok: true, notes: listNotes(sym) };
+}
+
+export function deleteNote(id) {
+  const row = one('SELECT symbol FROM research_notes WHERE id = ?', Number(id));
+  if (!row) return { error: 'No note with that id.' };
+  run('DELETE FROM research_notes WHERE id = ?', Number(id));
+  return { ok: true, notes: listNotes(row.symbol) };
+}
+
+// ─── Precedents ───────────────────────────────────────────────
+
+/**
+ * Dates in this symbol's own past when it looked most like it looks today,
+ * and what happened next.
+ *
+ * The state of a day is six measurements: RSI(14), distance from the 50 and
+ * 200-day averages, the ratio of one-month to one-year volatility, the
+ * trailing-month return, and the position of the close in its trailing-year
+ * range. Each is z-scored against its own full history, so "similar" means
+ * similar in that symbol's own terms — an RSI of 70 on a sleepy index and on
+ * a volatile small-cap are different amounts of unusual, and the normalisation
+ * carries that.
+ *
+ * What this is: a description of a sample. What it is not: a forecast. The
+ * response says both, and the honesty gates are strict —
+ *
+ *   - refuses below ~3 years of bars (too few independent setups to sample);
+ *   - matches within a month of each other collapse to the best one, so one
+ *     drawn-out episode cannot masquerade as five independent precedents;
+ *   - the last three months are excluded as candidates (they overlap the
+ *     present, which is the thing being matched);
+ *   - every match is labelled close/moderate/loose by where its distance
+ *     falls against all candidate distances, and if nothing lands in the
+ *     closest decile the response says today's setup has no close precedent
+ *     rather than serving the least-bad matches as if they were good ones.
+ */
+export function precedents(symbol, { count = 10 } = {}) {
+  const bars = getBars(symbol).filter(b => finite(b.close) != null);
+  const n = bars.length;
+  const WARMUP = TRADING_DAYS + 21;         // features need a year of history behind them
+  const EXCLUDE_RECENT = 63;                // the present is not its own precedent
+  const MIN_BARS = 3 * TRADING_DAYS;
+
+  if (n < MIN_BARS) {
+    return { available: false, bars: n,
+      reason: `Only ${n} stored bars — precedent matching needs at least ${MIN_BARS} (about three years) to have a sample worth describing.` };
+  }
+
+  const closes = bars.map(b => b.close);
+  const dates = bars.map(b => iso(b.date));
+
+  // Per-bar feature computation, incremental where it matters. RSI and the
+  // SMAs are recomputed over windows; at ~3000 bars x 6 features this stays
+  // comfortably under 100ms, which is fine for an on-demand endpoint.
+  const rets = [null];
+  for (let i = 1; i < n; i++) rets.push(closes[i] / closes[i - 1] - 1);
+
+  const features = new Array(n).fill(null);
+  for (let i = WARMUP; i < n; i++) {
+    const upto = closes.slice(0, i + 1);
+    const win252 = upto.slice(-TRADING_DAYS);
+    const r21 = [], r252 = [];
+    for (let j = i - 20; j <= i; j++) r21.push(rets[j]);
+    for (let j = i - TRADING_DAYS + 1; j <= i; j++) r252.push(rets[j]);
+    const v21 = A.stdev(r21.filter(finite)), v252 = A.stdev(r252.filter(finite));
+    const hi = Math.max(...win252), lo = Math.min(...win252);
+    const sma50 = A.sma(upto, 50), sma200 = A.sma(upto, 200);
+    const rsi = A.rsi(upto.slice(-60), 14);
+    if ([v21, v252, sma50, sma200, rsi].some(x => x == null) || !(hi > lo) || !v252) continue;
+    features[i] = [
+      rsi,
+      closes[i] / sma50 - 1,
+      closes[i] / sma200 - 1,
+      v21 / v252,
+      closes[i] / closes[i - 21] - 1,
+      (closes[i] - lo) / (hi - lo),
+    ];
+  }
+
+  const today = features[n - 1];
+  if (!today) {
+    return { available: false, bars: n, reason: 'Could not compute a full technical state for the latest bar.' };
+  }
+
+  // Z-score each feature dimension over every computed bar, so distance is
+  // unitless and no single feature dominates by having bigger numbers.
+  const dims = today.length;
+  const means = [], sds = [];
+  for (let d = 0; d < dims; d++) {
+    const vals = [];
+    for (let i = 0; i < n; i++) if (features[i]) vals.push(features[i][d]);
+    means.push(A.mean(vals));
+    sds.push(A.stdev(vals) || 1);
+  }
+  const z = f => f.map((v, d) => (v - means[d]) / sds[d]);
+  const zToday = z(today);
+
+  const candidates = [];
+  for (let i = WARMUP; i < n - EXCLUDE_RECENT; i++) {
+    if (!features[i]) continue;
+    const zi = z(features[i]);
+    let sum = 0;
+    for (let d = 0; d < dims; d++) sum += (zi[d] - zToday[d]) ** 2;
+    candidates.push({ i, distance: Math.sqrt(sum / dims) });
+  }
+  if (candidates.length < 60) {
+    return { available: false, bars: n,
+      reason: `Only ${candidates.length} comparable historical days after warm-up — too few to rank meaningfully.` };
+  }
+
+  // Distance percentiles over the whole candidate set give the closeness
+  // labels their meaning: "close" is closer than 90% of this symbol's days.
+  const allDists = candidates.map(c => c.distance).sort((a, b) => a - b);
+  const pctOf = v => {
+    let lo = 0, hi = allDists.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (allDists[m] < v) lo = m + 1; else hi = m; }
+    return lo / allDists.length;
+  };
+
+  candidates.sort((a, b) => a.distance - b.distance);
+  const picked = [];
+  for (const c of candidates) {
+    if (picked.length >= count) break;
+    if (picked.some(p => Math.abs(p.i - c.i) < 21)) continue;
+    picked.push(c);
+  }
+
+  const fwd = (i, k) => (i + k < n && closes[i] > 0 ? closes[i + k] / closes[i] - 1 : null);
+  const closeness = p => (p <= 0.10 ? 'close' : p <= 0.25 ? 'moderate' : 'loose');
+
+  const matches = picked.map(c => {
+    const path = [];
+    for (let k = 0; k <= 21 && c.i + k < n; k++) path.push(closes[c.i + k] / closes[c.i] - 1);
+    const pct = pctOf(c.distance);
+    return {
+      date: dates[c.i],
+      distance: +c.distance.toFixed(3),
+      distancePercentile: +pct.toFixed(3),
+      closeness: closeness(pct),
+      fwd5: fwd(c.i, 5), fwd21: fwd(c.i, 21), fwd63: fwd(c.i, 63),
+      // The 21-bar forward path, as returns from the match date, for the
+      // spaghetti chart. Truncated paths (a match near the end of history)
+      // are sent as-is and drawn shorter rather than padded.
+      path: path.map(v => +v.toFixed(5)),
+    };
+  });
+
+  const f21 = matches.map(m => m.fwd21).filter(finite);
+  const f63 = matches.map(m => m.fwd63).filter(finite);
+  const closeCount = matches.filter(m => m.closeness === 'close').length;
+
+  return {
+    available: true,
+    bars: n,
+    asOf: dates[n - 1],
+    // Today's setup, in raw (un-z-scored) terms, so the UI can label it.
+    setup: {
+      rsi14: +today[0].toFixed(1),
+      dist50dma: +today[1].toFixed(4),
+      dist200dma: +today[2].toFixed(4),
+      volRatio: +today[3].toFixed(3),
+      ret21d: +today[4].toFixed(4),
+      rangePosition: +today[5].toFixed(3),
+    },
+    matches,
+    hasClosePrecedent: closeCount > 0,
+    aggregate: f21.length >= 5 ? {
+      n: f21.length,
+      medianFwd21: A.median(f21),
+      positiveFwd21: f21.filter(v => v > 0).length,
+      medianFwd63: f63.length >= 5 ? A.median(f63) : null,
+      nFwd63: f63.length,
+    } : null,
+    method: `Each day's state is six measurements (RSI, distance from 50/200-day averages, 1-month vs 1-year volatility, 1-month return, yearly range position), z-scored against this symbol's own history. Matches are the nearest days by that distance, at least a month apart, excluding the last three months. This describes what followed similar setups in one instrument's past — a sample, not a forecast.`,
+  };
+}
+
+// ─── Compare ──────────────────────────────────────────────────
+
+/**
+ * Several symbols on one comparable footing: rebased to 100 at the first
+ * date they all share, with window stats and pairwise return correlations.
+ *
+ * Joined on dates, for the same reason the benchmark beta is: different
+ * calendars mean position i is not the same day across listings, and a
+ * comparison chart drawn positionally would quietly shear the lines apart.
+ */
+export function compareSeries(symbols, { days = TRADING_DAYS } = {}) {
+  const syms = [...new Set(symbols.map(s => String(s).toUpperCase().trim()).filter(Boolean))].slice(0, 4);
+  if (syms.length < 2) return { available: false, reason: 'Need at least two symbols to compare.' };
+
+  const missing = [];
+  const bySym = {};
+  for (const s of syms) {
+    const bars = getBars(s).filter(b => finite(b.close) != null);
+    if (bars.length < 30) {
+      missing.push({ symbol: s, reason: bars.length === 0 ? 'No stored bars.' : `Only ${bars.length} stored bars.` });
+      continue;
+    }
+    bySym[s] = new Map(bars.map(b => [iso(b.date), b.close]));
+  }
+  const usable = Object.keys(bySym);
+  if (usable.length < 2) {
+    return { available: false, reason: 'Fewer than two symbols have enough stored history.', missing };
+  }
+
+  // Dates every usable symbol traded, newest window last.
+  const [first, ...rest] = usable;
+  let common = [...bySym[first].keys()].filter(d => rest.every(s => bySym[s].has(d)));
+  common.sort();
+  common = common.slice(-Math.max(days, 30));
+  if (common.length < 30) {
+    return { available: false, missing,
+      reason: `The selected symbols share only ${common.length} trading days — too few to compare over.` };
+  }
+
+  const series = {}, stats = {}, returns = {};
+  for (const s of usable) {
+    const closes = common.map(d => bySym[s].get(d));
+    const base = closes[0];
+    series[s] = closes.map(c => +((c / base) * 100).toFixed(3));
+    const r = A.toReturns(closes);
+    returns[s] = r;
+    const dd = A.maxDrawdown(closes);
+    stats[s] = {
+      totalReturn: closes[closes.length - 1] / base - 1,
+      annVol: A.annualisedVol(r),
+      maxDrawdown: dd.maxDrawdown,
+      sharpe: A.sharpe(r),
+    };
+  }
+
+  const correlations = {};
+  for (let a = 0; a < usable.length; a++) {
+    for (let b = a + 1; b < usable.length; b++) {
+      correlations[`${usable[a]}|${usable[b]}`] =
+        +A.correlation(returns[usable[a]], returns[usable[b]]).toFixed(3);
+    }
+  }
+
+  return {
+    available: true,
+    symbols: usable,
+    missing,
+    from: common[0], to: common[common.length - 1],
+    overlapDays: common.length,
+    dates: common,
+    series,
+    stats,
+    correlations,
+  };
+}
+
 // ─── Assembly ─────────────────────────────────────────────────
 
 /**
@@ -515,6 +800,9 @@ export function buildOverview(symbol, { summary = null } = {}) {
     technicals: tech,
     events,
     sentiment,
+    // The user's own pinned notes ride along so the chart can mark them
+    // without a second request; edits go through the /research/notes CRUD.
+    notes: listNotes(sym),
     narrative: narrative({ symbol: sym, name: s?.name, summary: s, tech, sentiment, events }),
   };
 }

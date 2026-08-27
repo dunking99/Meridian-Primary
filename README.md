@@ -137,8 +137,18 @@ scripts/
 
 **Research overview** — `GET /research/overview?symbol=` — one read backing the
 whole Overview tab: the Yahoo summary, the full stored price series with its
-50/200-day averages, technicals, dated chart events, the news-sentiment trend
-and the composed narrative.
+50/200-day averages, technicals, dated chart events, ownership and short
+interest, the news-sentiment trend, the user's chart notes and the composed
+narrative.
+
+**Research deep-dive** — `GET /research/precedents?symbol=` (nearest historical
+analogs to today's technical setup, from stored bars only, with forward paths
+and strict honesty gates) · `GET /research/compare?symbols=A,B&days=` (up to
+four symbols rebased to 100, joined on shared trading dates, with window stats
+and return correlations) · `GET /research/corporate?symbol=` (dividend and
+split history, live from Yahoo chart events) · `GET /research/peers?symbol=`
+(Yahoo's similar-instruments list priced into a comparables table) ·
+`GET|POST|DELETE /research/notes` (the user's own dated chart annotations).
 
 **Bull / bear** — `GET /research/bullbear?symbol=` ·
 `POST /research/bullbear/generate` · `PUT /research/bullbear/thesis` ·
@@ -217,6 +227,17 @@ and a frontier that saturated because its return ceiling ignored the weight cap.
   published analyst target pins the range marker at the end of the track, which
   reads as "at the top of the range" when the truth is "past it" — so the track
   says which, rather than clamping quietly.
+- **Precedents are a described sample, not a forecast.** The precedent finder
+  matches today's technical state against the symbol's own history, z-scored
+  in its own terms, and reports what followed — with matches forced at least a
+  month apart so one episode can't pose as several, the latest quarter
+  excluded as candidates, every match labelled close/moderate/loose by its
+  distance percentile, and an explicit "no close precedent" banner when
+  nothing lands in the nearest decile. The method statement ships in the
+  response and renders under the table.
+- **Similar instruments are labelled as Yahoo's picks.** How Yahoo builds its
+  similarity list is not published, so the panel says so instead of presenting
+  it as a curated sector peer group.
 - **The bull/bear view shows no overall verdict or score.** Weighting a
   momentum signal against an analyst signal would need weights nothing here
   can justify. The only aggregate is a straight count of which way the signals

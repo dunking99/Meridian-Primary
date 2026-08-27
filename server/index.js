@@ -730,6 +730,40 @@ const routes = {
     };
   },
 
+  // Historical analogs to today's technical setup, from stored bars only —
+  // no network involved, so it is fast enough to compute on every request.
+  'GET /research/precedents': q => {
+    const symbol = String(q.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+    return { symbol, ...research.precedents(symbol, { count: Math.min(Number(q.count) || 10, 20) }) };
+  },
+
+  // Several symbols rebased onto one footing. Stored bars only.
+  'GET /research/compare': q => {
+    const symbols = String(q.symbols ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    return research.compareSeries(symbols, { days: Math.min(Math.max(Number(q.days) || 252, 30), 2600) });
+  },
+
+  // Dividend and split history — a live Yahoo read, so the Research page
+  // fetches it lazily per symbol rather than as part of the overview.
+  'GET /research/corporate': async q => {
+    const symbol = String(q.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+    return await yahoo.fetchCorporateActions(symbol);
+  },
+
+  // Instruments Yahoo considers similar, priced into a comparables table.
+  'GET /research/peers': async q => {
+    const symbol = String(q.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+    return await yahoo.fetchPeers(symbol);
+  },
+
+  // Chart annotations: the user's own dated notes on an instrument.
+  'GET /research/notes': q => ({ symbol: String(q.symbol ?? '').toUpperCase().trim(), notes: research.listNotes(q.symbol ?? '') }),
+  'POST /research/notes': body => research.addNote(body?.symbol, body?.date, body?.text),
+  'DELETE /research/notes': q => research.deleteNote(q.id),
+
   // One read for the whole tab. The quoteSummary fetch is shared between the
   // signals, the price scenario and the daily snapshot write, so the tab costs
   // one upstream call rather than three.
