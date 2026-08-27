@@ -103,6 +103,10 @@ server/
     calendar.js          dated events for held and watched instruments
     bullbear.js          signals for and against an instrument, and the
                          persisted thesis drafted from them
+    research.js          the Research overview: price series with moving
+                         averages, technicals from stored bars, dated chart
+                         events, news-sentiment trend, and the composed
+                         "where things stand" narrative
     integrity.js         bar validation and corruption repair
     newsscore.js         AI relevance scoring for the news feed
 scripts/
@@ -130,6 +134,11 @@ scripts/
 `/screener/strategies`
 
 **Tracking** — `GET|POST|PUT|DELETE /alerts` `/watchlist` `/paper`
+
+**Research overview** — `GET /research/overview?symbol=` — one read backing the
+whole Overview tab: the Yahoo summary, the full stored price series with its
+50/200-day averages, technicals, dated chart events, the news-sentiment trend
+and the composed narrative.
 
 **Bull / bear** — `GET /research/bullbear?symbol=` ·
 `POST /research/bullbear/generate` · `PUT /research/bullbear/thesis` ·
@@ -185,6 +194,29 @@ and a frontier that saturated because its return ceiling ignored the weight cap.
 - **The macro calendar is not covered.** No free structured feed for CPI,
   payrolls or rate decisions is wired up, and Investing.com does it better. The
   calendar says so rather than leaving the gap to be discovered.
+- **The Research narrative is composed, not generated.** "Where things stand"
+  is assembled sentence by sentence from the same figures shown beside it, and
+  a sentence is emitted only when every number in it exists. No model is
+  involved, so nothing in it can drift away from the numbers on screen. A
+  thinly-covered instrument gets a short section rather than a padded one.
+- **The Research chart draws only what it has.** Ranges longer than the stored
+  history are disabled rather than shown part-empty, and if the selected range
+  cannot be filled the chart falls back to the longest that can and says so —
+  nineteen bars are never labelled "1Y". Moving averages are hidden when too
+  few bars exist to compute them, and events that fall on non-trading days are
+  dropped rather than nudged onto a neighbouring bar they did not happen on.
+- **News sentiment refuses thin coverage.** The 90-day trend needs at least six
+  scored stories across eight separate days before it will draw anything; below
+  that it reports the coverage it found instead. Smoothing runs over days that
+  had stories, never across empty ones.
+- **Beta is joined on dates, not positions.** Zipping two series by index is
+  how a confident, meaningless beta gets computed for a UK listing against a US
+  index — different holiday calendars mean the same index is a different day in
+  each. It joins on the date and refuses below 120 overlapping bars.
+- **A value outside its range is said to be outside it.** A price above every
+  published analyst target pins the range marker at the end of the track, which
+  reads as "at the top of the range" when the truth is "past it" — so the track
+  says which, rather than clamping quietly.
 - **The bull/bear view shows no overall verdict or score.** Weighting a
   momentum signal against an analyst signal would need weights nothing here
   can justify. The only aggregate is a straight count of which way the signals
