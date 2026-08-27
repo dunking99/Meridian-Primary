@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect, useId } from "react";
 import { AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import { fetchLivePrices, fetchFearAndGreed } from "./prices.js";
 import { GEMINI_API_KEY, GEMINI_MODEL } from "./config.js";
@@ -3047,179 +3047,997 @@ function ResearchStat({ label, value, color = "#c8d6e8", inapplicable = null }) 
 const RATING_COLORS = { strongBuy: "#00d4aa", buy: "#4ade80", hold: "#ffa502", sell: "#ff8c42", strongSell: "#ff4757" };
 const RATING_LABELS = { strongBuy: "Strong Buy", buy: "Buy", hold: "Hold", sell: "Sell", strongSell: "Strong Sell" };
 
-function ResearchOverviewTab({ symbol, name, data, summary, summaryLoading, levels }) {
-  const s = summary && !summary.error ? summary : null;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {!data && (
-        <Panel><div style={{ padding: 16, fontSize: 12, color: "#7a8ba0" }}>No live price for <span style={{ color: "#c8d6e8", fontFamily: "monospace" }}>{symbol}</span> in the terminal feed. Fundamentals below still load independently — you can also add a price link in Settings.</div></Panel>
-      )}
+// ============================================================
+// RESEARCH — OVERVIEW
+//
+// The Analyst tab used to live separately, which split one question ("what is
+// going on with this thing?") across two places: the price picture here, the
+// street's view over there. Researching an instrument meant reading half the
+// story, clicking, and holding the first half in your head. They are one tab
+// now — chart, numbers and narrative down the left, everything the analysts
+// think down the right rail.
+//
+// Every figure on this tab is either fetched or computed from stored bars, and
+// each panel says which. Where a number cannot be computed the panel says why
+// instead of showing a plausible-looking substitute.
+// ============================================================
 
-      {(s?.dates?.nextEarnings || s?.dates?.exDividendDate) && (
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {s.dates.nextEarnings && (
-            <div style={{ flex: 1, minWidth: 200, background: "#0d1117", border: "1px solid #3d8bff30", borderTop: "2px solid #3d8bff", borderRadius: 6, padding: "12px 16px" }}>
-              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>NEXT EARNINGS</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#3d8bff", fontFamily: "monospace", marginTop: 4 }}>
-                {s.dates.nextEarnings}{s.dates.nextEarningsLate && s.dates.nextEarningsLate !== s.dates.nextEarnings ? ` \u2013 ${s.dates.nextEarningsLate}` : ""}
-              </div>
-            </div>
-          )}
-          {s.dates.exDividendDate && (
-            <div style={{ flex: 1, minWidth: 200, background: "#0d1117", border: "1px solid #a855f730", borderTop: "2px solid #a855f7", borderRadius: 6, padding: "12px 16px" }}>
-              <div style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", letterSpacing: 1 }}>EX-DIVIDEND DATE</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#a855f7", fontFamily: "monospace", marginTop: 4 }}>{s.dates.exDividendDate}</div>
-            </div>
-          )}
-        </div>
-      )}
+/** Container width, tracked live, so the SVG can be drawn at real pixel size. */
+function useElementWidth() {
+  const ref = useRef(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);
+    // Charts are drawn at device pixels rather than scaled with a viewBox:
+    // scaling would stretch the axis text and the event dots along with the
+    // line. That means re-rendering on resize rather than letting the browser
+    // handle it.
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect?.width;
+      if (w) setWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width];
+}
 
+const CHART_RANGES = [["1M", 21], ["3M", 63], ["6M", 126], ["1Y", 252], ["5Y", 1260], ["MAX", null]];
+
+const EVENT_STYLE = {
+  earnings: { color: "#3d8bff", glyph: "E", title: "Earnings" },
+  rating:   { color: "#a855f7", glyph: "R", title: "Rating change" },
+  target:   { color: "#facc15", glyph: "T", title: "Consensus target revision" },
+  move:     { color: "#ff8c42", glyph: "!", title: "Outsized single-day move" },
+};
+
+const shortDate = iso => {
+  const [y, m, d] = String(iso).split("-");
+  return `${d} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+m - 1]} ${y.slice(2)}`;
+};
+
+function axisPrice(v, symbol) {
+  if (v == null) return "";
+  const a = Math.abs(v);
+  if (a >= 10000) return `${(v / 1000).toFixed(1)}k`;
+  if (a >= 100) return v.toFixed(0);
+  if (a >= 1) return v.toFixed(2);
+  return v.toFixed(4);
+}
+
+/**
+ * The price line, its moving averages, its yearly extremes and the dated
+ * events that landed on it.
+ *
+ * The whole stored series arrives in one payload, so switching range is a
+ * slice rather than a request — instant, and it cannot get into a state where
+ * the header and the line disagree because one of them refetched.
+ */
+function PriceChart({ series, events = [], technicals, symbol, name }) {
+  const [range, setRange] = useState("1Y");
+  const [showMA, setShowMA] = useState(true);
+  const [hover, setHover] = useState(null);
+  const [wrapRef, width] = useElementWidth();
+  const gid = useId().replace(/:/g, "");
+
+  // A range is offered only when there are enough bars to fill a reasonable
+  // part of it. Below that the window is mostly empty and the label lies about
+  // what you are looking at.
+  const enoughFor = span => span == null || (series?.bars ?? 0) > span * 0.35;
+
+  // What is actually drawn. If the selected range can't be filled — which
+  // happens when you move from a symbol with twelve years of history to one
+  // with three weeks — this falls back to the longest range that can, instead
+  // of showing nineteen bars under a "1Y" heading.
+  const activeRange = useMemo(() => {
+    if (enoughFor(CHART_RANGES.find(([id]) => id === range)?.[1])) return range;
+    const usable = CHART_RANGES.filter(([, span]) => enoughFor(span));
+    return usable.length ? usable[usable.length - 1][0] : "MAX";
+  }, [range, series?.bars]);
+
+  const view = useMemo(() => {
+    if (!series?.available) return null;
+    const n = series.close.length;
+    const span = CHART_RANGES.find(([id]) => id === activeRange)?.[1] ?? null;
+    const start = span == null ? 0 : Math.max(0, n - span);
+    return {
+      start,
+      dates: series.dates.slice(start),
+      close: series.close.slice(start),
+      sma50: series.sma50.slice(start),
+      sma200: series.sma200.slice(start),
+    };
+  }, [series, activeRange]);
+
+  // Index by date once, so plotting events is a lookup rather than a scan per
+  // event. Events that fall on a non-trading day (a Saturday press release,
+  // a holiday) have no bar to sit on and are dropped from the chart rather
+  // than being nudged onto a neighbouring day they did not happen on.
+  const eventsOnChart = useMemo(() => {
+    if (!view) return [];
+    const idx = new Map(view.dates.map((d, i) => [d, i]));
+    const grouped = new Map();
+    for (const e of events) {
+      const i = idx.get(e.date);
+      if (i == null) continue;
+      if (!grouped.has(i)) grouped.set(i, []);
+      grouped.get(i).push(e);
+    }
+    return [...grouped.entries()].map(([i, list]) => ({ i, list }));
+  }, [view, events]);
+
+  if (!series?.available) {
+    return (
       <Panel>
-        <SectionHeader title="KEY STATS" subtitle={summaryLoading ? "Loading\u2026" : s ? [s.instrumentLabel, s.sector, s.industry, s.country].filter(Boolean).join(" \u00b7 ") || "Fundamentals" : "No fundamentals data for this symbol"} />
-        {s ? (
-          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-            {/* Which of these apply is decided by instrument type, not by
-                whether Yahoo happened to return a number. An index has no P/E
-                — that is a fact about indices, not a gap in the data. */}
-            {[
-              ["marketCap",     "MARKET CAP",    s.marketCap ? formatBigNumber(s.marketCap) : null],
-              ["pe",            "P/E (TTM)",     s.pe ? s.pe.toFixed(1) : null],
-              ["forwardPe",     "FORWARD P/E",   s.forwardPe ? s.forwardPe.toFixed(1) : null],
-              ["dividendYield", "DIV YIELD",     s.dividendYield ? `${(s.dividendYield * 100).toFixed(2)}%` : null],
-              ["beta",          "BETA",          s.beta ? s.beta.toFixed(2) : null],
-              ["range52",       "52W RANGE",     s.low52 && s.high52 ? `${formatPrice(s.low52, symbol)} \u2013 ${formatPrice(s.high52, symbol)}` : null],
-              ["avgVolume",     "AVG VOLUME",    s.avgVolume ? formatBigNumber(s.avgVolume) : null],
-              ["expenseRatio",  "EXPENSE RATIO", s.expenseRatio ? `${(s.expenseRatio * 100).toFixed(2)}%` : null],
-            ].map(([key, label, value]) => (
-              <ResearchStat
-                key={key} label={label} value={value}
-                inapplicable={s.applicableStats && !s.applicableStats.includes(key)
-                  ? (s.inapplicable?.[key] ?? `Not applicable to a ${s.instrumentLabel?.toLowerCase() ?? "instrument"} like this.`)
-                  : null}
-              />
-            ))}
+        <SectionHeader title="PRICE" subtitle="No stored history" />
+        <div style={{ padding: 20, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>{series?.reason ?? "No price history available for this symbol."}</div>
+      </Panel>
+    );
+  }
+
+  const H = 320, padL = 54, padR = 14, padT = 14, padB = 24;
+  const W = Math.max(width || 0, 320);
+  const innerW = Math.max(W - padL - padR, 10);
+  const innerH = H - padT - padB;
+  const n = view.close.length;
+
+  const visible = view.close.filter(v => v != null);
+  // A 50 or 200-day average needs that many bars before it exists at all, so
+  // on a short history — or a short range — there is simply nothing to draw.
+  // The toggle and its legend follow that rather than advertising lines the
+  // chart cannot show.
+  const has50 = view.sma50.some(v => v != null);
+  const has200 = view.sma200.some(v => v != null);
+  const canMA = has50 || has200;
+  const drawMA = showMA && canMA;
+  const maLines = drawMA
+    ? [...view.sma50.filter(v => v != null), ...view.sma200.filter(v => v != null)]
+    : [];
+  // The 52-week extremes are only drawn on ranges long enough to contain
+  // them. On a one-month view a "52-week high" line sitting far above
+  // everything squashes the actual price into a band and tells you nothing
+  // the stat tiles do not already say.
+  const showExtremes = ["1Y", "5Y", "MAX"].includes(activeRange)
+    && technicals?.available && technicals.high52 != null;
+  const extremes = showExtremes ? [technicals.high52, technicals.low52] : [];
+
+  const all = [...visible, ...maLines, ...extremes];
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (!(hi > lo)) { hi = lo + 1; lo -= 1; }
+  const pad = (hi - lo) * 0.08;
+  lo -= pad; hi += pad;
+
+  const x = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const y = v => padT + (1 - (v - lo) / (hi - lo)) * innerH;
+
+  const path = (arr) => {
+    let d = "", pen = false;
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v == null) { pen = false; continue; }
+      d += `${pen ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    }
+    return d;
+  };
+
+  const first = visible[0], last = view.close[n - 1];
+  const rangeReturn = first > 0 ? last / first - 1 : null;
+  const up = (rangeReturn ?? 0) >= 0;
+  const lineColor = up ? "#00d4aa" : "#ff4757";
+
+  const areaPath = `${path(view.close)}L${x(n - 1).toFixed(1)},${(padT + innerH).toFixed(1)}L${x(0).toFixed(1)},${(padT + innerH).toFixed(1)}Z`;
+
+  const ticks = 5;
+  const yTicks = Array.from({ length: ticks }, (_, i) => lo + (i / (ticks - 1)) * (hi - lo));
+  const xTickIdx = Array.from({ length: Math.min(6, n) }, (_, i) =>
+    Math.round((i / (Math.min(6, n) - 1 || 1)) * (n - 1)));
+
+  const onMove = e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const i = Math.round(((px - padL) / innerW) * (n - 1));
+    setHover(i >= 0 && i < n ? i : null);
+  };
+
+  const hv = hover != null ? view.close[hover] : null;
+  const hoverEvents = hover != null ? (eventsOnChart.find(g => g.i === hover)?.list ?? []) : [];
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="PRICE"
+        subtitle={`${series.bars.toLocaleString()} stored bars · ${series.first} to ${series.last}`}
+        extra={
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={() => setShowMA(v => !v)}
+              disabled={!canMA}
+              title={canMA
+                ? "50 and 200-day simple moving averages, computed from the same stored bars."
+                : `Needs at least 50 bars in view for a 50-day average — this range has ${n}.`}
+              style={{
+                background: drawMA ? "#3d8bff20" : "transparent",
+                border: `1px solid ${drawMA ? "#3d8bff40" : "#1a2535"}`,
+                color: !canMA ? "#232c3d" : drawMA ? "#3d8bff" : "#4a6080", borderRadius: 3,
+                padding: "3px 8px", cursor: canMA ? "pointer" : "not-allowed",
+                fontFamily: "monospace", fontSize: 9, letterSpacing: 0.5,
+              }}>MA</button>
+            <div style={{ display: "flex", gap: 2 }}>
+              {CHART_RANGES.map(([id, span]) => {
+                const enough = enoughFor(span);
+                const on = activeRange === id;
+                return (
+                  <button
+                    key={id}
+                    disabled={!enough}
+                    onClick={() => setRange(id)}
+                    title={enough ? undefined : `Only ${series.bars} stored bars — not enough for a ${id} view.`}
+                    style={{
+                      background: on ? "#00d4aa20" : "transparent",
+                      border: "none", borderBottom: on ? "2px solid #00d4aa" : "2px solid transparent",
+                      color: !enough ? "#232c3d" : on ? "#00d4aa" : "#4a6080",
+                      padding: "3px 7px", cursor: enough ? "pointer" : "not-allowed",
+                      fontFamily: "monospace", fontSize: 10, letterSpacing: 0.5,
+                    }}>{id}</button>
+                );
+              })}
+            </div>
           </div>
-        ) : !summaryLoading && (
-          <div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>
-            {summary?.error ? `Could not fetch fundamentals: ${summary.error}` : "No fundamentals available \u2014 common for indices, FX pairs and futures, which don't carry company financials."}
+        }
+      />
+
+      <div ref={wrapRef} style={{ position: "relative", padding: "6px 0 0" }}>
+        <svg
+          width={W} height={H}
+          onMouseMove={onMove}
+          onMouseLeave={() => setHover(null)}
+          style={{ display: "block", cursor: "crosshair" }}
+        >
+          <defs>
+            <linearGradient id={`grad-${gid}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.26" />
+              <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {yTicks.map((t, i) => (
+            <g key={i}>
+              <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke="#141b28" strokeWidth="1" />
+              <text x={padL - 8} y={y(t) + 3.5} textAnchor="end" fontSize="9" fill="#3a4558" fontFamily="monospace">
+                {axisPrice(t, symbol)}
+              </text>
+            </g>
+          ))}
+
+          {showExtremes && [
+            ["52W HIGH", technicals.high52, "#ff4757"],
+            ["52W LOW", technicals.low52, "#00d4aa"],
+          ].map(([lbl, val, col]) => val != null && val > lo && val < hi && (
+            <g key={lbl}>
+              <line x1={padL} x2={W - padR} y1={y(val)} y2={y(val)} stroke={col} strokeWidth="1" strokeDasharray="4 4" opacity="0.5" />
+              <text x={W - padR - 2} y={y(val) - 4} textAnchor="end" fontSize="8" fill={col} fontFamily="monospace" opacity="0.85">
+                {lbl} {axisPrice(val, symbol)}
+              </text>
+            </g>
+          ))}
+
+          <path d={areaPath} fill={`url(#grad-${gid})`} />
+
+          {drawMA && (
+            <>
+              {has200 && <path d={path(view.sma200)} fill="none" stroke="#a855f7" strokeWidth="1" opacity="0.55" />}
+              {has50 && <path d={path(view.sma50)} fill="none" stroke="#3d8bff" strokeWidth="1" opacity="0.7" />}
+            </>
+          )}
+
+          <path d={path(view.close)} fill="none" stroke={lineColor} strokeWidth="1.6" strokeLinejoin="round" />
+
+          {eventsOnChart.map(({ i, list }) => {
+            const v = view.close[i];
+            if (v == null) return null;
+            const style = EVENT_STYLE[list[0].type] ?? EVENT_STYLE.move;
+            return (
+              <g key={i}>
+                <line x1={x(i)} x2={x(i)} y1={y(v)} y2={padT + innerH} stroke={style.color} strokeWidth="1" opacity="0.14" />
+                <circle cx={x(i)} cy={y(v)} r="3.4" fill="#0d1117" stroke={style.color} strokeWidth="1.5" />
+                {list.length > 1 && (
+                  <text x={x(i)} y={y(v) - 7} textAnchor="middle" fontSize="7.5" fill={style.color} fontFamily="monospace">{list.length}</text>
+                )}
+              </g>
+            );
+          })}
+
+          {xTickIdx.map(i => (
+            <text key={i} x={x(i)} y={H - 7}
+              textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
+              fontSize="9" fill="#3a4558" fontFamily="monospace">
+              {shortDate(view.dates[i])}
+            </text>
+          ))}
+
+          {hover != null && hv != null && (
+            <g>
+              <line x1={x(hover)} x2={x(hover)} y1={padT} y2={padT + innerH} stroke="#4a6080" strokeWidth="1" strokeDasharray="3 3" />
+              <circle cx={x(hover)} cy={y(hv)} r="3.5" fill={lineColor} stroke="#0d1117" strokeWidth="1.5" />
+            </g>
+          )}
+        </svg>
+
+        {hover != null && hv != null && (
+          <div style={{
+            position: "absolute", top: 8,
+            left: Math.min(Math.max(x(hover) - 70, 4), Math.max(W - 200, 4)),
+            background: "#070a10", border: "1px solid #1a2535", borderRadius: 4,
+            padding: "7px 10px", pointerEvents: "none", zIndex: 3, maxWidth: 230,
+          }}>
+            <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>{shortDate(view.dates[hover])}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace", marginTop: 2 }}>
+              {formatPrice(hv, symbol)}
+            </div>
+            {drawMA && view.sma50[hover] != null && (
+              <div style={{ fontSize: 9, color: "#3d8bff", fontFamily: "monospace", marginTop: 3 }}>
+                50DMA {formatPrice(view.sma50[hover], symbol)}
+                {view.sma200[hover] != null && <span style={{ color: "#a855f7" }}>{"  "}200DMA {formatPrice(view.sma200[hover], symbol)}</span>}
+              </div>
+            )}
+            {hoverEvents.map((e, k) => (
+              <div key={k} style={{ fontSize: 9.5, color: (EVENT_STYLE[e.type] ?? EVENT_STYLE.move).color, marginTop: 4, lineHeight: 1.4 }}>
+                {e.label}
+              </div>
+            ))}
           </div>
         )}
-      </Panel>
+      </div>
 
-      {levels && (
-        <Panel>
-          <SectionHeader title="APPROXIMATE KEY LEVELS" subtitle="Derived from current price — reference only, not technical analysis" />
-          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-            {[["R2 (+5%)", levels.r2, "#ff4757"], ["R1 (+2%)", levels.r1, "#ff8c42"], ["S1 (-2%)", levels.s1, "#4ade80"], ["S2 (-5%)", levels.s2, "#00d4aa"]].map(([lbl, val, col]) => (
-              <div key={lbl} style={{ background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5, padding: "10px 12px", borderTop: `2px solid ${col}` }}>
-                <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>{lbl}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace", marginTop: 3 }}>{formatPrice(val, symbol)}</div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
+        padding: "9px 16px 12px", borderTop: "1px solid #141b28", marginTop: 4,
+      }}>
+        <span style={{ fontSize: 11, fontFamily: "monospace", color: lineColor }}
+              title={`${view.dates[0]} to ${view.dates[n - 1]}, ${n} bars`}>
+          {activeRange} {rangeReturn == null ? "—" : `${rangeReturn >= 0 ? "+" : ""}${(rangeReturn * 100).toFixed(1)}%`}
+        </span>
+        {activeRange !== range && (
+          <span style={{ fontSize: 9.5, color: "#ffa502", fontFamily: "monospace" }}>
+            only {series.bars} bars stored — showing everything there is
+          </span>
+        )}
+        {drawMA && has50 && <LegendDot color="#3d8bff" label="50DMA" />}
+        {drawMA && has200 && <LegendDot color="#a855f7" label="200DMA" />}
+        {[...new Set(eventsOnChart.flatMap(g => g.list.map(e => e.type)))].map(t => (
+          <LegendDot key={t} color={(EVENT_STYLE[t] ?? EVENT_STYLE.move).color} label={(EVENT_STYLE[t] ?? EVENT_STYLE.move).title} hollow />
+        ))}
+        <span style={{ fontSize: 9.5, color: "#3a4558", marginLeft: "auto" }}>
+          Daily closes from Meridian's own store. Hover for any day.
+        </span>
+      </div>
+    </Panel>
+  );
+}
+
+function LegendDot({ color, label, hollow = false }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <span style={{
+        width: 7, height: 7, borderRadius: "50%",
+        background: hollow ? "transparent" : color,
+        border: hollow ? `1.5px solid ${color}` : "none",
+      }} />
+      <span style={{ fontSize: 9.5, color: "#4a6080", fontFamily: "monospace" }}>{label}</span>
+    </span>
+  );
+}
+
+// ─── Metrics ──────────────────────────────────────────────────
+
+function MetricTile({ label, value, color = "#c8d6e8", sub = null, hint = null, missing = null }) {
+  if (value == null || value === "") {
+    return (
+      <div title={missing ?? undefined} style={{
+        background: "#0a0d14", border: "1px dashed #141b28", borderRadius: 5,
+        padding: "9px 11px", cursor: missing ? "help" : "default",
+      }}>
+        <div style={{ fontSize: 8.5, color: "#2a3548", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
+        <div style={{ fontSize: 10, color: "#2a3548", marginTop: 4 }}>not available</div>
+      </div>
+    );
+  }
+  return (
+    <div title={hint ?? undefined} style={{
+      background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 5,
+      padding: "9px 11px", cursor: hint ? "help" : "default",
+    }}>
+      <div style={{ fontSize: 8.5, color: "#4a6080", fontFamily: "monospace", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 700, color, fontFamily: "monospace", marginTop: 3 }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }
 
-function ResearchAnalystTab({ symbol, price, summary, summaryLoading }) {
-  const s = summary && !summary.error ? summary : null;
-  const a = s?.analyst;
-  const trend = s?.ratingTrend;
-  const trendTotal = trend ? trend.strongBuy + trend.buy + trend.hold + trend.sell + trend.strongSell : 0;
+/**
+ * "an index", "a common stock", "an ETF" — instrument labels mix ordinary
+ * words with acronyms, so neither blanket lowercasing nor a fixed article
+ * works. Acronyms keep their capitals and take the article their letter-name
+ * sound wants: "an ETF", because the F is read "eff".
+ */
+function anInstrumentLabel(label) {
+  const l = String(label ?? "instrument");
+  const acronym = /^[A-Z]{2,}/.test(l);
+  const word = acronym ? l : l.toLowerCase();
+  const vowelSound = acronym ? /^[AEIOUFLMNRSX]/.test(l) : /^[aeiou]/.test(word);
+  return `${vowelSound ? "an" : "a"} ${word}`;
+}
 
-  if (summaryLoading) return <Panel><div style={{ padding: 24, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading…</div></Panel>;
-  if (!a && !trend && !s?.upgrades?.length && !s?.earningsHistory?.length) {
-    return <Panel><div style={{ padding: 16, fontSize: 12, color: "#4a6080" }}>No analyst coverage data for {symbol} — common for indices, FX, commodities and many funds, which aren't individually rated.</div></Panel>;
+const pctStr = (v, dp = 1) => (v == null ? null : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(dp)}%`);
+const absPctStr = (v, dp = 1) => (v == null ? null : `${(Math.abs(v) * 100).toFixed(dp)}%`);
+const dirColor = v => (v == null ? "#c8d6e8" : v > 0 ? "#00d4aa" : v < 0 ? "#ff4757" : "#c8d6e8");
+
+/** Trailing returns and the risk numbers computed alongside them. */
+function ResearchPerformancePanel({ tech, symbol }) {
+  if (!tech?.available) {
+    return (
+      <Panel>
+        <SectionHeader title="PERFORMANCE & RISK" subtitle="Not computable" />
+        <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>{tech?.reason ?? "No stored bars."}</div>
+      </Panel>
+    );
+  }
+  const r = tech.returns;
+  const rsiColor = tech.rsi14 == null ? "#c8d6e8" : tech.rsi14 > 70 ? "#ff8c42" : tech.rsi14 < 30 ? "#4ade80" : "#c8d6e8";
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="PERFORMANCE & RISK"
+        subtitle={`Computed from ${tech.bars.toLocaleString()} stored bars, to ${tech.asOf}`}
+      />
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", gap: 8 }}>
+        {["1W", "1M", "3M", "6M", "1Y", "YTD"].map(k => (
+          <MetricTile
+            key={k} label={k === "YTD" ? "YEAR TO DATE" : k}
+            value={pctStr(r[k])} color={dirColor(r[k])}
+            missing={`Needs more stored history than this symbol has to measure a ${k} return.`}
+          />
+        ))}
+      </div>
+      <div style={{ padding: "0 14px 14px", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(104px, 1fr))", gap: 8 }}>
+        <MetricTile
+          label="30D VOL" value={absPctStr(tech.vol30, 0)}
+          sub={tech.volRatio ? `${tech.volRatio.toFixed(2)}x its year` : null}
+          color={tech.volRatio > 1.35 ? "#ff8c42" : tech.volRatio < 0.7 ? "#4a90d9" : "#c8d6e8"}
+          hint="Annualised standard deviation of the last 30 daily returns. The sub-line compares it with the same figure over a full year."
+          missing="Needs at least 30 stored bars."
+        />
+        <MetricTile label="1Y VOL" value={absPctStr(tech.vol1y, 0)} hint="Annualised standard deviation of daily returns over the trailing year." missing="Needs a full year of stored bars." />
+        <MetricTile
+          label="RSI (14)" value={tech.rsi14 == null ? null : tech.rsi14.toFixed(0)} color={rsiColor}
+          sub={tech.rsi14 == null ? null : tech.rsi14 > 70 ? "overbought zone" : tech.rsi14 < 30 ? "oversold zone" : "mid-range"}
+          hint="Relative Strength Index over 14 bars. A momentum oscillator, not a forecast."
+          missing="Needs at least 15 stored bars."
+        />
+        <MetricTile
+          label="VS 50DMA" value={pctStr(tech.dist50dma)} color={dirColor(tech.dist50dma)}
+          hint="Distance of the last close from its own 50-day simple moving average."
+          missing="Needs at least 50 stored bars."
+        />
+        <MetricTile
+          label="VS 200DMA" value={pctStr(tech.dist200dma)} color={dirColor(tech.dist200dma)}
+          hint="Distance of the last close from its own 200-day simple moving average."
+          missing="Needs at least 200 stored bars."
+        />
+        <MetricTile
+          label="FROM 52W HIGH" value={pctStr(tech.fromHigh)} color={dirColor(tech.fromHigh)}
+          sub={tech.rangeBars < 252 ? `only ${tech.rangeBars} bars` : null}
+          hint="How far the last close sits below the highest close in the trailing window."
+        />
+        <MetricTile
+          label="MAX DD (1Y)" value={absPctStr(tech.maxDrawdown1y)} color="#ff4757"
+          sub={tech.maxDrawdownTrough ? `trough ${tech.maxDrawdownTrough}` : null}
+          hint="Largest peak-to-trough fall in the trailing year, measured on closes."
+        />
+        <MetricTile
+          label={`BETA VS ${tech.benchmark ?? "MKT"}`}
+          value={tech.beta == null ? null : tech.beta.toFixed(2)}
+          sub={tech.correlation == null ? null : `r = ${tech.correlation.toFixed(2)}`}
+          hint={`Regressed on the ${tech.benchmarkOverlap} trading days the two series actually share, not by position.`}
+          missing={tech.benchmarkReason ?? "No overlapping benchmark history."}
+        />
+      </div>
+      {tech.rangePosition != null && (
+        <div style={{ padding: "0 16px 16px" }}>
+          <RangeTrack
+            low={tech.low52} high={tech.high52} value={tech.lastClose} symbol={symbol}
+            lowLabel={tech.rangeBars >= 252 ? "52W LOW" : `${tech.rangeBars}-BAR LOW`}
+            highLabel={tech.rangeBars >= 252 ? "52W HIGH" : `${tech.rangeBars}-BAR HIGH`}
+          />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * A value's position between two bounds, drawn as a track with a marker.
+ *
+ * A value outside the bounds is called out rather than quietly pinned to the
+ * end of the track. Clamping alone reads as "at the top of the range" when
+ * the truth is "past the top of it" — which is the more interesting fact, and
+ * a common one: a price above every published target says something the
+ * pinned marker actively hides.
+ */
+function RangeTrack({ low, high, value, symbol, lowLabel = "LOW", highLabel = "HIGH", color = "#00d4aa" }) {
+  if (low == null || high == null || value == null || !(high > low)) return null;
+  const raw = (value - low) / (high - low);
+  const outside = raw < 0 || raw > 1;
+  const pos = Math.min(Math.max(raw, 0), 1) * 100;
+  const markerColor = outside ? "#ffa502" : color;
+  return (
+    <div>
+      <div style={{ position: "relative", height: 6, background: "#141b28", borderRadius: 3, marginBottom: 7 }}>
+        <div style={{ position: "absolute", inset: 0, borderRadius: 3, background: "linear-gradient(90deg,#ff475730,#ffa50230,#00d4aa30)" }} />
+        <div style={{
+          position: "absolute", left: `${pos}%`, top: -3, width: 2, height: 12,
+          background: markerColor, transform: "translateX(-1px)", borderRadius: 1,
+          boxShadow: `0 0 6px ${markerColor}`,
+        }} />
+        {outside && (
+          <div style={{
+            position: "absolute", top: -5, [raw > 1 ? "left" : "right"]: `calc(${pos}% + 4px)`,
+            fontSize: 10, color: "#ffa502", lineHeight: 1, fontFamily: "monospace",
+          }}>{raw > 1 ? "›" : "‹"}</div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#4a6080", fontFamily: "monospace" }}>
+        <span>{lowLabel} {formatPrice(low, symbol)}</span>
+        <span style={{ color: outside ? "#ffa502" : "#7a8ba0" }}>
+          {outside
+            ? `${raw > 1 ? "above" : "below"} the whole range`
+            : `${pos.toFixed(0)}% up the range`}
+        </span>
+        <span>{highLabel} {formatPrice(high, symbol)}</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Narrative ────────────────────────────────────────────────
+
+/**
+ * "Where things stand", as composed by the server from the same numbers shown
+ * elsewhere on the page.
+ *
+ * Labelled as composed rather than generated, and it says so in the footer.
+ * A block of prose on a research page reads like a model wrote it unless it
+ * tells you otherwise, and the distinction matters: nothing here can drift
+ * away from the figures beside it, because every sentence was emitted by a
+ * branch that had the numbers in hand.
+ */
+function NarrativePanel({ narrative }) {
+  if (!narrative) return null;
+  const sections = [narrative.priceAction, narrative.street, narrative.coming].filter(Boolean);
+  return (
+    <Panel>
+      <SectionHeader title="WHERE THINGS STAND" subtitle={narrative.asOf ? `Bars to ${narrative.asOf}` : undefined} />
+      <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
+        {sections.map(sec => (
+          <div key={sec.title}>
+            <div style={{ fontSize: 9.5, color: "#00d4aa", fontFamily: "monospace", letterSpacing: 1.2, marginBottom: 6 }}>
+              {sec.title}
+            </div>
+            <div style={{ fontSize: 12.5, lineHeight: 1.75, color: "#b8c6da" }}>
+              {sec.lines.join(" ")}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "0 16px 13px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.6 }}>
+        {narrative.method}
+      </div>
+    </Panel>
+  );
+}
+
+// ─── Sentiment ────────────────────────────────────────────────
+
+/** News tone over 90 days, drawn as a zero-centred area. */
+function SentimentTrend({ sentiment }) {
+  const [wrapRef, width] = useElementWidth();
+  const gid = useId().replace(/:/g, "");
+
+  if (!sentiment?.available) {
+    return (
+      <Panel>
+        <SectionHeader title="NEWS SENTIMENT" subtitle="Coverage too thin" />
+        <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+          {sentiment?.reason ?? "No scored stories for this symbol."}
+        </div>
+      </Panel>
+    );
+  }
+
+  const pts = sentiment.points;
+  const H = 118, padL = 8, padR = 8, padT = 12, padB = 18;
+  const W = Math.max(width || 0, 300);
+  const innerW = Math.max(W - padL - padR, 10);
+  const innerH = H - padT - padB;
+  const n = pts.length;
+
+  const maxAbs = Math.max(0.25, ...pts.map(p => Math.abs(p.smooth)));
+  const x = i => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const y = v => padT + (1 - (v + maxAbs) / (2 * maxAbs)) * innerH;
+  const zero = y(0);
+
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.smooth).toFixed(1)}`).join("");
+  const area = `${line}L${x(n - 1).toFixed(1)},${zero.toFixed(1)}L${x(0).toFixed(1)},${zero.toFixed(1)}Z`;
+
+  const bandColor = { positive: "#00d4aa", negative: "#ff4757", neutral: "#ffa502" };
+  const nowColor = bandColor[sentiment.nowBand];
+
+  return (
+    <Panel>
+      <SectionHeader
+        title={`NEWS SENTIMENT, LAST ${sentiment.days} DAYS`}
+        subtitle={`${sentiment.stories} scored stories across ${n} days with coverage`}
+        extra={
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: nowColor, fontFamily: "monospace", letterSpacing: 1 }}>
+              NOW: {sentiment.nowBand.toUpperCase()}
+            </div>
+            {sentiment.priorBand && (
+              <div style={{ fontSize: 9, color: "#4a6080", fontFamily: "monospace", marginTop: 2 }}>
+                {/* Direction comes from the smoothed values, not the band
+                    names — "up from negative" would be wrong for a fall from
+                    positive to neutral, which is also a band change. */}
+                {sentiment.shifted
+                  ? `${sentiment.now >= sentiment.prior ? "up" : "down"} from ${sentiment.priorBand} 3 weeks ago`
+                  : "unchanged over 3 weeks"}
+              </div>
+            )}
+          </div>
+        }
+      />
+      <div ref={wrapRef} style={{ padding: "4px 8px 0" }}>
+        <svg width={W} height={H} style={{ display: "block" }}>
+          <defs>
+            <linearGradient id={`sup-${gid}`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#00d4aa" stopOpacity="0.42" />
+              <stop offset="100%" stopColor="#00d4aa" stopOpacity="0.02" />
+            </linearGradient>
+            <linearGradient id={`sdn-${gid}`} x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0%" stopColor="#ff4757" stopOpacity="0.42" />
+              <stop offset="100%" stopColor="#ff4757" stopOpacity="0.02" />
+            </linearGradient>
+            {/* Clipped twice against the zero line so the fill is green above
+                and red below without splitting the path itself. */}
+            <clipPath id={`cup-${gid}`}><rect x="0" y="0" width={W} height={zero} /></clipPath>
+            <clipPath id={`cdn-${gid}`}><rect x="0" y={zero} width={W} height={H - zero} /></clipPath>
+          </defs>
+          <path d={area} fill={`url(#sup-${gid})`} clipPath={`url(#cup-${gid})`} />
+          <path d={area} fill={`url(#sdn-${gid})`} clipPath={`url(#cdn-${gid})`} />
+          <line x1={padL} x2={W - padR} y1={zero} y2={zero} stroke="#2a3548" strokeWidth="1" />
+          <path d={line} fill="none" stroke={nowColor} strokeWidth="1.5" strokeLinejoin="round" />
+          <circle cx={x(n - 1)} cy={y(pts[n - 1].smooth)} r="3" fill={nowColor} />
+          <text x={padL} y={H - 5} fontSize="9" fill="#3a4558" fontFamily="monospace">{shortDate(pts[0].date)}</text>
+          <text x={W - padR} y={H - 5} textAnchor="end" fontSize="9" fill="#3a4558" fontFamily="monospace">{shortDate(pts[n - 1].date)}</text>
+        </svg>
+      </div>
+      <div style={{ padding: "6px 16px 13px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.6 }}>
+        Seven-day trailing mean of story sentiment, over days that actually had coverage — gaps are not
+        interpolated. Positive and negative are relative to a neutral read, not a price forecast.
+      </div>
+    </Panel>
+  );
+}
+
+// ─── Right rail ───────────────────────────────────────────────
+
+function ConsensusPanel({ summary, price, symbol }) {
+  const a = summary?.analyst;
+  if (!a || a.targetMean == null) return null;
+  const gap = price ? a.targetMean / price - 1 : null;
+  const col = gap == null ? "#e8f0fc" : gap >= 0 ? "#00d4aa" : "#ff4757";
+  return (
+    <Panel>
+      <SectionHeader
+        title="CONSENSUS TARGET"
+        subtitle={a.numberOfAnalysts ? `${a.numberOfAnalysts} analyst${a.numberOfAnalysts === 1 ? "" : "s"}` : "Yahoo Finance"}
+      />
+      <div style={{ padding: "14px 16px 6px", textAlign: "center" }}>
+        <div style={{ fontSize: 30, fontWeight: 700, color: col, fontFamily: "monospace", lineHeight: 1.1 }}>
+          {formatPrice(a.targetMean, symbol)}
+        </div>
+        {gap != null && (
+          <div style={{ fontSize: 12, color: col, fontFamily: "monospace", marginTop: 3 }}>
+            {pctStr(gap)} vs current
+          </div>
+        )}
+      </div>
+      {a.targetLow != null && a.targetHigh != null && (
+        <div style={{ padding: "8px 16px 16px" }}>
+          <RangeTrack
+            low={a.targetLow} high={a.targetHigh} value={price ?? a.targetMean} symbol={symbol}
+            lowLabel="LOW" highLabel="HIGH" color={price ? "#e8f0fc" : "#4a6080"}
+          />
+          <div style={{ fontSize: 9, color: "#3a4558", marginTop: 7, lineHeight: 1.6 }}>
+            The marker is {price ? "the current price" : "the mean target"} within the published range. A spread
+            of forecasts, not a probability distribution.
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function RatingPanel({ summary }) {
+  const t = summary?.ratingTrend;
+  if (!t) return null;
+  const total = t.strongBuy + t.buy + t.hold + t.sell + t.strongSell;
+  if (!total) return null;
+  const buys = t.strongBuy + t.buy;
+  return (
+    <Panel>
+      <SectionHeader title="RATING" subtitle="Current analyst ratings" />
+      <div style={{ padding: "14px 16px 16px" }}>
+        <div style={{ textAlign: "center", fontSize: 17, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace", marginBottom: 12 }}>
+          {buys} of {total} rate <span style={{ color: "#00d4aa" }}>Buy</span>
+        </div>
+        <div style={{ display: "flex", height: 12, borderRadius: 3, overflow: "hidden", marginBottom: 10 }}>
+          {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => t[k] > 0 && (
+            <div key={k} style={{ flex: t[k], background: RATING_COLORS[k] }} title={`${RATING_LABELS[k]}: ${t[k]}`} />
+          ))}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "5px 12px" }}>
+          {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => (
+            <span key={k} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 7, height: 7, borderRadius: 2, background: RATING_COLORS[k], opacity: t[k] > 0 ? 1 : 0.25 }} />
+              <span style={{ fontSize: 10, color: t[k] > 0 ? "#7a8ba0" : "#2a3548" }}>{RATING_LABELS[k]}</span>
+              <span style={{ fontSize: 10, color: t[k] > 0 ? "#c8d6e8" : "#2a3548", fontFamily: "monospace" }}>{t[k]}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+/** Bear / base / bull, straight from the published low, mean and high targets. */
+function ScenarioPanelCompact({ summary, price, symbol }) {
+  const a = summary?.analyst;
+  if (!a || a.targetMean == null || !price) return null;
+  const cells = [
+    ["BEAR", a.targetLow, "#ff4757"],
+    ["BASE", a.targetMean, "#c8d6e8"],
+    ["BULL", a.targetHigh, "#00d4aa"],
+  ].filter(([, v]) => v != null);
+  if (cells.length < 2) return null;
+
+  return (
+    <Panel>
+      <SectionHeader title="TARGET SCENARIOS" subtitle="Published low / mean / high" />
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: `repeat(${cells.length},1fr)`, gap: 8 }}>
+        {cells.map(([label, val, col]) => (
+          <div key={label} style={{
+            background: "#0a0d14", border: `1px solid ${col}30`, borderTop: `2px solid ${col}`,
+            borderRadius: 5, padding: "10px 8px", textAlign: "center",
+          }}>
+            <div style={{ fontSize: 8.5, color: "#4a6080", fontFamily: "monospace", letterSpacing: 0.8 }}>{label}</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace", marginTop: 4 }}>
+              {formatPrice(val, symbol)}
+            </div>
+            <div style={{ fontSize: 10, color: col, fontFamily: "monospace", marginTop: 2 }}>
+              {pctStr(val / price - 1)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "0 16px 14px", fontSize: 9.5, color: "#3a4558", lineHeight: 1.6 }}>
+        These are the extremes of what analysts published, not modelled outcomes. The spread measures
+        disagreement, and nothing about it says any one of them is likely.
+      </div>
+    </Panel>
+  );
+}
+
+function NextDatesPanel({ summary }) {
+  const d = summary?.dates;
+  const rows = [
+    d?.nextEarnings && ["Earnings", d.nextEarnings + (d.nextEarningsLate && d.nextEarningsLate !== d.nextEarnings ? ` – ${d.nextEarningsLate}` : ""), "#3d8bff"],
+    d?.exDividendDate && ["Ex-dividend", d.exDividendDate, "#a855f7"],
+    d?.dividendDate && ["Dividend paid", d.dividendDate, "#00d4aa"],
+  ].filter(Boolean);
+  if (!rows.length) return null;
+  return (
+    <Panel>
+      <SectionHeader title="KEY DATES" subtitle="From Yahoo's calendar" />
+      <div style={{ padding: "4px 0" }}>
+        {rows.map(([label, val, col], i) => (
+          <div key={label} style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "9px 16px", borderBottom: i < rows.length - 1 ? "1px solid #12161f" : "none",
+          }}>
+            <span style={{ fontSize: 11, color: "#7a8ba0" }}>{label}</span>
+            <span style={{ fontSize: 11.5, color: col, fontFamily: "monospace" }}>{val}</span>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function RatingChangesPanel({ summary }) {
+  const rows = summary?.upgrades ?? [];
+  if (!rows.length) return null;
+  return (
+    <Panel>
+      <SectionHeader title="RECENT RATING CHANGES" subtitle={`Last ${rows.length}`} />
+      <div style={{ padding: "4px 0" }}>
+        {rows.map((u, i) => {
+          const col = u.action === "up" ? "#00d4aa" : u.action === "down" ? "#ff4757" : "#7a8ba0";
+          return (
+            <div key={i} style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+              padding: "8px 16px", borderBottom: i < rows.length - 1 ? "1px solid #12161f" : "none",
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 11.5, color: "#c8d6e8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {u.firm || "Unknown firm"}
+                </div>
+                <div style={{ fontSize: 9.5, color: col, fontFamily: "monospace", marginTop: 1 }}>
+                  {u.fromGrade && u.toGrade && u.fromGrade !== u.toGrade ? `${u.fromGrade} → ${u.toGrade}` : (u.toGrade || "—")}
+                </div>
+              </div>
+              <span style={{ fontSize: 10, color: "#4a6080", fontFamily: "monospace", flexShrink: 0 }}>{u.date || "—"}</span>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function KeyStatsPanel({ summary, symbol }) {
+  const s = summary;
+  if (!s) return null;
+  const rows = [
+    ["marketCap", "MARKET CAP", s.marketCap ? formatBigNumber(s.marketCap) : null],
+    ["pe", "P/E (TTM)", s.pe ? s.pe.toFixed(1) : null],
+    ["forwardPe", "FORWARD P/E", s.forwardPe ? s.forwardPe.toFixed(1) : null],
+    ["dividendYield", "DIV YIELD", s.dividendYield ? `${(s.dividendYield * 100).toFixed(2)}%` : null],
+    ["beta", "BETA (YAHOO)", s.beta ? s.beta.toFixed(2) : null],
+    ["avgVolume", "AVG VOLUME", s.avgVolume ? formatBigNumber(s.avgVolume) : null],
+    ["expenseRatio", "EXPENSE RATIO", s.expenseRatio ? `${(s.expenseRatio * 100).toFixed(2)}%` : null],
+    ["sharesOutstanding", "SHARES OUT", s.sharesOutstanding ? formatBigNumber(s.sharesOutstanding) : null],
+    // Deliberately no 52-week range here. Meridian computes that from its own
+    // stored bars in the Performance panel, and Yahoo's figure can disagree —
+    // two different "52W range" numbers on one screen is worse than one.
+  ];
+  const applies = ([key]) => !s.applicableStats || s.applicableStats.includes(key);
+  const applicable = rows.filter(applies);
+
+  // Two different empty states that must not be worded the same way. An index
+  // has no market cap or P/E as a matter of what it is; a stock that came back
+  // without one has a gap in the source. Collapsing both into a grid of dashed
+  // tiles reads as failure in the first case and as "not applicable" in the
+  // second, and both readings are wrong.
+  if (!applicable.length || !applicable.some(r => r[2] != null)) {
+    const byType = !applicable.length;
+    return (
+      <Panel>
+        <SectionHeader title="KEY STATS" subtitle={s.instrumentLabel ?? "No fundamentals"} />
+        <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>
+          {byType
+            ? `Company fundamentals — market cap, earnings multiples, dividend yield — do not apply to ${anInstrumentLabel(s.instrumentLabel)}. The price history and risk figures on the left are computed from its own bars and do apply.`
+            : `The source returned no fundamentals for ${symbol}, though ${anInstrumentLabel(s.instrumentLabel)} would normally have them. That is a gap in the data, not a property of the instrument.`}
+        </div>
+      </Panel>
+    );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {a && (
-        <Panel>
-          <SectionHeader title="CONSENSUS PRICE TARGET" subtitle={a.numberOfAnalysts ? `${a.numberOfAnalysts} analyst${a.numberOfAnalysts === 1 ? "" : "s"}` : undefined} />
-          <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
-            <ResearchStat label="LOW" value={a.targetLow ? formatPrice(a.targetLow, symbol) : null} color="#ff4757" />
-            <ResearchStat label="MEAN" value={a.targetMean ? formatPrice(a.targetMean, symbol) : null} color="#e8f0fc" />
-            <ResearchStat label="MEDIAN" value={a.targetMedian ? formatPrice(a.targetMedian, symbol) : null} />
-            <ResearchStat label="HIGH" value={a.targetHigh ? formatPrice(a.targetHigh, symbol) : null} color="#00d4aa" />
-          </div>
-          {price && a.targetMean && (
-            <div style={{ padding: "0 14px 14px", fontSize: 12, color: a.targetMean >= price ? "#00d4aa" : "#ff4757" }}>
-              Mean target implies {a.targetMean >= price ? "+" : ""}{(((a.targetMean - price) / price) * 100).toFixed(1)}% vs current price
-              {a.recommendationKey && <span style={{ color: "#7a8ba0" }}> · consensus: <span style={{ fontFamily: "monospace", textTransform: "capitalize" }}>{a.recommendationKey.replace(/_/g, " ")}</span></span>}
-            </div>
-          )}
-        </Panel>
-      )}
+    <Panel>
+      <SectionHeader
+        title="KEY STATS"
+        subtitle={[s.instrumentLabel, s.sector, s.industry, s.country].filter(Boolean).join(" · ") || "Yahoo Finance"}
+      />
+      <div style={{ padding: 14, display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8 }}>
+        {rows.filter(applies).map(([key, label, value]) => (
+          <MetricTile
+            key={key} label={label} value={value}
+            missing="The source returned no value for this field."
+          />
+        ))}
+      </div>
+    </Panel>
+  );
+}
 
-      {trend && trendTotal > 0 && (
-        <Panel>
-          <SectionHeader title="RATING BREAKDOWN" subtitle="Current analyst ratings" />
-          <div style={{ padding: 14 }}>
-            <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", marginBottom: 10 }}>
-              {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => trend[k] > 0 && (
-                <div key={k} style={{ width: `${(trend[k] / trendTotal) * 100}%`, background: RATING_COLORS[k] }} title={`${RATING_LABELS[k]}: ${trend[k]}`} />
-              ))}
+function EarningsRecordPanel({ summary }) {
+  const rows = summary?.earningsHistory ?? [];
+  if (!rows.length) return null;
+  return (
+    <Panel>
+      <SectionHeader title="EARNINGS RECORD" subtitle="Actual vs estimate" />
+      <div style={{ padding: "4px 0" }}>
+        {rows.map((e, i) => (
+          <div key={i} style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "8px 16px", borderBottom: i < rows.length - 1 ? "1px solid #12161f" : "none",
+          }}>
+            <span style={{ fontSize: 11, color: "#c8d6e8", fontFamily: "monospace" }}>{e.quarter || "—"}</span>
+            <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+              <span style={{ fontSize: 10, color: "#4a6080" }}>est {e.epsEstimate != null ? e.epsEstimate.toFixed(2) : "—"}</span>
+              <span style={{ fontSize: 10.5, color: "#c8d6e8" }}>{e.epsActual != null ? e.epsActual.toFixed(2) : "—"}</span>
+              <span style={{ fontSize: 10.5, fontFamily: "monospace", color: e.surprisePercent > 0 ? "#00d4aa" : e.surprisePercent < 0 ? "#ff4757" : "#7a8ba0" }}>
+                {e.surprisePercent != null ? `${e.surprisePercent >= 0 ? "+" : ""}${e.surprisePercent.toFixed(1)}%` : "—"}
+              </span>
             </div>
-            <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-              {["strongBuy", "buy", "hold", "sell", "strongSell"].map(k => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: 2, background: RATING_COLORS[k] }} />
-                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>{RATING_LABELS[k]}</span>
-                  <span style={{ fontSize: 11, color: "#c8d6e8", fontFamily: "monospace" }}>{trend[k]}</span>
-                </div>
-              ))}
-            </div>
           </div>
-        </Panel>
-      )}
+        ))}
+      </div>
+    </Panel>
+  );
+}
 
-      {s?.upgrades?.length > 0 && (
-        <Panel>
-          <SectionHeader title="RECENT RATING CHANGES" />
-          <div style={{ padding: "4px 0" }}>
-            {s.upgrades.map((u, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < s.upgrades.length - 1 ? "1px solid #12161f" : "none" }}>
-                <div>
-                  <span style={{ fontSize: 12, color: "#c8d6e8" }}>{u.firm || "Unknown firm"}</span>
-                  {u.fromGrade && u.toGrade && u.fromGrade !== u.toGrade && (
-                    <span style={{ fontSize: 11, color: "#4a6080" }}> · {u.fromGrade} → {u.toGrade}</span>
-                  )}
-                  {(!u.fromGrade || u.fromGrade === u.toGrade) && u.toGrade && (
-                    <span style={{ fontSize: 11, color: "#4a6080" }}> · {u.toGrade}</span>
-                  )}
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {u.action && <span style={{ fontSize: 10, textTransform: "uppercase", fontFamily: "monospace", color: u.action === "up" ? "#00d4aa" : u.action === "down" ? "#ff4757" : "#7a8ba0" }}>{u.action}</span>}
-                  <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{u.date || "\u2014"}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
+/** Everything the street thinks, when none of it is available. */
+function NoCoveragePanel({ summary, symbol }) {
+  const why = summary?.hasAnalystCoverage === false
+    ? (summary.inapplicable?.analyst ?? `Analysts do not rate ${summary.instrumentLabel?.toLowerCase() ?? "an instrument"} like this.`)
+    : `No analyst coverage came back for ${symbol}. That is normal for index trackers, funds and smaller listings — it is not a failed fetch.`;
+  return (
+    <Panel>
+      <SectionHeader title="THE STREET" subtitle="No coverage" />
+      <div style={{ padding: 16, fontSize: 12, color: "#4a6080", lineHeight: 1.7 }}>{why}</div>
+    </Panel>
+  );
+}
 
-      {s?.earningsHistory?.length > 0 && (
-        <Panel>
-          <SectionHeader title="EARNINGS TRACK RECORD" subtitle="Actual vs. estimate, last 4 quarters" />
-          <div style={{ padding: "4px 0" }}>
-            {s.earningsHistory.map((e, i) => (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 16px", borderBottom: i < s.earningsHistory.length - 1 ? "1px solid #12161f" : "none" }}>
-                <span style={{ fontSize: 12, color: "#c8d6e8", fontFamily: "monospace" }}>{e.quarter || "\u2014"}</span>
-                <div style={{ display: "flex", gap: 14 }}>
-                  <span style={{ fontSize: 11, color: "#7a8ba0" }}>Est {e.epsEstimate != null ? e.epsEstimate.toFixed(2) : "\u2014"}</span>
-                  <span style={{ fontSize: 11, color: "#c8d6e8" }}>Actual {e.epsActual != null ? e.epsActual.toFixed(2) : "\u2014"}</span>
-                  <span style={{ fontSize: 11, fontFamily: "monospace", color: e.surprisePercent > 0 ? "#00d4aa" : e.surprisePercent < 0 ? "#ff4757" : "#7a8ba0" }}>
-                    {e.surprisePercent != null ? `${e.surprisePercent >= 0 ? "+" : ""}${e.surprisePercent.toFixed(1)}%` : "\u2014"}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
+// ─── The tab ──────────────────────────────────────────────────
+
+function ResearchOverviewTab({ symbol, name, overview, loading, price }) {
+  if (loading && !overview) {
+    return <Panel><div style={{ padding: 28, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading {name}…</div></Panel>;
+  }
+  if (!overview) {
+    return <Panel><div style={{ padding: 20, fontSize: 12, color: "#4a6080" }}>Could not reach the Meridian API for {symbol}.</div></Panel>;
+  }
+
+  const q = overview.quote && !overview.quote.error ? overview.quote : null;
+  const hasStreet = !!(q?.analyst || q?.ratingTrend || q?.upgrades?.length);
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 340px)", gap: 14, alignItems: "start" }}
+         className="research-grid">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+        <PriceChart
+          series={overview.series} events={overview.events}
+          technicals={overview.technicals} symbol={symbol} name={name}
+        />
+        <NarrativePanel narrative={overview.narrative} />
+        <ResearchPerformancePanel tech={overview.technicals} symbol={symbol} />
+        <SentimentTrend sentiment={overview.sentiment} />
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+        {hasStreet ? (
+          <>
+            <ConsensusPanel summary={q} price={price} symbol={symbol} />
+            <RatingPanel summary={q} />
+            <ScenarioPanelCompact summary={q} price={price} symbol={symbol} />
+            <RatingChangesPanel summary={q} />
+          </>
+        ) : (
+          <NoCoveragePanel summary={q} symbol={symbol} />
+        )}
+        <NextDatesPanel summary={q} />
+        <KeyStatsPanel summary={q} symbol={symbol} />
+        <EarningsRecordPanel summary={q} />
+        {q?.error && (
+          <Panel><div style={{ padding: 14, fontSize: 11, color: "#ff8c42" }}>Fundamentals fetch failed: {q.error}</div></Panel>
+        )}
+      </div>
     </div>
   );
 }
@@ -3574,45 +4392,121 @@ function NetLean({ lean, compact = false }) {
  * visible without scrolling, which matters because this page is a place you
  * move between tabs rather than read top to bottom.
  */
-function InstrumentBar({ symbol, name, data, isTracked, instrument, lean }) {
+/**
+ * Signal balance, drawn as a ring.
+ *
+ * Deliberately not a "conviction score". A single number out of 100 would need
+ * weights across signals of completely different kinds — a 52-week range
+ * position against an insider sale against a target revision — and no such
+ * weighting could be defended, so any number produced would be authoritative-
+ * looking and arbitrary. What the ring actually shows is the count: how many
+ * of the computed signals lean each way, with the arc split in proportion.
+ * Same information as the bar next to it, in a form that reads at a glance.
+ */
+function SignalRing({ tally, size = 54 }) {
+  if (!tally) return null;
+  const total = tally.bull + tally.bear + tally.neutral;
+  if (!total) return null;
+
+  const r = (size - 7) / 2;
+  const c = 2 * Math.PI * r;
+  const segs = [
+    ["#00d4aa", tally.bull],
+    ["#ffa502", tally.neutral],
+    ["#ff4757", tally.bear],
+  ].filter(([, n]) => n > 0);
+
+  const net = tally.bull - tally.bear;
+  const label = net > 0 ? "BULL" : net < 0 ? "BEAR" : "SPLIT";
+  const color = net > 0 ? "#00d4aa" : net < 0 ? "#ff4757" : "#ffa502";
+
+  let offset = 0;
+  return (
+    <div
+      title={`${tally.bull} of ${total} computed signals lean bullish, ${tally.bear} bearish${tally.neutral ? `, ${tally.neutral} neutral` : ""}. A count of signals, not a score — see the Bull / Bear tab for what each one is.`}
+      style={{ position: "relative", width: size, height: size, flexShrink: 0, cursor: "help" }}
+    >
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#141b28" strokeWidth="5" />
+        {segs.map(([col, n], i) => {
+          const len = (n / total) * c;
+          const dash = `${Math.max(len - 2, 0.5)} ${c}`;
+          const el = (
+            <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none"
+              stroke={col} strokeWidth="5" strokeLinecap="butt"
+              strokeDasharray={dash} strokeDashoffset={-offset} />
+          );
+          offset += len;
+          return el;
+        })}
+      </svg>
+      <div style={{
+        position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", lineHeight: 1,
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color, fontFamily: "monospace" }}>
+          {tally.bull}<span style={{ color: "#2a3548" }}>·</span>{tally.bear}
+        </span>
+        <span style={{ fontSize: 6.5, color: "#3a4558", fontFamily: "monospace", letterSpacing: 0.5, marginTop: 2 }}>
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function InstrumentBar({ symbol, name, data, isTracked, instrument, lean, spark, sparkColor, exchange }) {
   const up = (data?.changePct ?? 0) >= 0;
   return (
     <div style={{
-      background: "#0d1117", border: "1px solid #1a1f2e", borderRadius: 6,
-      padding: "10px 16px", display: "flex", alignItems: "center",
-      gap: 16, flexWrap: "wrap",
+      background: "linear-gradient(180deg,#0f141d,#0b0f16)", border: "1px solid #1a2535",
+      borderRadius: 8, padding: "12px 18px", display: "flex", alignItems: "center",
+      gap: 18, flexWrap: "wrap",
     }}>
-      <div style={{ minWidth: 0, flex: "1 1 240px" }}>
+      <div style={{ minWidth: 0, flex: "1 1 220px" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 16, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>{name}</span>
-          <span style={{ fontSize: 11, color: "#4a6080", fontFamily: "monospace" }}>{symbol}</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>{name}</span>
+          <span style={{ fontSize: 12, color: "#4a6080", fontFamily: "monospace" }}>{symbol}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginTop: 4 }}>
           {instrument && (
-            <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace", border: "1px solid #1a2535", borderRadius: 3, padding: "1px 5px" }}>
+            <span style={{ fontSize: 8.5, color: "#4a6080", fontFamily: "monospace", border: "1px solid #1a2535", borderRadius: 3, padding: "1px 5px", letterSpacing: 0.5 }}>
               {instrument.toUpperCase()}
             </span>
           )}
-          <span style={{ fontSize: 9, color: isTracked ? "#00d4aa" : "#3a4558", fontFamily: "monospace" }}>
+          {exchange && (
+            <span style={{ fontSize: 8.5, color: "#3a4558", fontFamily: "monospace", letterSpacing: 0.5 }}>{exchange}</span>
+          )}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 8.5, color: isTracked ? "#00d4aa" : "#3a4558", fontFamily: "monospace", letterSpacing: 0.5 }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: isTracked ? "#00d4aa" : "#2a3548" }} />
             {isTracked ? "LIVE TRACKED" : "NOT TRACKED"}
           </span>
         </div>
       </div>
 
-      {lean && <div style={{ marginLeft: "auto" }}><NetLean lean={lean} /></div>}
+      {spark?.length > 1 && (
+        <div style={{ flexShrink: 0, opacity: 0.9 }} title="Closes over the window shown on the chart below.">
+          <Sparkline data={spark} color={sparkColor ?? (up ? "#00d4aa" : "#ff4757")} width={130} height={34} id={`hero-${symbol}`} />
+        </div>
+      )}
 
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginLeft: lean ? 6 : "auto", flexShrink: 0 }}>
-        <span style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace" }}>
-          {data ? formatPrice(data.price, symbol) : <NoData reason="No live price for this symbol in the terminal feed" />}
-        </span>
-        {data && (
-          <>
-            <span style={{ fontSize: 11, fontFamily: "monospace", color: up ? "#00d4aa" : "#ff4757" }}>
-              1D {formatChange(data.changePct)}
-            </span>
-            <span style={{ fontSize: 11, fontFamily: "monospace", color: (data.weekChangePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757" }}>
-              1W {data.weekChangePct == null ? <NoData compact reason="No week-ago close stored" /> : formatChange(data.weekChangePct)}
-            </span>
-          </>
-        )}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginLeft: "auto", flexShrink: 0 }}>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ fontSize: 26, fontWeight: 700, color: "#e8f0fc", fontFamily: "monospace", lineHeight: 1.1 }}>
+            {data ? formatPrice(data.price, symbol) : <NoData reason="No live price for this symbol in the terminal feed" />}
+          </div>
+          {data && (
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 4 }}>
+              <span style={{ fontSize: 11, fontFamily: "monospace", color: up ? "#00d4aa" : "#ff4757" }}>
+                1D {formatChange(data.changePct)}
+              </span>
+              <span style={{ fontSize: 11, fontFamily: "monospace", color: (data.weekChangePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757" }}>
+                1W {data.weekChangePct == null ? <NoData compact reason="No week-ago close stored" /> : formatChange(data.weekChangePct)}
+              </span>
+            </div>
+          )}
+        </div>
+        {lean && <SignalRing tally={lean} />}
       </div>
     </div>
   );
@@ -4086,8 +4980,13 @@ function ResearchPage({ prices }) {
   const [suggestions, setSuggestions] = useState([]);
   const [tab, setTab] = useState("overview");
 
-  const [summary, setSummary] = useState(null);
+  // One payload backs the whole Overview tab and the instrument bar: the Yahoo
+  // summary plus everything derived from stored bars. Cached per symbol so
+  // moving between tabs and back is free, and so the chart cannot flicker
+  // through a loading state on a symbol already fetched.
+  const [overview, setOverview] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const overviewCache = useRef({});
 
   const [newsData, setNewsData] = useState(null);
   const [newsLoading, setNewsLoading] = useState(false);
@@ -4109,8 +5008,15 @@ function ResearchPage({ prices }) {
   const data = prices?.[symbol];
   const name = companyName || DISPLAY_NAMES[symbol] || symbol;
   const isTracked = trackedSymbols.includes(symbol);
-  const price = data?.price ?? (summary && !summary.error ? summary.price : null);
-  const levels = price ? { r2: price * 1.05, r1: price * 1.02, s1: price * 0.98, s2: price * 0.95 } : null;
+  const summary = overview?.quote && !overview.quote.error ? overview.quote : null;
+  const price = data?.price ?? summary?.price ?? null;
+
+  // The last 90 stored closes, for the sparkline in the instrument bar. Sliced
+  // from the series already fetched rather than costing its own request.
+  const heroSpark = useMemo(() => {
+    const s = overview?.series;
+    return s?.available ? s.close.slice(-90).filter(v => v != null) : null;
+  }, [overview]);
 
   // Company-name autocomplete. Debounced so every keystroke doesn't fire a
   // request, and skipped once the query already matches the selected symbol.
@@ -4136,17 +5042,27 @@ function ResearchPage({ prices }) {
     selectSymbol(s.toUpperCase(), null);
   };
 
-  // Overview + Analyst tabs share one fetch — same underlying quoteSummary call.
+  // The overview payload, fetched for every symbol regardless of which tab is
+  // open — the instrument bar shows the price, sparkline and signal ring from
+  // it on all of them.
   useEffect(() => {
     let cancelled = false;
+    const cached = overviewCache.current[symbol];
+    if (cached) {
+      setOverview(cached);
+      if (cached.quote?.name && !cached.quote.error) setCompanyName(cached.quote.name);
+      return;
+    }
+    setOverview(null);
     setSummaryLoading(true);
-    fetch(`${API}/quote?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+    fetch(`${API}/research/overview?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
       .then(d => {
         if (cancelled) return;
-        setSummary(d);
-        if (d?.name && !d.error) setCompanyName(d.name);
+        overviewCache.current[symbol] = d;
+        setOverview(d);
+        if (d?.quote?.name && !d.quote.error) setCompanyName(d.quote.name);
       })
-      .catch(() => { if (!cancelled) setSummary(null); })
+      .catch(() => { if (!cancelled) setOverview(null); })
       .finally(() => { if (!cancelled) setSummaryLoading(false); });
     return () => { cancelled = true; };
   }, [symbol]);
@@ -4212,12 +5128,46 @@ function ResearchPage({ prices }) {
 
   const runAI = async () => {
     setAiLoading(true);
-    const ctx = data
-      ? `Current price ${formatPrice(data.price, symbol)}, day change ${formatChange(data.changePct)}, week change ${formatChange(data.weekChangePct)}.`
-      : "No live price available for this asset in the terminal feed.";
+    // The note is handed the same measured figures the Overview tab displays,
+    // rather than only a price. Without them the model had almost nothing to
+    // reason from and filled the gap from training memory — which for a
+    // specific instrument on a specific day is exactly the failure mode this
+    // app exists to avoid. Every line below is a number computed here, so a
+    // note that contradicts one is visibly wrong rather than plausible.
+    const t = overview?.technicals;
+    const facts = [];
+    if (data) facts.push(`Live price ${formatPrice(data.price, symbol)}, 1D ${formatChange(data.changePct)}, 1W ${formatChange(data.weekChangePct)}.`);
+    else facts.push("No live price available for this asset in the terminal feed.");
+    if (t?.available) {
+      const r = t.returns;
+      const rr = Object.entries(r).filter(([, v]) => v != null)
+        .map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(", ");
+      if (rr) facts.push(`Trailing returns: ${rr}.`);
+      if (t.dist50dma != null) facts.push(`${(t.dist50dma * 100).toFixed(1)}% versus its 50-day average${t.dist200dma != null ? `, ${(t.dist200dma * 100).toFixed(1)}% versus its 200-day` : ""}.`);
+      if (t.fromHigh != null) facts.push(`${Math.abs(t.fromHigh * 100).toFixed(1)}% below its ${t.rangeBars >= 252 ? "52-week" : `${t.rangeBars}-bar`} high; ${(t.rangePosition * 100).toFixed(0)}% up that range.`);
+      if (t.vol30 != null) facts.push(`30-day annualised volatility ${(t.vol30 * 100).toFixed(0)}%${t.volRatio != null ? ` (${t.volRatio.toFixed(2)}x its yearly level)` : ""}.`);
+      if (t.rsi14 != null) facts.push(`RSI(14) ${t.rsi14.toFixed(0)}.`);
+      if (t.beta != null) facts.push(`Beta ${t.beta.toFixed(2)} against ${t.benchmark} over ${t.benchmarkOverlap} shared trading days.`);
+      facts.push(`All computed from ${t.bars.toLocaleString()} stored daily bars, to ${t.asOf}.`);
+    } else if (t?.reason) {
+      facts.push(`No technical picture available: ${t.reason}`);
+    }
+    const a = summary?.analyst;
+    if (a?.targetMean != null) {
+      facts.push(`Analyst consensus target ${a.targetMean.toFixed(2)}${a.numberOfAnalysts ? ` from ${a.numberOfAnalysts} analysts` : ""}${a.targetLow != null && a.targetHigh != null ? `, range ${a.targetLow.toFixed(2)}–${a.targetHigh.toFixed(2)}` : ""}.`);
+    } else if (summary?.hasAnalystCoverage === false) {
+      facts.push("No analyst coverage exists for this instrument type.");
+    }
+    if (overview?.sentiment?.available) {
+      facts.push(`News tone over 90 days reads ${overview.sentiment.nowBand} across ${overview.sentiment.stories} scored stories.`);
+    }
+
     const prompt = `${AI_RULES}
 
-Asset: ${name} (${symbol}). ${ctx}
+Asset: ${name} (${symbol}).
+
+Measured facts, all computed by this application from its own stored data:
+${facts.map(f => `- ${f}`).join("\n")}
 
 Write a structured note in four labelled sections, each 2-3 sentences:
 BULL CASE: The strongest argument to be long.
@@ -4226,9 +5176,10 @@ BASE CASE: The most probable path from here.
 WHAT WOULD CHANGE THIS: The specific, observable signals that would shift the
 picture either way.
 
-You have been given very little data about this instrument. Say what you cannot
-assess rather than filling those gaps from memory — a note that names its own
-blind spots is more useful than one that reads confidently past them.`;
+Reason only from the facts listed above. Where they do not settle something,
+say so rather than filling the gap from memory — a note that names its own
+blind spots is more useful than one that reads confidently past them. Do not
+restate a figure with a different value than the one given.`;
     const { text } = await callAI(prompt, 900);
     setAiText(text);
     setAiLoading(false);
@@ -4238,16 +5189,17 @@ blind spots is more useful than one that reads confidently past them.`;
   // Analyst coverage and SEC filings are equity concepts. Rather than showing
   // an always-empty tab for an index or a currency pair, each tab declares
   // whether it applies to this instrument and why not when it doesn't.
-  const inst = summary && !summary.error ? summary : null;
-  // Shown in the instrument bar once the Bull / Bear tab has been opened for
-  // this symbol. Not fetched eagerly: a lean is only meaningful next to the
-  // signals it counts, and the bar should not cost a request on every search.
-  const lean = bullbearData && !bullbearData.error && bullbearData.symbol === symbol
-    ? bullbearData.tally : null;
+  const inst = summary;
+  // The signal count behind the ring in the instrument bar. It arrives with
+  // the overview payload rather than waiting for the Bull / Bear tab to be
+  // opened — the tally is computed locally from stored observations, so
+  // including it costs the page nothing, and the ring was useless when it
+  // only appeared after visiting another tab. Falls back to the Bull / Bear
+  // response when that tab has been opened, since the two agree by
+  // construction and it keeps the bar populated if the overview call failed.
+  const lean = overview?.signals?.tally
+    ?? (bullbearData && !bullbearData.error && bullbearData.symbol === symbol ? bullbearData.tally : null);
   const tabNA = {
-    analyst: inst?.hasAnalystCoverage === false
-      ? (inst.inapplicable?.analyst ?? `Analysts do not rate a ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} like this.`)
-      : null,
     // filingsSupport is false for instrument types with no filings at all, and
     // 'us-only' where EDGAR applies if — and only if — the issuer is a US
     // registrant, which only the fetch itself can settle.
@@ -4255,7 +5207,11 @@ blind spots is more useful than one that reads confidently past them.`;
       ? `A ${inst.instrumentLabel?.toLowerCase() ?? "instrument"} has no SEC filings.`
       : null,
   };
-const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"], ["bullbear", "Bull / Bear"], ["filings", "Filings"], ["ai", "AI Note"]];
+  // Analyst no longer has its own tab — its content is the right-hand rail of
+  // Overview now. Splitting "what the price did" from "what the street thinks"
+  // across two tabs meant every research session was read in two halves with
+  // a click in the middle.
+  const tabs = [["overview", "Overview"], ["news", "News"], ["bullbear", "Bull / Bear"], ["filings", "Filings"], ["ai", "AI Note"]];
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel>
@@ -4292,6 +5248,7 @@ const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"]
       <InstrumentBar
         symbol={symbol} name={name} data={data} isTracked={isTracked}
         instrument={inst?.instrumentLabel ?? null} lean={lean}
+        spark={heroSpark} exchange={inst?.country ?? null}
       />
 
       <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
@@ -4307,8 +5264,12 @@ const tabs = [["overview", "Overview"], ["analyst", "Analyst"], ["news", "News"]
         ))}
       </div>
 
-      {tab === "overview" && <ResearchOverviewTab symbol={symbol} name={name} data={data} summary={summary} summaryLoading={summaryLoading} levels={levels} />}
-      {tab === "analyst" && <ResearchAnalystTab symbol={symbol} price={price} summary={summary} summaryLoading={summaryLoading} />}
+      {tab === "overview" && (
+        <ResearchOverviewTab
+          symbol={symbol} name={name} overview={overview}
+          loading={summaryLoading} price={price}
+        />
+      )}
       {tab === "news" && <ResearchNewsTab symbol={symbol} name={name} newsData={newsData} newsLoading={newsLoading} />}
       {tab === "bullbear" && (
         <ResearchBullBearTab
@@ -5678,6 +6639,13 @@ export default function TradingTerminal() {
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: #060810; }
         ::-webkit-scrollbar-thumb { background: #1a2535; border-radius: 3px; }
+        /* Research overview: chart and analysis left, the street's view in a
+           right rail. Below ~1150px the rail has nowhere useful to sit, so it
+           drops underneath rather than squeezing the chart into a column too
+           narrow to read a year of daily closes in. */
+        @media (max-width: 1150px) {
+          .research-grid { grid-template-columns: minmax(0, 1fr) !important; }
+        }
       `}</style>
 
       {/* Top bar */}

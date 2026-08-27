@@ -29,6 +29,7 @@ import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
 import * as bullbear from './engines/bullbear.js';
+import * as research from './engines/research.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -687,6 +688,48 @@ const routes = {
   },
 
   // ── bull / bear ────────────────────────────────────────────
+  // One read for the merged Overview tab: the Yahoo summary the page needs
+  // anyway, plus everything derived from stored bars and the local feed. The
+  // summary is fetched once here and passed down rather than being re-fetched
+  // by each engine — quoteSummary is the slowest part of this request by an
+  // order of magnitude, and the derived work is all local.
+  'GET /research/overview': async q => {
+    const symbol = String(q.symbol ?? '').toUpperCase().trim();
+    if (!symbol) return { error: 'symbol is required.' };
+
+    const summary = await yahoo.fetchSummary(symbol);
+    const ok = summary && !summary.error ? summary : null;
+    const price = state.prices[symbol]?.price ?? ok?.price ?? null;
+
+    // Same accrual as the Bull/Bear tab, for the same reason: consensus and
+    // multiple history builds for the instruments actually being researched.
+    // Reaching the Overview tab is the more common way in, so without this
+    // the snapshot series would only ever fill for symbols whose Bull/Bear
+    // tab happened to be opened.
+    if (ok) {
+      try { bullbear.recordSnapshots(symbol, ok); }
+      catch (e) { console.log(`  snapshot failed for ${symbol}: ${e.message}`); }
+    }
+
+    // Signal tally for the conviction ring in the instrument bar. Local and
+    // cheap — it reads stored observations, not the network — so it rides
+    // along here rather than costing the page a second request.
+    let signals = null;
+    try {
+      const built = bullbear.buildSignals(symbol, { summary: ok, price });
+      signals = { tally: built.tally, count: built.signals.length, unavailable: built.unavailable.length };
+    } catch (e) {
+      console.log(`  signal tally failed for ${symbol}: ${e.message}`);
+    }
+
+    return {
+      ...research.buildOverview(symbol, { summary: ok }),
+      quote: summary,
+      price,
+      signals,
+    };
+  },
+
   // One read for the whole tab. The quoteSummary fetch is shared between the
   // signals, the price scenario and the daily snapshot write, so the tab costs
   // one upstream call rather than three.
