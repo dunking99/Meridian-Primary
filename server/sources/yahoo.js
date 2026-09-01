@@ -134,6 +134,35 @@ export async function syncAll(symbols, opts = {}) {
   };
 }
 
+/**
+ * "Whatever you point this app at, it has history for" — the single choke
+ * point every symbol-driven read (Research, Screener, Backtest, Alerts, the
+ * Risk correlation matrix) now goes through before touching stored bars.
+ *
+ * Deliberately not a new fetch mechanism: it is syncHistory/syncAll, called
+ * defensively. A symbol already covered costs one cheap local coverage
+ * check per call and nothing else — syncHistory's own freshness guard
+ * (skip if the last bar is under 20h old) means a live Yahoo fetch only
+ * happens for a symbol this database has never seen, or has too little of.
+ * That is what makes calling this unconditionally on hot paths (Risk polls
+ * every 60s) fine rather than wasteful.
+ *
+ * If `minBars` is already met, this returns immediately with no network
+ * call at all.
+ */
+export async function ensureHistory(symbols, { years = 12, minBars = 30 } = {}) {
+  const list = [...new Set((Array.isArray(symbols) ? symbols : [symbols])
+    .map(s => String(s ?? '').toUpperCase().trim()).filter(Boolean))];
+  const needed = list.filter(s => (barCoverage(s)?.n ?? 0) < minBars);
+  if (!needed.length) return { fetched: [], alreadyCovered: list, failed: [] };
+  const r = await syncAll(needed, { years });
+  return {
+    fetched: needed.filter(s => !r.failed.some(f => f.symbol === s)),
+    alreadyCovered: list.filter(s => !needed.includes(s)),
+    failed: r.failed,
+  };
+}
+
 const isoDate = d => {
   if (!d) return null;
   const t = new Date(d);

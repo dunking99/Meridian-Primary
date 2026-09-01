@@ -65,8 +65,12 @@ const WINDOWS = { '1W': 5, '1M': 21, '3M': 63, '6M': 126, '1Y': 252 };
 export function priceSeries(symbol) {
   const bars = getBars(symbol).filter(b => finite(b.close) != null);
   if (bars.length < 2) {
+    // The overview route already attempts a live fetch for any symbol short
+    // on bars before this runs, so zero here means that fetch itself came up
+    // empty — a bad ticker or a listing Yahoo has no daily history for —
+    // not a sync step nobody took.
     return { available: false, reason: bars.length === 0
-      ? 'No stored bars for this symbol. Run a sync from Settings, or add it as a holding to fetch history automatically.'
+      ? 'No stored bars for this symbol, even after attempting a live fetch. Check the ticker is correct — Yahoo may have no daily history for this listing.'
       : 'Only one stored bar — a line needs at least two points.', bars: bars.length };
   }
 
