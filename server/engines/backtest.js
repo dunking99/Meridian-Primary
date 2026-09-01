@@ -90,7 +90,10 @@ export function backtest(symbol, opts = {}) {
   if (!(initial > 0)) return { error: 'Initial capital must be greater than zero.' };
 
   let bars = getBars(symbol, from, to);
-  if (bars.length < 60) return { error: `Only ${bars.length} bars stored for ${symbol}. Sync history first.` };
+  // The route already attempts a live sync before calling this — a symbol
+  // still this short after that either doesn't trade, is misspelled, or is
+  // too newly listed to backtest, not a step the caller forgot to take.
+  if (bars.length < 60) return { error: `Only ${bars.length} bars stored for ${symbol} even after attempting a live sync — check the ticker, or it may be too newly listed to backtest.` };
 
   const dates  = bars.map(b => b.date);
   const closes = bars.map(b => b.adj_close ?? b.close);

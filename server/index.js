@@ -535,14 +535,30 @@ const routes = {
   'GET /transactions': () => ({ transactions: all('SELECT * FROM transactions ORDER BY date DESC') }),
 
   // ── risk & analytics ───────────────────────────────────────
-  'GET /risk': q => analyst.riskProfile(state.prices, {
-    confidence: Number(q.confidence) || 0.95,
-    lookback: Number(q.lookback) || 750,
-  }),
+  // Defensive, not the primary path: POST /holdings already syncs a new
+  // holding's history on add, so in normal use every held symbol is already
+  // covered by the time this runs. This catches what that can't — a sync
+  // that failed at add-time, bars purged by an integrity repair, a holding
+  // added by some future path that skips the POST /holdings flow — so a
+  // holding is never permanently invisible to its own risk numbers. Polled
+  // every 60s from the Risk page; a no-op past the first fill, since
+  // ensureHistory only makes a network call for symbols still short.
+  'GET /risk': async q => {
+    const held = pf.valuePortfolio(state.prices).positions.map(p => p.symbol);
+    await yahoo.ensureHistory(held);
+    return analyst.riskProfile(state.prices, {
+      confidence: Number(q.confidence) || 0.95,
+      lookback: Number(q.lookback) || 750,
+    });
+  },
 
   'GET /regime': () => analyst.computeRegime(state.prices),
 
-  'GET /correlations': q => analyst.correlationWatch(state.prices, { window: Number(q.window) || 60 }),
+  'GET /correlations': async q => {
+    const held = pf.valuePortfolio(state.prices).positions.map(p => p.symbol);
+    await yahoo.ensureHistory(held);
+    return analyst.correlationWatch(state.prices, { window: Number(q.window) || 60 });
+  },
 
   'GET /stress': () => {
     const v = pf.valuePortfolio(state.prices);
@@ -646,8 +662,14 @@ const routes = {
   // ── screener & backtest ────────────────────────────────────
   'GET /screener/strategies': () => ({ screener: SCREEN_STRATEGIES, backtest: BT_STRATEGIES }),
 
-  'POST /screen': body => {
+  // A screener universe you type in by hand (rather than the default tracked
+  // set, which is already synced) is exactly the "any ticker, on demand"
+  // case — ensureHistory is a cheap no-op for symbols already covered, so
+  // this costs nothing extra on the default path and only fetches for names
+  // genuinely new to this database.
+  'POST /screen': async body => {
     const universe = body.symbols?.length ? body.symbols : trackedSymbols();
+    await yahoo.ensureHistory(universe, { minBars: 120 }); // scoreSymbol's own floor
     return screen(universe, {
       strategy: body.strategy ?? 'balanced',
       minScore: body.minScore ?? 0,
@@ -655,19 +677,28 @@ const routes = {
     });
   },
 
-  'GET /score': q => scoreSymbol(q.symbol, { strategy: q.strategy ?? 'balanced' })
-                     ?? { error: `Not enough stored history for ${q.symbol}. Run POST /sync.` },
+  'GET /score': async q => {
+    await yahoo.ensureHistory([q.symbol], { minBars: 120 });
+    return scoreSymbol(q.symbol, { strategy: q.strategy ?? 'balanced' })
+      ?? { error: `No usable history for ${q.symbol} even after a live fetch — check the symbol is correct.` };
+  },
 
-  'POST /backtest': body => backtest(body.symbol, {
-    strategy: body.strategy ?? 'maCross', params: body.params ?? {},
-    initial: body.initial ?? 10000, commission: body.commission ?? 0,
-    slippageBps: body.slippageBps ?? 5, from: body.from ?? null, to: body.to ?? null,
-  }),
+  'POST /backtest': async body => {
+    await yahoo.ensureHistory([body.symbol]);
+    return backtest(body.symbol, {
+      strategy: body.strategy ?? 'maCross', params: body.params ?? {},
+      initial: body.initial ?? 10000, commission: body.commission ?? 0,
+      slippageBps: body.slippageBps ?? 5, from: body.from ?? null, to: body.to ?? null,
+    });
+  },
 
-  'POST /walkforward': body => walkForward(body.symbol, {
-    strategy: body.strategy ?? 'maCross', folds: body.folds ?? 5,
-    initial: body.initial ?? 10000,
-  }),
+  'POST /walkforward': async body => {
+    await yahoo.ensureHistory([body.symbol]);
+    return walkForward(body.symbol, {
+      strategy: body.strategy ?? 'maCross', folds: body.folds ?? 5,
+      initial: body.initial ?? 10000,
+    });
+  },
 
   // ── alerts ─────────────────────────────────────────────────
   'GET /alerts': q => ({
@@ -676,7 +707,15 @@ const routes = {
     recentlyFired: state.fired.slice(0, 20),
     kinds: alerts.ALERT_KINDS,
   }),
-  'POST /alerts': body => alerts.createAlert(body),
+  // Most alert kinds (maCross, rsi, drawdown, volRegime, high52/low52) need
+  // stored bars to ever fire; without this, an alert on a symbol nobody has
+  // synced would sit there silently inert forever, which is a worse failure
+  // than a slightly slower create. Runs once, at creation, not on every
+  // evaluate() tick.
+  'POST /alerts': async body => {
+    if (body?.symbol) await yahoo.ensureHistory([body.symbol]);
+    return alerts.createAlert(body);
+  },
   'PUT /alerts': body => alerts.updateAlert(body.id, body.status),
   'DELETE /alerts': q => { alerts.deleteAlert(Number(q.id)); return { ok: true }; },
 
@@ -763,7 +802,17 @@ const routes = {
     const symbol = String(q.symbol ?? '').toUpperCase().trim();
     if (!symbol) return { error: 'symbol is required.' };
 
-    const summary = await yahoo.fetchSummary(symbol);
+    // Two independent Yahoo calls (the quote summary, and — only if this
+    // symbol has no or too little stored history — a live bar fetch) run
+    // together rather than one after the other, so researching a name
+    // never-before-looked-at costs roughly the slower of the two, not both
+    // added up. ensureHistory persists what it fetches, same as any other
+    // sync, so the chart/technicals/precedents below have real bars to read
+    // regardless of whether this symbol was tracked before this request.
+    const [summary] = await Promise.all([
+      yahoo.fetchSummary(symbol),
+      yahoo.ensureHistory([symbol]),
+    ]);
     const ok = summary && !summary.error ? summary : null;
     const price = state.prices[symbol]?.price ?? ok?.price ?? null;
 
@@ -826,17 +875,24 @@ const routes = {
     return { symbols: rows, unassessable: thin, generatedAt: new Date().toISOString() };
   },
 
-  // Historical analogs to today's technical setup, from stored bars only —
-  // no network involved, so it is fast enough to compute on every request.
-  'GET /research/precedents': q => {
+  // Historical analogs to today's technical setup. Computation itself is
+  // stored-bars-only and fast; ensureHistory is what makes that true for a
+  // symbol reached here without the Overview tab (which already syncs it)
+  // having been opened first — e.g. this endpoint hit directly.
+  'GET /research/precedents': async q => {
     const symbol = String(q.symbol ?? '').toUpperCase().trim();
     if (!symbol) return { error: 'symbol is required.' };
+    await yahoo.ensureHistory([symbol]);
     return { symbol, ...research.precedents(symbol, { count: Math.min(Number(q.count) || 10, 20) }) };
   },
 
-  // Several symbols rebased onto one footing. Stored bars only.
-  'GET /research/compare': q => {
+  // Several symbols rebased onto one footing. Every symbol in the request
+  // gets the same on-demand treatment, not just the page's primary symbol —
+  // comparing against a name you've never researched before should work on
+  // the first try.
+  'GET /research/compare': async q => {
     const symbols = String(q.symbols ?? '').split(',').map(s => s.trim()).filter(Boolean);
+    await yahoo.ensureHistory(symbols);
     return research.compareSeries(symbols, { days: Math.min(Math.max(Number(q.days) || 252, 30), 2600) });
   },
 
