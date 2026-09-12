@@ -119,6 +119,119 @@ const NAV_ITEMS = [
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
+// ============================================================
+// THEME
+//
+// Meridian shipped with a single dark palette and colours written as literal
+// hex values inline throughout this file. This is the first step of pulling
+// them into named semantic tokens: a converted component reads useTheme() and
+// styles from t.<token> rather than a literal, so the same tree renders
+// correctly in either theme.
+//
+// The dark values below are a deliberate retune of the originals, not a copy.
+// The old muted greys (#4a6080 for labels, #3a4558 for footnotes and axis
+// ticks) sat far below a legible contrast ratio on the near-black ground —
+// that was the specific complaint this work addresses — so they are lifted
+// here, and the panel ground and borders are raised enough to actually read
+// as panels.
+//
+// Rollout is page by page. A converted component works in both themes; an
+// unconverted one keeps its old hardcoded dark look and will look wrong in
+// light mode until it is migrated too. Portfolio is the pilot.
+// ============================================================
+
+const THEMES = {
+  dark: {
+    name: "dark",
+
+    // Grounds, back to front
+    appBg:        "#0a0d13",
+    chromeBg:     "#0f131b",   // top bar, sidebar, ticker tape
+    surface:      "#141922",   // Panel
+    surfaceAlt:   "#10151e",   // expanded-row detail area
+    surfaceInset: "#1b2230",   // stat tiles, inputs, menus, hover
+
+    // Borders
+    border:       "#2a3342",   // default panel edge / divider
+    borderSubtle: "#20272f",   // in-table row rules
+    borderStrong: "#3a465c",   // buttons, emphasised edges
+
+    // Text  (old value in comments — all were too dim on black)
+    text:          "#e6edf6",  // headings, primary values   (was #c8d6e8/#e8f0fe)
+    textSecondary: "#a9b8cc",  // body, secondary values     (was #7a8ba0)
+    textMuted:     "#8595ab",  // labels, captions           (was #4a6080)
+    textFaint:     "#6f7f96",  // footnotes, axis ticks      (was #3a4558)
+
+    // Semantic
+    accent:      "#00d4aa",    // mint — brand, active state
+    accentSoft:  "#00d4aa22",
+    info:        "#4d97ff",
+    infoSoft:    "#4d97ff22",
+    positive:    "#26d0a5",
+    negative:    "#ff5a67",
+    warning:     "#f5a623",
+    warningSoft: "#f5a62322",
+
+    // Charts
+    chartGrid:   "#232b38",
+    chartAxis:   "#8595ab",
+    tooltipBg:   "#1b2230",
+
+    scrollThumb: "#2a3342",
+  },
+
+  light: {
+    name: "light",
+
+    appBg:        "#eef1f6",
+    chromeBg:     "#e6eaf1",
+    surface:      "#ffffff",
+    surfaceAlt:   "#f5f8fb",
+    surfaceInset: "#edf1f6",
+
+    border:       "#d4dbe4",
+    borderSubtle: "#e3e8ef",
+    borderStrong: "#bac5d4",
+
+    text:          "#151c28",
+    textSecondary: "#3e4a5c",
+    textMuted:     "#5b6880",
+    textFaint:     "#78849a",
+
+    accent:      "#00937a",    // darkened so it reads on white
+    accentSoft:  "#00937a1c",
+    info:        "#2f6fd0",
+    infoSoft:    "#2f6fd014",
+    positive:    "#0a8a68",
+    negative:    "#d1394a",
+    warning:     "#a96c0c",
+    warningSoft: "#a96c0c14",
+
+    chartGrid:   "#e3e8ef",
+    chartAxis:   "#78849a",
+    tooltipBg:   "#ffffff",
+
+    scrollThumb: "#c3ccd8",
+  },
+};
+
+const ThemeContext = React.createContext(THEMES.dark);
+const useTheme = () => React.useContext(ThemeContext);
+
+function ThemeProvider({ children }) {
+  const [name, setName] = useState(() => {
+    try { return localStorage.getItem("meridian_theme") || "dark"; } catch { return "dark"; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("meridian_theme", name); } catch { /* private mode — fine */ }
+  }, [name]);
+  const theme = useMemo(
+    () => ({ ...(THEMES[name] || THEMES.dark), setTheme: setName }),
+    [name],
+  );
+  return <ThemeContext.Provider value={theme}>{children}</ThemeContext.Provider>;
+}
+
 
 
 
@@ -292,11 +405,12 @@ attached. Not a trade instruction.`;
  * the reason so it is answerable rather than merely blank.
  */
 function NoData({ reason = "No data", compact = false }) {
+  const t = useTheme();
   return (
     <span
       title={reason}
       style={{
-        color: "#3a4558", fontFamily: "monospace",
+        color: t.textFaint, fontFamily: "monospace",
         fontSize: compact ? 11 : 12, letterSpacing: 1, cursor: "help",
       }}
     >
@@ -324,17 +438,18 @@ function ageLabel(ts) {
  * previously indistinguishable from everything working.
  */
 function PulseIndicator({ pulseCount, feed }) {
+  const th = useTheme();
   const [pulse, setPulse] = useState(false);
   useEffect(() => {
     setPulse(true);
-    const t = setTimeout(() => setPulse(false), 600);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setPulse(false), 600);
+    return () => clearTimeout(timer);
   }, [pulseCount]);
 
   const { status, polledAt, upstreamAt, reason, count } = feed;
-  const color = status === "live" ? "#00d4aa"
-              : status === "loading" ? "#ffa502"
-              : status === "stale" ? "#ffa502" : "#ff4757";
+  const color = status === "live" ? th.accent
+              : status === "loading" ? th.warning
+              : status === "stale" ? th.warning : th.negative;
   const label = status === "live" ? `LIVE · ${count}`
               : status === "loading" ? "CONNECTING"
               : status === "stale" ? "STALE" : "NO FEED";
@@ -351,10 +466,10 @@ function PulseIndicator({ pulseCount, feed }) {
         boxShadow: pulse ? `0 0 8px ${color}` : "none",
         transition: "all 0.3s ease",
       }} />
-      <span style={{ fontSize: 10, color: status === "unavailable" ? "#ff4757" : "#4a5568", fontFamily: "monospace" }}>
+      <span style={{ fontSize: 10, color: status === "unavailable" ? th.negative : th.textMuted, fontFamily: "monospace" }}>
         {label}
       </span>
-      <span style={{ fontSize: 9, color: "#3a4558", fontFamily: "monospace" }}>
+      <span style={{ fontSize: 9, color: th.textFaint, fontFamily: "monospace" }}>
         {status === "unavailable" ? (reason ?? "") : ageLabel(upstreamAt)}
       </span>
     </div>
@@ -362,6 +477,7 @@ function PulseIndicator({ pulseCount, feed }) {
 }
 
 function TickerTape({ prices, feed }) {
+  const t = useTheme();
   const items = ALL_SYMBOLS.filter(s => DISPLAY_NAMES[s] && prices[s]);
 
   // An empty tape scrolling silently reads as "the market is closed". Say what
@@ -369,9 +485,9 @@ function TickerTape({ prices, feed }) {
   if (!items.length) {
     return (
       <div style={{
-        background: "#0a0c0f", borderBottom: "1px solid #1a1f2e",
+        background: t.chromeBg, borderBottom: `1px solid ${t.border}`,
         padding: "7px 20px", fontSize: 11, fontFamily: "monospace",
-        color: feed?.status === "loading" ? "#4a6080" : "#ff4757",
+        color: feed?.status === "loading" ? t.textMuted : t.negative,
       }}>
         {feed?.status === "loading"
           ? "Connecting to the Meridian API…"
@@ -382,8 +498,8 @@ function TickerTape({ prices, feed }) {
 
   return (
     <div style={{
-      background: "#0a0c0f",
-      borderBottom: "1px solid #1a1f2e",
+      background: t.chromeBg,
+      borderBottom: `1px solid ${t.border}`,
       padding: "6px 0",
       overflow: "hidden",
       position: "relative",
@@ -400,9 +516,9 @@ function TickerTape({ prices, feed }) {
           const up = d.changePct >= 0;
           return (
             <span key={i} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11, whiteSpace: "nowrap" }}>
-              <span style={{ color: "#4a6080", fontFamily: "monospace" }}>{DISPLAY_NAMES[sym]}</span>
-              <span style={{ color: "#c8d6e8", fontFamily: "monospace", fontWeight: 600 }}>{formatPrice(d.price, sym)}</span>
-              <span style={{ color: up ? "#00d4aa" : "#ff4757", fontFamily: "monospace" }}>{formatChange(d.changePct)}</span>
+              <span style={{ color: t.textMuted, fontFamily: "monospace" }}>{DISPLAY_NAMES[sym]}</span>
+              <span style={{ color: t.text, fontFamily: "monospace", fontWeight: 600 }}>{formatPrice(d.price, sym)}</span>
+              <span style={{ color: up ? t.positive : t.negative, fontFamily: "monospace" }}>{formatChange(d.changePct)}</span>
             </span>
           );
         })}
@@ -511,27 +627,28 @@ function FearGreedGauge({ data, tried = false }) {
 
 
 function SectionHeader({ title, subtitle, action, onAction, extra }) {
+  const t = useTheme();
   return (
     <div style={{
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
       padding: "13px 20px 11px",
-      borderBottom: "1px solid #1a1f2e",
+      borderBottom: `1px solid ${t.border}`,
     }}>
       <div>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#c8d6e8", letterSpacing: 1.5, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 1.5, fontFamily: "monospace" }}>
           {title}
         </span>
-        {subtitle && <span style={{ fontSize: 12, color: "#3a4558", marginLeft: 10 }}>{subtitle}</span>}
+        {subtitle && <span style={{ fontSize: 12, color: t.textMuted, marginLeft: 10 }}>{subtitle}</span>}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         {extra}
         {action && (
           <button onClick={onAction} style={{
             background: "transparent",
-            border: "1px solid #1a2535",
-            color: "#4a6080",
+            border: `1px solid ${t.borderStrong}`,
+            color: t.textSecondary,
             fontSize: 12,
             padding: "5px 12px",
             borderRadius: 3,
@@ -545,10 +662,11 @@ function SectionHeader({ title, subtitle, action, onAction, extra }) {
 }
 
 function Panel({ children, style = {} }) {
+  const t = useTheme();
   return (
     <div style={{
-      background: "#0d1117",
-      border: "1px solid #1a1f2e",
+      background: t.surface,
+      border: `1px solid ${t.border}`,
       borderRadius: 8,
       overflow: "hidden",
       ...style,
@@ -6164,21 +6282,22 @@ restate a figure with a different value than the one given.`;
 // used elsewhere in this file, so it doesn't look bolted on.
 // ============================================================
 
-function RiskMetric({ label, value, sub, color = "#c8d6e8", align = "left" }) {
+function RiskMetric({ label, value, sub, color, align = "left" }) {
+  const t = useTheme();
   const centered = align === "center";
   return (
     <div style={{
-      padding: "18px 22px", borderRight: "1px solid #1a1f2e",
+      padding: "18px 22px", borderRight: `1px solid ${t.border}`,
       ...(centered && { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }),
     }}>
-      <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 8 }}>
+      <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 8 }}>
         {label}
       </div>
-      <div style={{ fontSize: 30, fontWeight: 700, color, fontFamily: "monospace" }}>
+      <div style={{ fontSize: 30, fontWeight: 700, color: color ?? t.text, fontFamily: "monospace" }}>
         {value}
       </div>
       {sub && (
-        <div style={{ fontSize: 12, color: "#4a6080", marginTop: 5 }}>{sub}</div>
+        <div style={{ fontSize: 12, color: t.textMuted, marginTop: 5 }}>{sub}</div>
       )}
     </div>
   );
@@ -6388,14 +6507,20 @@ const WRAPPERS = ["ISA", "SIPP", "GIA"];
 const SECTORS = ["Broad", "Tech", "Defence", "Gold", "EM", "Energy", "Financials", "Healthcare", "Property", "Other"];
 const GEOGRAPHIES = ["US", "UK", "Europe", "Global", "Japan", "Asia-Pacific", "India", "EM", "Other"];
 
-function fieldStyle(width) {
+// `t` (a theme from useTheme()) is optional so pages not yet migrated to the
+// theme system keep the original dark input styling; migrated callers pass it.
+function fieldStyle(width, t) {
   return {
-    width, background: "#0d1220", border: "1px solid #1e2940", color: "#c8d6e8",
+    width,
+    background: t ? t.surfaceInset : "#0d1220",
+    border: `1px solid ${t ? t.borderStrong : "#1e2940"}`,
+    color: t ? t.text : "#c8d6e8",
     padding: "7px 9px", fontSize: 11, fontFamily: "monospace", borderRadius: 3, outline: "none",
   };
 }
 
 function AddHoldingForm({ onAdded }) {
+  const t = useTheme();
   const [form, setForm] = useState({
     symbol: "", qty: "", avgPrice: "",
     sector: "", geography: "", account: "Main", targetPct: "", isin: "",
@@ -6484,71 +6609,71 @@ async function detectCurrency(symbol) {
     }
   }
 
-  const msgColor = msg?.type === "error" ? "#ff4757" : msg?.type === "warn" ? "#ffa502"
-    : msg?.type === "ok" ? "#00d4aa" : "#4a6080";
+  const msgColor = msg?.type === "error" ? t.negative : msg?.type === "warn" ? t.warning
+    : msg?.type === "ok" ? t.accent : t.textMuted;
 
   return (
     <Panel>
       <SectionHeader title="ADD HOLDING" subtitle="history syncs automatically" />
       <div style={{ padding: 16, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>SYMBOL</div>
-          <input style={fieldStyle(100)} value={form.symbol} placeholder="VUSA.L"
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>SYMBOL</div>
+          <input style={fieldStyle(100, t)} value={form.symbol} placeholder="VUSA.L"
             onChange={e => set("symbol", e.target.value)}
             onBlur={e => detectCurrency(e.target.value)}
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>PRICE</div>
-          <div style={{ ...fieldStyle(90), display: "flex", alignItems: "center", color: "#7a8ba0" }}>
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>PRICE</div>
+          <div style={{ ...fieldStyle(90, t), display: "flex", alignItems: "center", color: t.textSecondary }}>
             {checkingCcy ? "…" : livePrice != null ? `${ccySymbol(detectedCcy)}${livePrice.toFixed(2)}` : "—"}
           </div>
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>QUANTITY</div>
-          <input style={fieldStyle(90)} value={form.qty} placeholder="100" type="number"
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>QUANTITY</div>
+          <input style={fieldStyle(90, t)} value={form.qty} placeholder="100" type="number"
             onChange={e => set("qty", e.target.value)}
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>
             AVG PRICE {checkingCcy ? "(checking…)" : detectedCcy ? `(${ccySymbol(detectedCcy)})` : ""}
           </div>
-          <input style={fieldStyle(100)} value={form.avgPrice} placeholder="79.39" type="number"
+          <input style={fieldStyle(100, t)} value={form.avgPrice} placeholder="79.39" type="number"
             onChange={e => set("avgPrice", e.target.value)}
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>SECTOR</div>
-          <select style={fieldStyle(110)} value={form.sector} onChange={e => set("sector", e.target.value)}>
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>SECTOR</div>
+          <select style={fieldStyle(110, t)} value={form.sector} onChange={e => set("sector", e.target.value)}>
             <option value="">Select…</option>
             {SECTORS.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>GEOGRAPHY</div>
-          <select style={fieldStyle(120)} value={form.geography} onChange={e => set("geography", e.target.value)}>
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>GEOGRAPHY</div>
+          <select style={fieldStyle(120, t)} value={form.geography} onChange={e => set("geography", e.target.value)}>
             <option value="">Select…</option>
             {GEOGRAPHIES.map(g => <option key={g} value={g}>{g}</option>)}
           </select>
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }}>TARGET %</div>
-          <input style={fieldStyle(80)} value={form.targetPct} placeholder="optional" type="number"
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }}>TARGET %</div>
+          <input style={fieldStyle(80, t)} value={form.targetPct} placeholder="optional" type="number"
             onChange={e => set("targetPct", e.target.value)}
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         <div>
-          <div style={{ fontSize: 9, color: "#4a6080", marginBottom: 4, letterSpacing: 1 }} title="Only needed if Yahoo has no data for this fund — used as a fallback price source via FT">
+          <div style={{ fontSize: 9, color: t.textMuted, marginBottom: 4, letterSpacing: 1 }} title="Only needed if Yahoo has no data for this fund — used as a fallback price source via FT">
             ISIN (if not on Yahoo)
           </div>
-          <input style={fieldStyle(140)} value={form.isin} placeholder="GB00BN08ZR66"
+          <input style={fieldStyle(140, t)} value={form.isin} placeholder="GB00BN08ZR66"
             onChange={e => set("isin", e.target.value.toUpperCase())}
             onKeyDown={e => e.key === "Enter" && submit()} />
         </div>
         <button onClick={submit} disabled={busy}
           style={{
-            background: busy ? "#1a2535" : "#00d4aa", color: busy ? "#4a6080" : "#060810",
+            background: busy ? t.surfaceInset : t.accent, color: busy ? t.textMuted : t.appBg,
             border: "none", padding: "8px 20px", fontSize: 11, fontWeight: 700,
             fontFamily: "monospace", borderRadius: 3, cursor: busy ? "default" : "pointer",
             letterSpacing: 1,
@@ -6575,6 +6700,7 @@ const HOLDINGS_GRID_COLUMNS = "22px minmax(280px, 2.6fr) 0.5fr 0.65fr 0.65fr 0.8
 const numCell = { textAlign: "right" };
 
 function HoldingRow({ p, coverage, onChanged }) {
+  const t = useTheme();
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -6608,96 +6734,96 @@ function HoldingRow({ p, coverage, onChanged }) {
     onChanged();
   }
 
-  const pnlColor = p.pnl >= 0 ? "#00d4aa" : "#ff4757";
-  const dayColor = (p.dayChangePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757";
+  const pnlColor = p.pnl >= 0 ? t.positive : t.negative;
+  const dayColor = (p.dayChangePct ?? 0) >= 0 ? t.positive : t.negative;
   const cov = coverage?.find(c => c.symbol === p.symbol);
   const thinHistory = cov && !cov.analysable;
 
   return (
-    <div style={{ borderBottom: "1px solid #12161f" }}>
+    <div style={{ borderBottom: `1px solid ${t.borderSubtle}` }}>
       <div onClick={() => setExpanded(e => !e)} style={{
         display: "grid",
         gridTemplateColumns: HOLDINGS_GRID_COLUMNS,
         alignItems: "center", padding: "14px 20px", gap: 8,
         fontSize: 14, fontFamily: "monospace", cursor: "pointer",
       }}>
-        <span style={{ color: "#4a6080", fontSize: 11, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
+        <span style={{ color: t.textMuted, fontSize: 11, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
 
         <div style={{ minWidth: 0, overflow: "hidden" }}>
           <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            <span style={{ color: "#c8d6e8", fontWeight: 700, fontSize: 15 }}>{p.name || p.symbol}</span>
+            <span style={{ color: t.text, fontWeight: 700, fontSize: 15 }}>{p.name || p.symbol}</span>
             <a href={`https://finance.yahoo.com/quote/${encodeURIComponent(p.symbol)}`}
               target="_blank" rel="noopener noreferrer"
               title="View on Yahoo Finance"
               onClick={e => e.stopPropagation()}
-              style={{ marginLeft: 6, color: "#4a6080", fontSize: 12, textDecoration: "none" }}>
+              style={{ marginLeft: 6, color: t.textMuted, fontSize: 12, textDecoration: "none" }}>
               ↗
             </a>
             {thinHistory && (
               <span title="Not enough stored history for risk analysis"
-                style={{ color: "#ffa502", marginLeft: 6, fontSize: 12 }}>⚠</span>
+                style={{ color: t.warning, marginLeft: 6, fontSize: 12 }}>⚠</span>
             )}
           </div>
-          <div style={{ fontSize: 11, color: "#4a6080", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
             {p.symbol}{p.exchange ? ` | ${p.exchange}` : ""}
           </div>
         </div>
 
         {editing ? (
-          <input style={{ ...fieldStyle("100%"), padding: "5px 7px" }} value={qty} onClick={e => e.stopPropagation()} onChange={e => setQty(e.target.value)} />
+          <input style={{ ...fieldStyle("100%", t), padding: "5px 7px" }} value={qty} onClick={e => e.stopPropagation()} onChange={e => setQty(e.target.value)} />
         ) : (
-          <div style={{ ...numCell, color: "#7a8ba0" }}>{p.qty}</div>
+          <div style={{ ...numCell, color: t.textSecondary }}>{p.qty}</div>
         )}
 
         {editing ? (
-          <input style={{ ...fieldStyle("100%"), padding: "5px 7px" }} value={avg} onClick={e => e.stopPropagation()} onChange={e => setAvg(e.target.value)} />
+          <input style={{ ...fieldStyle("100%", t), padding: "5px 7px" }} value={avg} onClick={e => e.stopPropagation()} onChange={e => setAvg(e.target.value)} />
         ) : (
-          <div style={{ ...numCell, color: "#7a8ba0" }}>{ccySymbol(p.currency)}{p.avgPrice?.toFixed(2)}</div>
+          <div style={{ ...numCell, color: t.textSecondary }}>{ccySymbol(p.currency)}{p.avgPrice?.toFixed(2)}</div>
         )}
 
-        <div style={{ ...numCell, color: "#c8d6e8" }}>
+        <div style={{ ...numCell, color: t.text }}>
           {ccySymbol(p.currency)}{p.price != null ? p.price.toFixed(2) : "—"}
           {p.priceSource === "ft" && (
             <span title={`Yahoo has no data for this fund — priced via FT fallback${p.priceAsOf ? `, as of ${p.priceAsOf}` : ""}`}
-              style={{ marginLeft: 4, fontSize: 9, color: "#a855f7", border: "1px solid #a855f740", borderRadius: 2, padding: "0 3px" }}>FT</span>
+              style={{ marginLeft: 4, fontSize: 9, color: t.info, border: `1px solid ${t.info}55`, borderRadius: 2, padding: "0 3px" }}>FT</span>
           )}
         </div>
-        <div style={{ ...numCell, color: "#c8d6e8" }}>£{p.value?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+        <div style={{ ...numCell, color: t.text }}>£{p.value?.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
         <div style={{ ...numCell, color: pnlColor }}>
           {p.pnl >= 0 ? "+" : ""}£{Math.abs(p.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}
           <div style={{ fontSize: 11, marginTop: 2 }}>{p.pnlPct >= 0 ? "+" : ""}{p.pnlPct?.toFixed(1)}%</div>
         </div>
         <div style={{ ...numCell, color: dayColor }}>{(p.dayChangePct ?? 0) >= 0 ? "+" : ""}{p.dayChangePct?.toFixed(2)}%</div>
-        <div style={{ ...numCell, color: "#7a8ba0" }}>{p.weight?.toFixed(1)}%</div>
+        <div style={{ ...numCell, color: t.textSecondary }}>{p.weight?.toFixed(1)}%</div>
 
         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", position: "relative" }} onClick={e => e.stopPropagation()}>
           {editing ? (
             <>
-              <button onClick={save} style={btn("#00d4aa")}>SAVE</button>
-              <button onClick={() => setEditing(false)} style={btn("#4a6080")}>×</button>
+              <button onClick={save} style={btn(t.accent)}>SAVE</button>
+              <button onClick={() => setEditing(false)} style={btn(t.textMuted)}>×</button>
             </>
           ) : (
             <>
               <button onClick={() => setMenuOpen(o => !o)} style={{
-                background: menuOpen ? "#1a2535" : "transparent", border: "1px solid #1a2535", color: "#7a8ba0",
+                background: menuOpen ? t.surfaceInset : "transparent", border: `1px solid ${t.borderStrong}`, color: t.textSecondary,
                 borderRadius: 3, fontSize: 14, fontWeight: 700, cursor: "pointer",
                 width: 32, height: 27, lineHeight: "20px", letterSpacing: 1,
               }}>···</button>
               {menuOpen && (
                 <div style={{
                   position: "absolute", top: "100%", right: 0, marginTop: 4, zIndex: 10,
-                  background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4,
-                  minWidth: 100, overflow: "hidden",
+                  background: t.surface, border: `1px solid ${t.borderStrong}`, borderRadius: 4,
+                  minWidth: 100, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                 }}>
                   <button onClick={() => { setEditing(true); setMenuOpen(false); }} style={{
                     display: "block", width: "100%", textAlign: "left", background: "transparent",
-                    border: "none", color: "#3d8bff", fontSize: 11, fontFamily: "monospace",
+                    border: "none", color: t.info, fontSize: 11, fontFamily: "monospace",
                     padding: "8px 12px", cursor: "pointer",
                   }}>Edit</button>
                   <button onClick={() => { setMenuOpen(false); remove(); }} style={{
                     display: "block", width: "100%", textAlign: "left", background: "transparent",
-                    border: "none", color: "#ff4757", fontSize: 11, fontFamily: "monospace",
-                    padding: "8px 12px", cursor: "pointer", borderTop: "1px solid #1a1f2e",
+                    border: "none", color: t.negative, fontSize: 11, fontFamily: "monospace",
+                    padding: "8px 12px", cursor: "pointer", borderTop: `1px solid ${t.border}`,
                   }}>Delete</button>
                 </div>
               )}
@@ -6722,6 +6848,7 @@ function formatBigNumber(n) {
 }
 
 function HoldingDetail({ p }) {
+  const t = useTheme();
   const [quote, setQuote] = useState(null);
   const [quoteLoading, setQuoteLoading] = useState(true);
   const [range, setRange] = useState("3M");
@@ -6780,7 +6907,7 @@ instead of supplying one.`;
   const percentSeries = priceSeries.map(b => ({ date: b.date, value: basePrice ? +(((b.value / basePrice) - 1) * 100).toFixed(2) : 0 }));
   const activeSeries = view === "value" ? priceSeries : percentSeries;
   const up = activeSeries.length >= 2 && activeSeries[activeSeries.length - 1].value >= activeSeries[0].value;
-  const chartColor = up ? "#00d4aa" : "#ff4757";
+  const chartColor = up ? t.positive : t.negative;
   const insufficientHistory = bars.length > 0 && bars.length < 30;
 
   const stats = [
@@ -6790,18 +6917,18 @@ instead of supplying one.`;
     { label: "BETA", val: quote?.beta != null ? quote.beta.toFixed(2) : "—" },
   ];
 
-  const dayColor = (p.dayChangePct ?? 0) >= 0 ? "#00d4aa" : "#ff4757";
+  const dayColor = (p.dayChangePct ?? 0) >= 0 ? t.positive : t.negative;
 
   return (
-    <div style={{ padding: "12px 16px 20px 32px", background: "#0a0d14", borderBottom: "1px solid #1a1f2e" }}>
+    <div style={{ padding: "12px 16px 20px 32px", background: t.surfaceAlt, borderBottom: `1px solid ${t.border}` }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14 }}>
-        <span style={{ fontSize: 26, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>
+        <span style={{ fontSize: 26, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>
           {ccySymbol(p.currency)}{p.price != null ? p.price.toFixed(p.price < 10 ? 4 : 2) : "—"}
         </span>
         <span style={{ fontSize: 12, color: dayColor, fontFamily: "monospace" }}>
           {(p.dayChangePct ?? 0) >= 0 ? "+" : ""}{p.dayChangePct?.toFixed(2)}% today
         </span>
-        <span style={{ fontSize: 11, color: "#4a6080" }}>{p.name || p.symbol}</span>
+        <span style={{ fontSize: 11, color: t.textMuted }}>{p.name || p.symbol}</span>
       </div>
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -6809,32 +6936,20 @@ instead of supplying one.`;
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
             <div style={{ display: "flex", gap: 4 }}>
               {[{ key: "value", label: "PRICE" }, { key: "percent", label: "% RETURN" }].map(v => (
-                <button key={v.key} onClick={() => setView(v.key)} style={{
-                  background: view === v.key ? "#0d1421" : "transparent",
-                  border: `1px solid ${view === v.key ? "#3d8bff40" : "#1a2535"}`,
-                  color: view === v.key ? "#c8d6e8" : "#4a6080",
-                  fontSize: 11, fontWeight: 700, padding: "5px 11px", borderRadius: 3,
-                  cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
-                }}>{v.label}</button>
+                <button key={v.key} onClick={() => setView(v.key)} style={toggleBtn(t, view === v.key)}>{v.label}</button>
               ))}
             </div>
             <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
               {PORTFOLIO_CHART_RANGES.map(r => (
-                <button key={r.key} onClick={() => setRange(r.key)} style={{
-                  background: range === r.key ? "#0d4d40" : "transparent",
-                  border: `1px solid ${range === r.key ? "#00d4aa40" : "#1a2535"}`,
-                  color: range === r.key ? "#00d4aa" : "#4a6080",
-                  fontSize: 11, padding: "4px 9px", borderRadius: 3,
-                  cursor: "pointer", fontFamily: "monospace",
-                }}>{r.label}</button>
+                <button key={r.key} onClick={() => setRange(r.key)} style={rangeBtn(t, range === r.key)}>{r.label}</button>
               ))}
             </div>
           </div>
 
           {barsLoading ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#4a6080", fontSize: 11 }}>Loading…</div>
+            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11 }}>Loading…</div>
           ) : activeSeries.length < 2 || insufficientHistory ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: "#4a6080", fontSize: 11, textAlign: "center", padding: "0 20px" }}>
+            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11, textAlign: "center", padding: "0 20px" }}>
               {insufficientHistory ? "Insufficient stored history for this holding." : "Not enough overlapping price history yet."}
             </div>
           ) : (
@@ -6846,14 +6961,14 @@ instead of supplying one.`;
                     <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid stroke="#12161f" vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: "#3a4558", fontSize: 11, fontFamily: "monospace" }} axisLine={{ stroke: "#1a2535" }} tickLine={false} minTickGap={50} />
-                <YAxis tick={{ fill: "#3a4558", fontSize: 11, fontFamily: "monospace" }} axisLine={false} tickLine={false} width={54}
+                <CartesianGrid stroke={t.chartGrid} vertical={false} />
+                <XAxis dataKey="date" tick={{ fill: t.chartAxis, fontSize: 11, fontFamily: "monospace" }} axisLine={{ stroke: t.border }} tickLine={false} minTickGap={50} />
+                <YAxis tick={{ fill: t.chartAxis, fontSize: 11, fontFamily: "monospace" }} axisLine={false} tickLine={false} width={54}
                   domain={["auto", "auto"]}
                   tickFormatter={v => view === "percent" ? `${v.toFixed(0)}%` : `${ccySymbol(p.currency)}${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
                 <Tooltip
-                  contentStyle={{ background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}
-                  labelStyle={{ color: "#7a8ba0" }}
+                  contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.border}`, borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}
+                  labelStyle={{ color: t.textSecondary }}
                   formatter={v => [view === "percent" ? `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` : `${ccySymbol(p.currency)}${v.toFixed(2)}`, view === "percent" ? "Return" : "Price"]}
                 />
                 <Area type="monotone" dataKey="value" stroke={chartColor} strokeWidth={1.5} fill={`url(#detailFill-${symbol})`} isAnimationActive={false} />
@@ -6863,17 +6978,17 @@ instead of supplying one.`;
         </div>
 
         <div style={{ flex: "1 1 220px", minWidth: 200 }}>
-          <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 10 }}>KEY STATS</div>
+          <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 10 }}>KEY STATS</div>
           {quoteLoading ? (
-            <div style={{ color: "#4a6080", fontSize: 11 }}>Loading…</div>
+            <div style={{ color: t.textMuted, fontSize: 11 }}>Loading…</div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
               {stats.map(s => (
                 <div key={s.label} style={{
-                  background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, padding: "8px 10px",
+                  background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4, padding: "8px 10px",
                 }}>
-                  <div style={{ fontSize: 10, color: "#4a6080", letterSpacing: 0.5, marginBottom: 5 }}>{s.label}</div>
-                  <div style={{ fontSize: 14, color: "#c8d6e8", fontWeight: 700 }}>{s.val}</div>
+                  <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 0.5, marginBottom: 5 }}>{s.label}</div>
+                  <div style={{ fontSize: 14, color: t.text, fontWeight: 700 }}>{s.val}</div>
                 </div>
               ))}
             </div>
@@ -6881,17 +6996,17 @@ instead of supplying one.`;
 
           <div style={{ marginTop: 14 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1 }}>ASK AI</div>
+              <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1 }}>ASK AI</div>
               <button onClick={askAI} disabled={aiLoading} style={{
-                background: aiLoading ? "#1a2535" : "#3d8bff20", border: "1px solid #3d8bff40", color: "#3d8bff",
+                background: aiLoading ? t.surfaceInset : t.infoSoft, border: `1px solid ${t.info}`, color: t.info,
                 padding: "6px 13px", borderRadius: 3, fontSize: 11, fontFamily: "monospace",
                 cursor: aiLoading ? "default" : "pointer",
               }}>{aiLoading ? "THINKING…" : "ASK OPINION"}</button>
             </div>
             {aiText && (
               <div style={{
-                background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4,
-                padding: 13, fontSize: 13, color: "#c8d6e8", lineHeight: 1.65, whiteSpace: "pre-wrap",
+                background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4,
+                padding: 13, fontSize: 13, color: t.text, lineHeight: 1.65, whiteSpace: "pre-wrap",
               }}>{aiText}</div>
             )}
           </div>
@@ -6899,6 +7014,28 @@ instead of supplying one.`;
       </div>
     </div>
   );
+}
+
+// Segmented-control button styles, shared by the portfolio charts. `active`
+// picks the filled state; the neutral (blue) variant is the default, the
+// mint variant is used for the price-range selector.
+function toggleBtn(t, active) {
+  return {
+    background: active ? t.surfaceInset : "transparent",
+    border: `1px solid ${active ? t.info : t.borderStrong}`,
+    color: active ? t.text : t.textMuted,
+    fontSize: 11, fontWeight: 700, padding: "5px 11px", borderRadius: 3,
+    cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
+  };
+}
+function rangeBtn(t, active) {
+  return {
+    background: active ? t.accentSoft : "transparent",
+    border: `1px solid ${active ? t.accent : t.borderStrong}`,
+    color: active ? t.accent : t.textMuted,
+    fontSize: 11, padding: "4px 9px", borderRadius: 3,
+    cursor: "pointer", fontFamily: "monospace",
+  };
 }
 function ccySymbol(ccy) {
   return { GBP: "£", USD: "$", EUR: "€", JPY: "¥" }[ccy] ?? ccy + " ";
@@ -6932,6 +7069,7 @@ const PORTFOLIO_CHART_VIEWS = [
 const HOLDING_LINE_COLORS = ["#00d4aa", "#3d8bff", "#ffa502", "#ff4757", "#a78bfa", "#38bdf8", "#f472b6", "#facc15"];
 
 function PortfolioValueChart() {
+  const t = useTheme();
   const [range, setRange] = useState("3M");
   const [view, setView] = useState("combined");
   const [hist, setHist] = useState(null);
@@ -6968,47 +7106,35 @@ function PortfolioValueChart() {
 
   const activeSeries = view === "combined" ? combinedSeries : view === "value" ? valueSeries : percentSeries;
   const up = combinedSeries.length >= 2 && combinedSeries[combinedSeries.length - 1].value >= combinedSeries[0].value;
-  const lineColor = up ? "#00d4aa" : "#ff4757";
+  const lineColor = up ? t.positive : t.negative;
 
-  const axisTick = { fill: "#3a4558", fontSize: 11, fontFamily: "monospace" };
+  const axisTick = { fill: t.chartAxis, fontSize: 11, fontFamily: "monospace" };
   const tooltipStyle = {
-    contentStyle: { background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, fontFamily: "monospace", fontSize: 13 },
-    labelStyle: { color: "#7a8ba0" },
+    contentStyle: { background: t.tooltipBg, border: `1px solid ${t.border}`, borderRadius: 4, fontFamily: "monospace", fontSize: 13 },
+    labelStyle: { color: t.textSecondary },
   };
 
   return (
     <Panel>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px 11px", borderBottom: "1px solid #1a1f2e", flexWrap: "wrap", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px 11px", borderBottom: `1px solid ${t.border}`, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", gap: 4 }}>
           {PORTFOLIO_CHART_VIEWS.map(v => (
-            <button key={v.key} onClick={() => setView(v.key)} style={{
-              background: view === v.key ? "#0d1421" : "transparent",
-              border: `1px solid ${view === v.key ? "#3d8bff40" : "#1a2535"}`,
-              color: view === v.key ? "#c8d6e8" : "#4a6080",
-              fontSize: 12, fontWeight: 700, padding: "6px 13px", borderRadius: 3,
-              cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
-            }}>{v.label}</button>
+            <button key={v.key} onClick={() => setView(v.key)} style={{ ...toggleBtn(t, view === v.key), fontSize: 12, padding: "6px 13px" }}>{v.label}</button>
           ))}
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {PORTFOLIO_CHART_RANGES.map(r => (
-            <button key={r.key} onClick={() => setRange(r.key)} style={{
-              background: range === r.key ? "#0d4d40" : "transparent",
-              border: `1px solid ${range === r.key ? "#00d4aa40" : "#1a2535"}`,
-              color: range === r.key ? "#00d4aa" : "#4a6080",
-              fontSize: 12, padding: "5px 12px", borderRadius: 3,
-              cursor: "pointer", fontFamily: "monospace",
-            }}>{r.label}</button>
+            <button key={r.key} onClick={() => setRange(r.key)} style={{ ...rangeBtn(t, range === r.key), fontSize: 12, padding: "5px 12px" }}>{r.label}</button>
           ))}
         </div>
       </div>
       <div style={{ padding: "12px 16px 16px" }}>
         {loading ? (
-          <div style={{ height: 240, display: "flex", alignItems: "center", justifyContent: "center", color: "#4a6080", fontSize: 12 }}>
+          <div style={{ height: 240, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 12 }}>
             Loading…
           </div>
         ) : activeSeries.length < 2 ? (
-          <div style={{ height: 240, display: "flex", alignItems: "center", justifyContent: "center", color: "#4a6080", fontSize: 12, textAlign: "center", padding: "0 20px" }}>
+          <div style={{ height: 240, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 12, textAlign: "center", padding: "0 20px" }}>
             {hist?.note ?? "Not enough overlapping price history yet to chart portfolio value."}
           </div>
         ) : view === "combined" ? (
@@ -7021,8 +7147,8 @@ function PortfolioValueChart() {
                     <stop offset="100%" stopColor={lineColor} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid stroke="#12161f" vertical={false} />
-                <XAxis dataKey="date" tick={axisTick} axisLine={{ stroke: "#1a2535" }} tickLine={false} minTickGap={40} />
+                <CartesianGrid stroke={t.chartGrid} vertical={false} />
+                <XAxis dataKey="date" tick={axisTick} axisLine={{ stroke: t.border }} tickLine={false} minTickGap={40} />
                 <YAxis tick={axisTick} axisLine={false} tickLine={false} width={60}
                   domain={["auto", "auto"]}
                   tickFormatter={v => `£${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
@@ -7037,8 +7163,8 @@ function PortfolioValueChart() {
           <>
             <ResponsiveContainer width="100%" height={320}>
               <LineChart data={activeSeries} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                <CartesianGrid stroke="#12161f" vertical={false} />
-                <XAxis dataKey="date" tick={axisTick} axisLine={{ stroke: "#1a2535" }} tickLine={false} minTickGap={40} />
+                <CartesianGrid stroke={t.chartGrid} vertical={false} />
+                <XAxis dataKey="date" tick={axisTick} axisLine={{ stroke: t.border }} tickLine={false} minTickGap={40} />
                 <YAxis tick={axisTick} axisLine={false} tickLine={false} width={60}
                   domain={["auto", "auto"]}
                   tickFormatter={v => view === "percent" ? `${v.toFixed(0)}%` : `£${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
@@ -7061,24 +7187,26 @@ function PortfolioValueChart() {
 }
 
 function ChartCaption({ hist }) {
+  const t = useTheme();
   return (
-    <div style={{ fontSize: 11, color: "#3a4558", marginTop: 10 }}>
+    <div style={{ fontSize: 11, color: t.textFaint, marginTop: 10 }}>
       Reconstructed at current holdings weights — excludes cash{hist?.excluded?.length ? ` and ${hist.excluded.join(", ")} (insufficient history)` : ""}.
     </div>
   );
 }
 
 function Modal({ onClose, children }) {
+  const t = useTheme();
   return (
     <div onClick={onClose} style={{
-      position: "fixed", inset: 0, background: "rgba(3,5,10,0.7)",
+      position: "fixed", inset: 0, background: t.name === "light" ? "rgba(40,50,65,0.45)" : "rgba(3,5,10,0.7)",
       display: "flex", alignItems: "flex-start", justifyContent: "center",
       paddingTop: "8vh", zIndex: 1000,
     }}>
       <div onClick={e => e.stopPropagation()} style={{ width: "min(720px, 92vw)", position: "relative" }}>
         <button onClick={onClose} style={{
           position: "absolute", top: -32, right: 0, background: "transparent", border: "none",
-          color: "#7a8ba0", fontSize: 22, cursor: "pointer", lineHeight: 1,
+          color: t.textSecondary, fontSize: 22, cursor: "pointer", lineHeight: 1,
         }}>×</button>
         {children}
       </div>
@@ -7087,6 +7215,7 @@ function Modal({ onClose, children }) {
 }
 
 function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = null }) {
+  const t = useTheme();
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState(cash);
 
@@ -7112,28 +7241,28 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = 
   return (
     <div style={{ padding: "10px 22px 13px", textAlign: centered ? "center" : "left" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: centered ? "center" : "space-between", gap: 6 }}>
-        <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1 }}>CASH</div>
+        <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1 }}>CASH</div>
         {!editing && (
           <button onClick={() => { setAmount(cash); setEditing(true); }} title="Edit cash balance"
-            style={{ background: "transparent", border: "none", color: "#4a6080", fontSize: 13, cursor: "pointer", padding: 0 }}>✎</button>
+            style={{ background: "transparent", border: "none", color: t.textMuted, fontSize: 13, cursor: "pointer", padding: 0 }}>✎</button>
         )}
       </div>
       {editing ? (
         <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", justifyContent: centered ? "center" : "flex-start" }}>
           <input autoFocus type="number" value={amount} onChange={e => setAmount(e.target.value)}
             onKeyDown={e => e.key === "Enter" && save()}
-            style={{ ...fieldStyle(110), padding: "4px 7px", fontSize: 16 }} />
-          <button onClick={save} style={btn("#00d4aa")}>SAVE</button>
-          <button onClick={() => setEditing(false)} style={btn("#4a6080")}>×</button>
+            style={{ ...fieldStyle(110, t), padding: "4px 7px", fontSize: 16 }} />
+          <button onClick={save} style={btn(t.accent)}>SAVE</button>
+          <button onClick={() => setEditing(false)} style={btn(t.textMuted)}>×</button>
         </div>
       ) : (
-        <div style={{ fontSize: 23, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace", marginTop: 5 }}>
+        <div style={{ fontSize: 23, fontWeight: 700, color: t.text, fontFamily: "monospace", marginTop: 5 }}>
           £{cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}
         </div>
       )}
       {!editing && onDeploy && cash > 0 && (
         <button onClick={onDeploy} style={{
-          background: "transparent", border: "none", color: "#00d4aa", fontSize: 10.5,
+          background: "transparent", border: "none", color: t.accent, fontSize: 10.5,
           fontFamily: "monospace", cursor: "pointer", padding: 0, marginTop: 5, letterSpacing: 0.5,
         }}>DEPLOY THIS CASH →</button>
       )}
@@ -7142,6 +7271,7 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = 
 }
 
 function PortfolioPageV2() {
+  const t = useTheme();
   const [tab, setTab] = useState("holdings");
   const [data, setData] = useState(null);
   const [coverage, setCoverage] = useState([]);
@@ -7171,8 +7301,8 @@ function PortfolioPageV2() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
   }, [load]);
 
   async function refreshNames() {
@@ -7194,26 +7324,25 @@ function PortfolioPageV2() {
     }
   }
 
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#4a6080", fontSize: 12 }}>Loading portfolio…</div>;
-  if (error) return <Panel style={{ padding: 20 }}><div style={{ color: "#ff4757", fontSize: 12 }}>⚠ {error}</div></Panel>;
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Loading portfolio…</div>;
+  if (error) return <Panel style={{ padding: 20 }}><div style={{ color: t.negative, fontSize: 12 }}>⚠ {error}</div></Panel>;
 
   const thin = coverage.filter(c => !c.analysable);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>PORTFOLIO</div>
-        <div style={{ fontSize: 13, color: "#4a6080", marginTop: 3 }}>
-          {data.positions.length} Positions
+        <div style={{ fontSize: 40, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>PORTFOLIO</div>
+        <div style={{ fontSize: 13, color: t.textMuted, marginTop: 3 }}>
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
+      <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${t.border}` }}>
         {[["holdings", "Holdings"], ["allocate", "Allocate"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{
             background: "transparent", border: "none",
-            borderBottom: tab === id ? "2px solid #00d4aa" : "2px solid transparent",
-            color: tab === id ? "#00d4aa" : "#4a6080",
+            borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
+            color: tab === id ? t.accent : t.textMuted,
             padding: "8px 14px", cursor: "pointer", fontFamily: "monospace",
             fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
           }}>{label}</button>
@@ -7227,10 +7356,10 @@ function PortfolioPageV2() {
       <Panel>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
           <RiskMetric align="center" label="TOTAL VALUE" value={`£${data.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
-          <div style={{ borderRight: "1px solid #1a1f2e", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-            <div style={{ padding: "13px 22px 10px", borderBottom: "1px solid #1a1f2e", textAlign: "center" }}>
-              <div style={{ fontSize: 11, color: "#4a6080", letterSpacing: 1, marginBottom: 5 }}>INVESTED</div>
-              <div style={{ fontSize: 23, fontWeight: 700, color: "#c8d6e8", fontFamily: "monospace" }}>
+          <div style={{ borderRight: `1px solid ${t.border}`, display: "flex", flexDirection: "column", justifyContent: "center" }}>
+            <div style={{ padding: "13px 22px 10px", borderBottom: `1px solid ${t.border}`, textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 5 }}>INVESTED</div>
+              <div style={{ fontSize: 23, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>
                 £{data.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
             </div>
@@ -7238,10 +7367,10 @@ function PortfolioPageV2() {
           </div>
           <RiskMetric align="center" label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%`}
-            color={data.pnl >= 0 ? "#00d4aa" : "#ff4757"} />
+            color={data.pnl >= 0 ? t.positive : t.negative} />
           <RiskMetric align="center" label="TODAY" value={`${data.dayChange >= 0 ? "+" : ""}£${Math.abs(data.dayChange).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.dayChangePct >= 0 ? "+" : ""}${data.dayChangePct.toFixed(2)}%`}
-            color={data.dayChange >= 0 ? "#00d4aa" : "#ff4757"} />
+            color={data.dayChange >= 0 ? t.positive : t.negative} />
         </div>
       </Panel>
 
@@ -7255,8 +7384,8 @@ function PortfolioPageV2() {
 
       {thin.length > 0 && (
         <Panel style={{ padding: 12 }}>
-          <div style={{ fontSize: 11, color: "#ffa502" }}>
-            ⚠ {thin.map(t => t.symbol).join(", ")} {thin.length === 1 ? "has" : "have"} insufficient
+          <div style={{ fontSize: 11, color: t.warning }}>
+            ⚠ {thin.map(s => s.symbol).join(", ")} {thin.length === 1 ? "has" : "have"} insufficient
             price history and {thin.length === 1 ? "is" : "are"} excluded from risk analysis.
           </div>
         </Panel>
@@ -7269,26 +7398,26 @@ function PortfolioPageV2() {
           extra={
             <button onClick={refreshNames} disabled={namesBusy} title="Look up a proper name and listing venue for any holding that's still showing its raw ticker"
               style={{
-                background: "transparent", border: "1px solid #1a2535",
-                color: namesBusy ? "#3a4558" : "#4a6080", fontSize: 12, padding: "5px 12px",
+                background: "transparent", border: `1px solid ${t.borderStrong}`,
+                color: namesBusy ? t.textFaint : t.textSecondary, fontSize: 12, padding: "5px 12px",
                 borderRadius: 3, cursor: namesBusy ? "default" : "pointer", fontFamily: "monospace",
               }}>{namesBusy ? "RESOLVING…" : "↻ REFRESH NAMES"}</button>
           } />
         {namesMsg && (
-          <div style={{ padding: "0 20px 10px", fontSize: 11, color: "#7a8ba0" }}>{namesMsg}</div>
+          <div style={{ padding: "0 20px 10px", fontSize: 11, color: t.textSecondary }}>{namesMsg}</div>
         )}
         <div style={{
           display: "grid",
           gridTemplateColumns: HOLDINGS_GRID_COLUMNS,
-          padding: "11px 20px", borderBottom: "1px solid #1a1f2e", gap: 8,
-          fontSize: 11, color: "#4a6080", letterSpacing: 1,
+          padding: "11px 20px", borderBottom: `1px solid ${t.border}`, gap: 8,
+          fontSize: 11, color: t.textMuted, letterSpacing: 1,
         }}>
           <div /><div>NAME / SYMBOL</div>
           <div style={numCell}>QTY</div><div style={numCell}>AVG</div><div style={numCell}>PRICE</div>
           <div style={numCell}>VALUE</div><div style={numCell}>P&L</div><div style={numCell}>TODAY</div><div style={numCell}>WEIGHT</div><div />
         </div>
         {data.positions.length === 0 ? (
-          <div style={{ padding: 32, textAlign: "center", color: "#4a6080", fontSize: 14 }}>
+          <div style={{ padding: 32, textAlign: "center", color: t.textMuted, fontSize: 14 }}>
             No holdings yet — use "+ ADD POSITION" above to add one.
           </div>
         ) : (
@@ -7312,12 +7441,12 @@ function PortfolioPageV2() {
           <Panel>
             <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 5 }}>
               {flags.map((f, i) => (
-                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, color: "#ffa502" }}>
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 11.5, color: t.warning }}>
                   <span style={{ fontFamily: "monospace" }}>⚠</span>
                   <span style={{ lineHeight: 1.5 }}>{f}</span>
                 </div>
               ))}
-              <div style={{ fontSize: 9.5, color: "#3a4558", marginTop: 2 }}>
+              <div style={{ fontSize: 9.5, color: t.textFaint, marginTop: 2 }}>
                 Thresholds are conventions (25% single, 60% top-three, 65% look-through US), not advice. Full diagnostics on the Risk page.
               </div>
             </div>
@@ -7338,21 +7467,16 @@ function PortfolioPageV2() {
 }
 
 function BreakdownPanel({ title, rows }) {
+  const t = useTheme();
   const [view, setView] = useState("bars");
 
   return (
     <Panel>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px 11px", borderBottom: "1px solid #1a1f2e" }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#c8d6e8", letterSpacing: 1.5, fontFamily: "monospace" }}>{title}</span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 20px 11px", borderBottom: `1px solid ${t.border}` }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 1.5, fontFamily: "monospace" }}>{title}</span>
         <div style={{ display: "flex", gap: 4 }}>
           {[{ key: "bars", label: "BARS" }, { key: "pie", label: "PIE" }].map(v => (
-            <button key={v.key} onClick={() => setView(v.key)} style={{
-              background: view === v.key ? "#0d1421" : "transparent",
-              border: `1px solid ${view === v.key ? "#3d8bff40" : "#1a2535"}`,
-              color: view === v.key ? "#c8d6e8" : "#4a6080",
-              fontSize: 11, fontWeight: 700, padding: "5px 11px", borderRadius: 3,
-              cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
-            }}>{v.label}</button>
+            <button key={v.key} onClick={() => setView(v.key)} style={toggleBtn(t, view === v.key)}>{v.label}</button>
           ))}
         </div>
       </div>
@@ -7362,11 +7486,11 @@ function BreakdownPanel({ title, rows }) {
           {rows.map(b => (
             <div key={b.label} style={{ marginBottom: 16 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 6 }}>
-                <span style={{ color: "#7a8ba0" }}>{b.label}</span>
-                <span style={{ color: "#c8d6e8", fontFamily: "monospace" }}>{b.pct.toFixed(1)}%</span>
+                <span style={{ color: t.textSecondary }}>{b.label}</span>
+                <span style={{ color: t.text, fontFamily: "monospace" }}>{b.pct.toFixed(1)}%</span>
               </div>
-              <div style={{ height: 6, background: "#1a2535", borderRadius: 3 }}>
-                <div style={{ width: `${b.pct}%`, height: "100%", background: "#3d8bff", borderRadius: 3 }} />
+              <div style={{ height: 6, background: t.surfaceInset, borderRadius: 3 }}>
+                <div style={{ width: `${b.pct}%`, height: "100%", background: t.info, borderRadius: 3 }} />
               </div>
             </div>
           ))}
@@ -7378,13 +7502,13 @@ function BreakdownPanel({ title, rows }) {
               <Pie data={rows} dataKey="pct" nameKey="label" cx="50%" cy="50%"
                 innerRadius={62} outerRadius={110} paddingAngle={1} isAnimationActive={false}>
                 {rows.map((b, i) => (
-                  <Cell key={b.label} fill={HOLDING_LINE_COLORS[i % HOLDING_LINE_COLORS.length]} stroke="#0d1117" strokeWidth={2} />
+                  <Cell key={b.label} fill={HOLDING_LINE_COLORS[i % HOLDING_LINE_COLORS.length]} stroke={t.surface} strokeWidth={2} />
                 ))}
               </Pie>
               <Tooltip
-                contentStyle={{ background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}
-                labelStyle={{ color: "#7a8ba0" }}
-                itemStyle={{ color: "#c8d6e8" }}
+                contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.border}`, borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}
+                labelStyle={{ color: t.textSecondary }}
+                itemStyle={{ color: t.text }}
                 formatter={(v, name) => [`${v.toFixed(1)}%`, name]}
               />
               <Legend wrapperStyle={{ fontSize: 12, fontFamily: "monospace" }} />
@@ -7409,13 +7533,14 @@ function BreakdownPanel({ title, rows }) {
 // ============================================================
 
 function TiltBar({ tilt }) {
-  if (tilt == null) return <span style={{ color: "#4a6080", fontSize: 10 }}>n/a</span>;
+  const t = useTheme();
+  if (tilt == null) return <span style={{ color: t.textMuted, fontSize: 10 }}>n/a</span>;
   const pct = Math.round(((tilt + 1) / 2) * 100);
-  const color = tilt > 0.05 ? "#00d4aa" : tilt < -0.05 ? "#ff4757" : "#7a8ba0";
+  const color = tilt > 0.05 ? t.positive : tilt < -0.05 ? t.negative : t.textSecondary;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <div style={{ width: 64, height: 5, background: "#1a2535", borderRadius: 3, position: "relative" }}>
-        <div style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: "#2a3550" }} />
+      <div style={{ width: 64, height: 5, background: t.surfaceInset, borderRadius: 3, position: "relative" }}>
+        <div style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: t.borderStrong }} />
         <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 3 }} />
       </div>
       <span style={{ fontSize: 10, color, fontFamily: "monospace", width: 34 }}>{tilt >= 0 ? "+" : ""}{tilt.toFixed(2)}</span>
@@ -7423,24 +7548,26 @@ function TiltBar({ tilt }) {
   );
 }
 
-function AllocationRow({ a, tone = "#00d4aa" }) {
+function AllocationRow({ a }) {
+  const t = useTheme();
   return (
-    <div style={{ padding: "12px 18px", borderBottom: "1px solid #12161f" }}>
+    <div style={{ padding: "12px 18px", borderBottom: `1px solid ${t.borderSubtle}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>{a.symbol}</span>
-        <span style={{ fontSize: 15, fontWeight: 700, color: tone, fontFamily: "monospace" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>{a.symbol}</span>
+        <span style={{ fontSize: 15, fontWeight: 700, color: t.positive, fontFamily: "monospace" }}>
           £{a.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-          <span style={{ fontSize: 11, color: "#7a8ba0", fontWeight: 400, marginLeft: 8 }}>{a.pctOfContribution}%</span>
+          <span style={{ fontSize: 11, color: t.textSecondary, fontWeight: 400, marginLeft: 8 }}>{a.pctOfContribution}%</span>
         </span>
       </div>
       {(a.reasons ?? []).map((r, i) => (
-        <div key={i} style={{ fontSize: 11, color: "#7a8ba0", marginTop: 4 }}>· {r}</div>
+        <div key={i} style={{ fontSize: 11, color: t.textSecondary, marginTop: 4 }}>· {r}</div>
       ))}
     </div>
   );
 }
 
 function AllocatePage() {
+  const t = useTheme();
   const [mode, setMode] = useState("auto");
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
@@ -7497,8 +7624,8 @@ function AllocatePage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 860 }}>
       <div>
-        <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>ALLOCATE</div>
-        <div style={{ fontSize: 13, color: "#4a6080", marginTop: 3 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>ALLOCATE</div>
+        <div style={{ fontSize: 13, color: t.textMuted, marginTop: 3 }}>
           {cashHint != null ? `£${cashHint.toLocaleString(undefined, { maximumFractionDigits: 0 })} cash available` : "New cash to deploy"}
         </div>
       </div>
@@ -7506,45 +7633,40 @@ function AllocatePage() {
       <Panel style={{ padding: 18 }}>
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div>
-            <div style={{ fontSize: 10, color: "#4a6080", letterSpacing: 1, marginBottom: 6 }}>MODE</div>
+            <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 1, marginBottom: 6 }}>MODE</div>
             <div style={{ display: "flex", gap: 4 }}>
               {[{ key: "auto", label: "AUTO" }, { key: "manual", label: "MY TARGETS" }].map(m => (
-                <button key={m.key} onClick={() => { setMode(m.key); setResult(null); setError(null); }} style={{
-                  background: mode === m.key ? "#0d1421" : "transparent",
-                  border: `1px solid ${mode === m.key ? "#3d8bff40" : "#1a2535"}`,
-                  color: mode === m.key ? "#c8d6e8" : "#4a6080",
-                  fontSize: 11, fontWeight: 700, padding: "7px 12px", borderRadius: 3,
-                  cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
-                }}>{m.label}</button>
+                <button key={m.key} onClick={() => { setMode(m.key); setResult(null); setError(null); }}
+                  style={{ ...rangeBtn(t, mode === m.key), padding: "7px 12px", fontWeight: 700 }}>{m.label}</button>
               ))}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 10, color: "#4a6080", letterSpacing: 1, marginBottom: 6 }}>AMOUNT (£)</div>
+            <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 1, marginBottom: 6 }}>AMOUNT (£)</div>
             <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
-              style={fieldStyle(140)} placeholder="5000" />
+              style={fieldStyle(140, t)} placeholder="5000" />
           </div>
-          <button onClick={generate} disabled={busy} style={{ ...btn("#00d4aa"), padding: "8px 18px", fontSize: 12, opacity: busy ? 0.6 : 1 }}>
+          <button onClick={generate} disabled={busy} style={{ ...btn(t.accent), padding: "8px 18px", fontSize: 12, opacity: busy ? 0.6 : 1 }}>
             {busy ? "WORKING…" : "GENERATE PLAN"}
           </button>
           {mode === "auto" && (
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#7a8ba0", cursor: "pointer", paddingBottom: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: t.textSecondary, cursor: "pointer", paddingBottom: 8 }}>
               <input type="checkbox" checked={includeScreener} onChange={e => setIncludeScreener(e.target.checked)} />
               Also search the Screener for new ideas (slower — scans your whole tracked universe)
             </label>
           )}
         </div>
-        <div style={{ fontSize: 11, color: "#4a6080", marginTop: 12, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 11, color: t.textMuted, marginTop: 12, lineHeight: 1.5 }}>
           {mode === "auto"
             ? "Scores your holdings and watchlist against Bull/Bear, Precedents, the Screener and current risk contribution — cash splits toward whatever clears the bar, with reasons. Never proposes a sale."
             : "Reads the target % you've set on each holding (Portfolio → Add/Edit Position) and splits this amount to move you toward those targets, same as the numbers already shown there."}
         </div>
         {mode === "manual" && !hasTargets && (
-          <div style={{ fontSize: 11, color: "#ffa502", marginTop: 8 }}>
+          <div style={{ fontSize: 11, color: t.warning, marginTop: 8 }}>
             ⚠ None of your holdings have a target % set yet — set one on each holding first, or use AUTO instead.
           </div>
         )}
-        {error && <div style={{ fontSize: 12, color: "#ff4757", marginTop: 10 }}>⚠ {error}</div>}
+        {error && <div style={{ fontSize: 12, color: t.negative, marginTop: 10 }}>⚠ {error}</div>}
       </Panel>
 
       {result && (
@@ -7554,12 +7676,12 @@ function AllocatePage() {
             {(result.allocations ?? []).length ? (
               result.allocations.map(a => <AllocationRow key={a.symbol} a={a} />)
             ) : (
-              <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>
+              <div style={{ padding: 18, fontSize: 12, color: t.textSecondary }}>
                 {(result.notes ?? []).join(" ") || "Nothing allocated."}
               </div>
             )}
             {mode === "manual" && result.driftAfter != null && (
-              <div style={{ padding: "10px 18px", fontSize: 11, color: "#4a6080", borderTop: "1px solid #12161f" }}>
+              <div style={{ padding: "10px 18px", fontSize: 11, color: t.textMuted, borderTop: `1px solid ${t.borderSubtle}` }}>
                 Max drift from target: {result.driftBefore}% before → {result.driftAfter}% after.
               </div>
             )}
@@ -7569,12 +7691,12 @@ function AllocatePage() {
             <Panel>
               <SectionHeader title="CONSIDERED, NOT FUNDED" subtitle={`${result.rejected.length} candidate${result.rejected.length === 1 ? "" : "s"}`} />
               {result.rejected.map(r => (
-                <div key={r.symbol} style={{ padding: "10px 18px", borderBottom: "1px solid #12161f" }}>
+                <div key={r.symbol} style={{ padding: "10px 18px", borderBottom: `1px solid ${t.borderSubtle}` }}>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: "#7a8ba0", fontFamily: "monospace" }}>{r.symbol}</span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: t.textSecondary, fontFamily: "monospace" }}>{r.symbol}</span>
                     <TiltBar tilt={r.tilt} />
                   </div>
-                  {r.reasons?.[0] && <div style={{ fontSize: 10.5, color: "#4a6080", marginTop: 3 }}>{r.reasons[0]}</div>}
+                  {r.reasons?.[0] && <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 3 }}>{r.reasons[0]}</div>}
                 </div>
               ))}
             </Panel>
@@ -7582,17 +7704,17 @@ function AllocatePage() {
 
           {result.secondOpinion && (
             <Panel style={{ padding: 18 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#7a8ba0", letterSpacing: 1, marginBottom: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: t.textSecondary, letterSpacing: 1, marginBottom: 4 }}>
                 STATISTICAL ALTERNATIVE — {result.secondOpinion.method === "maxSharpe" ? "MAX SHARPE" : result.secondOpinion.method.toUpperCase()}
               </div>
-              <div style={{ fontSize: 10.5, color: "#4a6080", marginBottom: 10 }}>
+              <div style={{ fontSize: 10.5, color: t.textMuted, marginBottom: 10 }}>
                 Mean-variance optimisation over the same symbols, for comparison — not the recommendation above.
                 A handful of overlapping index trackers can produce brittle, corner-heavy weights here, so treat this as a second opinion, not an answer.
               </div>
               {Object.entries(result.secondOpinion.weights).map(([sym, w]) => (
                 <div key={sym} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", fontFamily: "monospace" }}>
-                  <span style={{ color: "#c8d6e8" }}>{sym}</span>
-                  <span style={{ color: "#00d4aa" }}>{(w * 100).toFixed(1)}%</span>
+                  <span style={{ color: t.text }}>{sym}</span>
+                  <span style={{ color: t.accent }}>{(w * 100).toFixed(1)}%</span>
                 </div>
               ))}
             </Panel>
@@ -7604,13 +7726,13 @@ function AllocatePage() {
         <Panel>
           <SectionHeader title="CANDIDATES" subtitle={loadingCandidates ? "loading…" : `${candidates?.scored?.length ?? 0} in view`} />
           {loadingCandidates ? (
-            <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>Loading…</div>
+            <div style={{ padding: 18, fontSize: 12, color: t.textSecondary }}>Loading…</div>
           ) : !candidates?.scored?.length ? (
-            <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>No candidates yet — add a holding or watchlist symbol first.</div>
+            <div style={{ padding: 18, fontSize: 12, color: t.textSecondary }}>No candidates yet — add a holding or watchlist symbol first.</div>
           ) : (
             candidates.scored.map(s => (
-              <div key={s.symbol} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 18px", borderBottom: "1px solid #12161f" }}>
-                <span style={{ fontSize: 12, color: "#c8d6e8", fontFamily: "monospace" }}>{s.symbol}</span>
+              <div key={s.symbol} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 18px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+                <span style={{ fontSize: 12, color: t.text, fontFamily: "monospace" }}>{s.symbol}</span>
                 <TiltBar tilt={s.tilt} />
               </div>
             ))
@@ -7638,6 +7760,7 @@ function AllocatePage() {
  * 4, past any normal market closure.
  */
 function DataHealthPanel() {
+  const t = useTheme();
   const [health, setHealth] = useState(null);
   const [syncing, setSyncing] = useState(null); // symbol being synced, or "*"
   const [showAll, setShowAll] = useState(false);
@@ -7659,7 +7782,7 @@ function DataHealthPanel() {
   };
 
   if (!health) {
-    return <Panel><SectionHeader title="DATA HEALTH" subtitle="Loading…" /><div style={{ padding: 14, fontSize: 11, color: "#4a6080" }}>Reading the store…</div></Panel>;
+    return <Panel><SectionHeader title="DATA HEALTH" subtitle="Loading…" /><div style={{ padding: 14, fontSize: 11, color: t.textMuted }}>Reading the store…</div></Panel>;
   }
 
   const stale = health.coverage.filter(c => c.stale);
@@ -7675,25 +7798,25 @@ function DataHealthPanel() {
         onAction={() => syncing || resync(null)}
       />
       <div style={{ padding: "10px 14px 4px", display: "flex", gap: 14, flexWrap: "wrap", fontSize: 10.5, fontFamily: "monospace" }}>
-        <span style={{ color: stale.length ? "#ff8c42" : "#00d4aa" }}>
+        <span style={{ color: stale.length ? t.warning : t.accent }}>
           {stale.length ? `${stale.length} symbol${stale.length === 1 ? "" : "s"} stale (>4 days)` : "All stored history current"}
         </span>
         {health.symbols.unstored.length > 0 && (
-          <span style={{ color: "#ffa502" }} title={health.symbols.unstored.join(", ")}>
+          <span style={{ color: t.warning }} title={health.symbols.unstored.join(", ")}>
             {health.symbols.unstored.length} tracked with no bars at all
           </span>
         )}
-        <span style={{ color: "#4a6080" }}>
+        <span style={{ color: t.textMuted }}>
           news feed: {health.news.stories} stories{newsAge != null ? `, newest ${newsAge}h old` : ""}
         </span>
-        <span style={{ color: "#4a6080" }}>
+        <span style={{ color: t.textMuted }}>
           overnight sync: {health.lastOvernightSync ?? "not yet run — runs 5-8am while the app is up"}
         </span>
       </div>
       <div style={{ padding: "6px 8px 6px", overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
-            <tr style={{ color: "#4a6080", fontFamily: "monospace", fontSize: 9 }}>
+            <tr style={{ color: t.textMuted, fontFamily: "monospace", fontSize: 9 }}>
               {["SYMBOL", "BARS", "FIRST", "LAST", "AGE", ""].map((h, i) => (
                 <th key={i} style={{ textAlign: i === 0 ? "left" : "right", padding: "5px 8px", fontWeight: 400, letterSpacing: 0.5 }}>{h}</th>
               ))}
@@ -7701,18 +7824,18 @@ function DataHealthPanel() {
           </thead>
           <tbody>
             {rows.map(c => (
-              <tr key={c.symbol} style={{ borderTop: "1px solid #10141d" }}>
-                <td style={{ padding: "5px 8px", fontFamily: "monospace", color: "#c8d6e8" }}>{c.symbol}</td>
-                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#7a8ba0" }}>{c.bars.toLocaleString()}</td>
-                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#4a6080" }}>{c.first}</td>
-                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: "#4a6080" }}>{c.last}</td>
-                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: c.stale ? "#ff8c42" : "#00d4aa" }}>
+              <tr key={c.symbol} style={{ borderTop: `1px solid ${t.borderSubtle}` }}>
+                <td style={{ padding: "5px 8px", fontFamily: "monospace", color: t.text }}>{c.symbol}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: t.textSecondary }}>{c.bars.toLocaleString()}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: t.textMuted }}>{c.first}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: t.textMuted }}>{c.last}</td>
+                <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "monospace", color: c.stale ? t.warning : t.accent }}>
                   {c.staleDays}d
                 </td>
                 <td style={{ padding: "5px 8px", textAlign: "right" }}>
                   <button onClick={() => syncing || resync([c.symbol])} style={{
-                    background: "transparent", border: "1px solid #1a2535", borderRadius: 3,
-                    color: syncing === c.symbol ? "#ffa502" : "#3d8bff", padding: "1px 7px",
+                    background: "transparent", border: `1px solid ${t.borderStrong}`, borderRadius: 3,
+                    color: syncing === c.symbol ? t.warning : t.info, padding: "1px 7px",
                     cursor: "pointer", fontFamily: "monospace", fontSize: 9,
                   }}>{syncing === c.symbol ? "…" : "SYNC"}</button>
                 </td>
@@ -7722,13 +7845,13 @@ function DataHealthPanel() {
         </table>
         {health.coverage.length > rows.length && (
           <button onClick={() => setShowAll(true)} style={{
-            background: "none", border: "none", color: "#3d8bff", cursor: "pointer",
+            background: "none", border: "none", color: t.info, cursor: "pointer",
             fontFamily: "monospace", fontSize: 10, padding: "8px",
           }}>show all {health.coverage.length} symbols</button>
         )}
         {showAll && (
           <button onClick={() => setShowAll(false)} style={{
-            background: "none", border: "none", color: "#4a6080", cursor: "pointer",
+            background: "none", border: "none", color: t.textMuted, cursor: "pointer",
             fontFamily: "monospace", fontSize: 10, padding: "8px",
           }}>collapse</button>
         )}
@@ -7746,6 +7869,7 @@ function DataHealthPanel() {
  * has no version history. This is the app's own answer to that gap.
  */
 function BackupPanel() {
+  const t = useTheme();
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
 
@@ -7796,13 +7920,13 @@ function BackupPanel() {
         action={busy ? "EXPORTING…" : "EXPORT"}
         onAction={() => busy || exportAll()}
       />
-      <div style={{ padding: 14, fontSize: 11.5, color: "#7a8ba0", lineHeight: 1.7 }}>
+      <div style={{ padding: 14, fontSize: 11.5, color: t.textSecondary, lineHeight: 1.7 }}>
         Everything else Meridian holds (prices, news, observations) can be re-fetched or recomputed.
-        These rows cannot: they exist only in <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>meridian.db</code>,
+        These rows cannot: they exist only in <code style={{ color: t.accent, fontFamily: "monospace" }}>meridian.db</code>,
         which is deliberately outside git and outside the auto-update backups. Export writes a dated
         JSON bundle plus CSVs to your Downloads folder — keep one somewhere safe after any change to
         your holdings.
-        {done && <div style={{ marginTop: 8, color: done.startsWith("Export failed") ? "#ff8c42" : "#00d4aa", fontFamily: "monospace", fontSize: 11 }}>{done}</div>}
+        {done && <div style={{ marginTop: 8, color: done.startsWith("Export failed") ? t.warning : t.accent, fontFamily: "monospace", fontSize: 11 }}>{done}</div>}
       </div>
     </Panel>
   );
@@ -7810,6 +7934,7 @@ function BackupPanel() {
 
 /** What changed in the app itself — git history, read from the local clone. */
 function ChangelogPanel() {
+  const t = useTheme();
   const [log, setLog] = useState(null);
   useEffect(() => {
     fetch(`${API}/changelog?limit=20`).then(r => r.json()).then(setLog).catch(() => setLog({ commits: [], error: "Could not reach the API." }));
@@ -7819,13 +7944,13 @@ function ChangelogPanel() {
     <Panel>
       <SectionHeader title="WHAT'S CHANGED IN MERIDIAN" subtitle="Recent updates, from this clone's git history" />
       {log.error ? (
-        <div style={{ padding: 14, fontSize: 11.5, color: "#4a6080" }}>{log.error}</div>
+        <div style={{ padding: 14, fontSize: 11.5, color: t.textMuted }}>{log.error}</div>
       ) : (
         <div style={{ padding: "6px 0", maxHeight: 300, overflowY: "auto" }}>
           {log.commits.filter(c => !c.subject.startsWith("Merge pull request")).map(c => (
-            <div key={c.hash} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 16px", borderBottom: "1px solid #0f1420" }}>
-              <span style={{ fontSize: 9.5, color: "#3a4558", fontFamily: "monospace", flexShrink: 0 }}>{c.date}</span>
-              <span style={{ fontSize: 11.5, color: "#b8c6da", lineHeight: 1.5 }}>{c.subject}</span>
+            <div key={c.hash} style={{ display: "flex", gap: 10, alignItems: "baseline", padding: "5px 16px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+              <span style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace", flexShrink: 0 }}>{c.date}</span>
+              <span style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.5 }}>{c.subject}</span>
             </div>
           ))}
         </div>
@@ -7835,6 +7960,7 @@ function ChangelogPanel() {
 }
 
 function SettingsPage({ onApiKeySet }) {
+  const t = useTheme();
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("meridian_gemini_key") || "");
   const [saved, setSaved] = useState(false);
   const [priceLinks, setPriceLinks] = useState(() => {
@@ -7869,19 +7995,39 @@ function SettingsPage({ onApiKeySet }) {
   };
 
   const inputStyle = {
-    background: "#0d1117", border: "1px solid #1a2535", borderRadius: 4,
-    color: "#c8d6e8", fontFamily: "monospace", fontSize: 12, padding: "8px 10px", width: "100%",
+    background: t.surfaceInset, border: `1px solid ${t.borderStrong}`, borderRadius: 4,
+    color: t.text, fontFamily: "monospace", fontSize: 12, padding: "8px 10px", width: "100%",
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 700 }}>
 
+      {/* Appearance */}
+      <Panel>
+        <SectionHeader title="APPEARANCE" subtitle="Rolling out page by page — Portfolio is done; other pages follow once this looks right" />
+        <div style={{ padding: 14, display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1 }}>THEME</span>
+          {[{ id: "dark", label: "Dark" }, { id: "light", label: "Light" }].map(opt => {
+            const active = t.name === opt.id;
+            return (
+              <button key={opt.id} onClick={() => t.setTheme(opt.id)} style={{
+                background: active ? t.accentSoft : "transparent",
+                border: `1px solid ${active ? t.accent : t.borderStrong}`,
+                color: active ? t.accent : t.textMuted,
+                fontSize: 12, fontWeight: 700, padding: "6px 16px", borderRadius: 3,
+                cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
+              }}>{opt.label}</button>
+            );
+          })}
+        </div>
+      </Panel>
+
       {/* API Key */}
       <Panel>
         <SectionHeader title="GOOGLE GEMINI API KEY" subtitle="Required for all AI features (Daily Brief, Portfolio Health, etc.)" />
         <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ fontSize: 11, color: "#7a8ba0" }}>
-            Get a free API key at <span style={{ color: "#3d8bff" }}>aistudio.google.com</span> → Get API Key. Paste it below. It is stored only on your machine.
+          <div style={{ fontSize: 11, color: t.textSecondary }}>
+            Get a free API key at <span style={{ color: t.info }}>aistudio.google.com</span> → Get API Key. Paste it below. It is stored only on your machine.
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
@@ -7892,13 +8038,13 @@ function SettingsPage({ onApiKeySet }) {
               style={{ ...inputStyle, flex: 1 }}
             />
             <button onClick={saveApiKey} style={{
-              background: saved ? "#00d4aa20" : "#3d8bff20", border: `1px solid ${saved ? "#00d4aa40" : "#3d8bff40"}`,
-              color: saved ? "#00d4aa" : "#3d8bff", padding: "8px 16px", borderRadius: 4,
+              background: saved ? t.accentSoft : t.infoSoft, border: `1px solid ${saved ? t.accent : t.info}`,
+              color: saved ? t.accent : t.info, padding: "8px 16px", borderRadius: 4,
               cursor: "pointer", fontFamily: "monospace", fontSize: 11, whiteSpace: "nowrap",
             }}>{saved ? "✓ SAVED" : "SAVE KEY"}</button>
           </div>
-          {apiKey && <div style={{ fontSize: 10, color: "#00d4aa", fontFamily: "monospace" }}>✓ API key configured — AI features enabled</div>}
-          {!apiKey && <div style={{ fontSize: 10, color: "#ff4757", fontFamily: "monospace" }}>✗ No API key — AI features disabled</div>}
+          {apiKey && <div style={{ fontSize: 10, color: t.accent, fontFamily: "monospace" }}>✓ API key configured — AI features enabled</div>}
+          {!apiKey && <div style={{ fontSize: 10, color: t.negative, fontFamily: "monospace" }}>✗ No API key — AI features disabled</div>}
         </div>
       </Panel>
 
@@ -7906,7 +8052,7 @@ function SettingsPage({ onApiKeySet }) {
       <Panel>
         <SectionHeader title="LIVE PRICE LINKS" subtitle="Link any stock/asset to a URL for manual price reference" />
         <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-          <div style={{ fontSize: 11, color: "#7a8ba0" }}>
+          <div style={{ fontSize: 11, color: t.textSecondary }}>
             Add a URL for any symbol (e.g. a Yahoo Finance or broker page). These open directly from the dashboard so you can quickly check current prices.
           </div>
 
@@ -7914,10 +8060,10 @@ function SettingsPage({ onApiKeySet }) {
           {priceLinks.length > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {priceLinks.map((link, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "#080b12", borderRadius: 4, border: "1px solid #1a1f2e" }}>
-                  <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#00d4aa", fontSize: 12, minWidth: 60 }}>{link.symbol}</span>
-                  <a href={link.url} target="_blank" rel="noreferrer" style={{ flex: 1, color: "#3d8bff", fontSize: 11, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link.url}</a>
-                  <button onClick={() => removePriceLink(i)} style={{ background: "transparent", border: "none", color: "#ff4757", cursor: "pointer", fontSize: 14 }}>×</button>
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: t.surfaceInset, borderRadius: 4, border: `1px solid ${t.border}` }}>
+                  <span style={{ fontFamily: "monospace", fontWeight: 700, color: t.accent, fontSize: 12, minWidth: 60 }}>{link.symbol}</span>
+                  <a href={link.url} target="_blank" rel="noreferrer" style={{ flex: 1, color: t.info, fontSize: 11, textDecoration: "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link.url}</a>
+                  <button onClick={() => removePriceLink(i)} style={{ background: "transparent", border: "none", color: t.negative, cursor: "pointer", fontSize: 14 }}>×</button>
                 </div>
               ))}
             </div>
@@ -7928,7 +8074,7 @@ function SettingsPage({ onApiKeySet }) {
             <input value={newSymbol} onChange={e => setNewSymbol(e.target.value)} placeholder="Symbol (e.g. AAPL)" style={{ ...inputStyle, width: 140 }} />
             <input value={newUrl} onChange={e => setNewUrl(e.target.value)} placeholder="https://finance.yahoo.com/quote/AAPL" style={{ ...inputStyle, flex: 1 }} />
             <button onClick={addPriceLink} style={{
-              background: "#00d4aa20", border: "1px solid #00d4aa40", color: "#00d4aa",
+              background: t.accentSoft, border: `1px solid ${t.accent}`, color: t.accent,
               padding: "8px 14px", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", fontSize: 11, whiteSpace: "nowrap",
             }}>+ ADD</button>
           </div>
@@ -7944,12 +8090,12 @@ function SettingsPage({ onApiKeySet }) {
           machine actually does now. */}
       <Panel>
         <SectionHeader title="HOW MERIDIAN RUNS" subtitle="Nothing to start by hand" />
-        <div style={{ padding: 14, fontSize: 11.5, color: "#7a8ba0", lineHeight: 1.8 }}>
+        <div style={{ padding: 14, fontSize: 11.5, color: t.textSecondary, lineHeight: 1.8 }}>
           Meridian starts itself at login and checks GitHub for updates every 5 minutes, applying them
-          automatically with a backup of every changed file in <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>_archive\</code>.
+          automatically with a backup of every changed file in <code style={{ color: t.accent, fontFamily: "monospace" }}>_archive\</code>.
           Closing it keeps it closed until the next login. The UI lives at{" "}
-          <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>http://localhost:5173</code>.
-          To stop the automation entirely: <code style={{ color: "#00d4aa", fontFamily: "monospace" }}>scripts\windows\stop-auto-update.ps1</code>.
+          <code style={{ color: t.accent, fontFamily: "monospace" }}>http://localhost:5173</code>.
+          To stop the automation entirely: <code style={{ color: t.accent, fontFamily: "monospace" }}>scripts\windows\stop-auto-update.ps1</code>.
         </div>
       </Panel>
 
@@ -8059,6 +8205,15 @@ function CommandPalette({ onClose, onPage, onSymbol }) {
 }
 
 export default function TradingTerminal() {
+  return (
+    <ThemeProvider>
+      <TradingTerminalInner />
+    </ThemeProvider>
+  );
+}
+
+function TradingTerminalInner() {
+  const t = useTheme();
   const [activePage, setActivePage] = useState("changed");
   const { prices, feed, pulseCount, poll } = useMarketData();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -8088,8 +8243,8 @@ export default function TradingTerminal() {
   return (
     <div style={{
       minHeight: "100vh",
-      background: "#060810",
-      color: "#c8d6e8",
+      background: t.appBg,
+      color: t.textSecondary,
       fontFamily: "'Courier New', monospace",
       display: "flex",
       flexDirection: "column",
@@ -8098,10 +8253,10 @@ export default function TradingTerminal() {
         @keyframes tape { from { transform: translateX(0); } to { transform: translateX(-50%); } }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-        * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #1a2535 #060810; }
+        * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: ${t.scrollThumb} ${t.appBg}; }
         ::-webkit-scrollbar { width: 5px; }
-        ::-webkit-scrollbar-track { background: #060810; }
-        ::-webkit-scrollbar-thumb { background: #1a2535; border-radius: 3px; }
+        ::-webkit-scrollbar-track { background: ${t.appBg}; }
+        ::-webkit-scrollbar-thumb { background: ${t.scrollThumb}; border-radius: 3px; }
         /* Research overview: chart and analysis left, the street's view in a
            right rail. Below ~1150px the rail has nowhere useful to sit, so it
            drops underneath rather than squeezing the chart into a column too
@@ -8125,8 +8280,8 @@ export default function TradingTerminal() {
 
       {/* Top bar */}
       <div style={{
-        background: "#080b12",
-        borderBottom: "1px solid #1a1f2e",
+        background: t.chromeBg,
+        borderBottom: `1px solid ${t.border}`,
         padding: "0 20px",
         height: 48,
         display: "flex",
@@ -8138,26 +8293,26 @@ export default function TradingTerminal() {
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <button onClick={() => setSidebarCollapsed(c => !c)} style={{
-            background: "transparent", border: "none", color: "#4a6080",
+            background: "transparent", border: "none", color: t.textMuted,
             fontSize: 16, cursor: "pointer", padding: "4px 8px",
           }}>☰</button>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
-              width: 28, height: 28, background: "linear-gradient(135deg, #00d4aa, #3d8bff)",
+              width: 28, height: 28, background: `linear-gradient(135deg, ${t.accent}, ${t.info})`,
               borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 14, fontWeight: 900,
             }}>⬡</div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#e8f0fe", letterSpacing: 2, fontFamily: "monospace" }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: 2, fontFamily: "monospace" }}>
                 MERIDIAN
               </div>
-              <div style={{ fontSize: 9, color: "#3a4558", letterSpacing: 1 }}>TRADING INTELLIGENCE</div>
+              <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1 }}>TRADING INTELLIGENCE</div>
             </div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
           <PulseIndicator pulseCount={pulseCount} feed={feed} />
-          <div style={{ fontSize: 11, color: "#3a4558", fontFamily: "monospace" }}>
+          <div style={{ fontSize: 11, color: t.textFaint, fontFamily: "monospace" }}>
             {new Date().toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" })}
           </div>
         </div>
@@ -8172,8 +8327,8 @@ export default function TradingTerminal() {
         {/* Sidebar */}
         <div style={{
           width: sidebarCollapsed ? 48 : 180,
-          background: "#080b12",
-          borderRight: "1px solid #1a1f2e",
+          background: t.chromeBg,
+          borderRight: `1px solid ${t.border}`,
           transition: "width 0.2s ease",
           overflow: "hidden",
           position: "sticky",
@@ -8187,10 +8342,10 @@ export default function TradingTerminal() {
               return (
                 <button key={item.id} onClick={() => setActivePage(item.id)} style={{
                   width: "100%",
-                  background: active ? "#0d1421" : "transparent",
+                  background: active ? t.surfaceInset : "transparent",
                   border: "none",
-                  borderLeft: active ? "2px solid #00d4aa" : "2px solid transparent",
-                  color: active ? "#00d4aa" : "#4a6080",
+                  borderLeft: active ? `2px solid ${t.accent}` : "2px solid transparent",
+                  color: active ? t.accent : t.textMuted,
                   padding: sidebarCollapsed ? "10px 0" : "10px 16px",
                   textAlign: sidebarCollapsed ? "center" : "left",
                   cursor: "pointer",
