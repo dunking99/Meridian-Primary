@@ -8400,7 +8400,7 @@ function TradingTerminalInner() {
               const expanded = active && !sidebarCollapsed && item.subItems?.length;
               return (
                 <div key={item.id}>
-                  <button onClick={() => setActivePage(item.id)} style={{
+                  <button onClick={() => { setActivePage(item.id); setSubNav(null); }} style={{
                     width: "100%",
                     background: active ? t.surfaceInset : "transparent",
                     border: "none",
