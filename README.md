@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 84 routes
+  index.js               HTTP server, 106 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -109,12 +109,79 @@ server/
                          "where things stand" narrative
     integrity.js         bar validation and corruption repair
     newsscore.js         AI relevance scoring for the news feed
+    allocate.js          cash deployment across existing engines
+    rebuild/             "what portfolio should exist?" — see below
+      exposure.js        look-through decomposition and overlap detection
+      mandate.js         risk/horizon constraints, persisted
+      universe.js        investable + analysable candidate assembly
+      regime.js          market context, scales trust in timing signals only
+      diligence.js       per-candidate evidence and verdict
+      construct.js       redundancy resolution, weights, constraints, trades
+      index.js           pipeline orchestration and run history
 scripts/
   start.js               cross-platform launcher
   sync.js                history backfill
   seed-dev-db.js         synthetic history for offline engine testing;
                          refuses to run against anything but a *.test.db
+  test-rebuild.mjs       rebuild pipeline assertions against synthetic
+                         fixtures with known-correct answers
 ```
+
+## Rebuild — "what portfolio should exist?"
+
+Three engines answer three different questions and should not be confused:
+
+| Engine | Question | Scope |
+|---|---|---|
+| `rebalance.js` | How do I drift back to my existing targets? | Current holdings, needs targets set |
+| `allocate.js` | Where does this spare cash go? | New money only, never proposes a sale |
+| `rebuild/` | What should I own at all? | Everything investable; can exit and can buy new |
+
+Rebuild exists because the other two both take the current holdings as given.
+Neither can notice that two of them are the same fund wearing different names,
+and neither can propose owning something never owned.
+
+It runs as a funnel, each stage recording what it found *and what it could not
+see*:
+
+- **A · exposure** — decomposes every holding into what it actually holds.
+  Detects duplicated exposure from three independent kinds of evidence
+  (shared top-ten holdings, sector-profile similarity, return correlation),
+  each reported with its own basis. A pair with no data reads
+  `cannot-assess`, never `distinct`.
+- **B · mandate** — risk level and horizon resolve to explicit numbers
+  (position cap, sector cap, minimum position, maximum holdings, cash buffer,
+  conviction bar, signal weights). Unsatisfiable combinations are flagged.
+- **C · universe** — holdings, watchlist and the tracked universe, filtered to
+  what can actually be bought (an index, an FX pair, a yield and a futures
+  contract are all excluded) and what has enough history to be scored.
+- **D · regime** — market context. Deliberately limited: it scales how far the
+  short-horizon timing signal is trusted and supplies context for the report.
+  It never vetoes a candidate, sets a weight, or overrides the mandate.
+- **E–G · diligence** — per candidate: long-run risk-adjusted delivery, fee
+  drag, long-horizon trend, screener composite, precedent study, with
+  Bull/Bear as corroboration and news as a *gate* rather than a score.
+  Unmeasurable components are dropped from the blend, never defaulted to
+  neutral, and the share of intended evidence actually available is reported
+  alongside every conviction.
+- **H · construct** — duplicates are collapsed to one winner (conviction, then
+  cost) *before* optimising, because a mean-variance solver handed two
+  0.98-correlated assets splits between them arbitrarily. Expected returns are
+  the candidate set's average historical return tilted by conviction and
+  capped by the mandate, never raw trailing means. Caps are enforced after the
+  solve, and where the caps make full investment impossible the shortfall is
+  left in cash and explained rather than renormalised away.
+
+Output is advisory: a trade list, a risk and stress comparison against the
+current portfolio, and an explicit list of everything the run could not see.
+It never writes to holdings. **No tax modelling anywhere in this pipeline** —
+the portfolio it serves is held in wrappers where it does not apply, and a tax
+model that is not needed is a source of wrong answers rather than safety.
+
+Verify it with `MERIDIAN_DB=/tmp/rb.db node scripts/test-rebuild.mjs`, which
+builds a synthetic portfolio containing a deliberate duplicate pair, a
+deliberate junk holding and a strong unheld candidate, and asserts the
+pipeline finds each. `SEED_ONLY=1` stops after seeding, for driving the UI.
 
 ## Key endpoints
 
@@ -128,7 +195,11 @@ scripts/
 `POST /stress/shock`
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
-`/montecarlo` `/goal`
+`/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`
+
+**Rebuild** — `POST /rebuild` `/rebuild/mandate` `/rebuild/compositions/sync` ·
+`GET /rebuild/mandate` `/rebuild/mandate/options` `/rebuild/exposure`
+`/rebuild/history` `/rebuild/run?id=`
 
 **Research** — `POST /screen` `/backtest` `/walkforward` · `GET /score?symbol=`
 `/screener/strategies`

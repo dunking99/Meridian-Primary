@@ -36,6 +36,7 @@ import * as calendar from './engines/calendar.js';
 import * as bullbear from './engines/bullbear.js';
 import * as research from './engines/research.js';
 import * as allocate from './engines/allocate.js';
+import * as rebuild from './engines/rebuild/index.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -720,6 +721,78 @@ const routes = {
   },
 
   'GET /allocate/history': q => ({ plans: allocate.listPlans(Math.min(Number(q.limit) || 20, 100)) }),
+
+  // ── rebuild: "what portfolio should exist?" ────────────────
+  // Distinct from both /rebalance (drift back to existing targets) and
+  // /allocate (deploy new cash). This assesses every holding and every
+  // investable tracked symbol against a stated mandate and proposes a
+  // portfolio from scratch, including full exits and new positions.
+  // Advisory only — it returns a trade list and never touches holdings.
+  // No tax modelling anywhere in this pipeline.
+  'GET /rebuild/mandate': () => rebuild.mandate.loadMandate(),
+
+  'POST /rebuild/mandate': body => {
+    if (body.reset === true) return rebuild.mandate.resetMandate();
+    return rebuild.mandate.saveMandate(body ?? {});
+  },
+
+  'GET /rebuild/mandate/options': () => ({
+    riskLevels: Object.entries(rebuild.mandate.RISK_LEVELS).map(([id, v]) => ({ id, ...v })),
+    horizons: Object.entries(rebuild.mandate.HORIZONS).map(([id, v]) => ({ id, ...v })),
+  }),
+
+  // Exposure teardown on its own. Cheap enough to load on page open, and it is
+  // the half of the report that is useful even when nothing else can run.
+  'GET /rebuild/exposure': () => {
+    const v = pf.valuePortfolio(state.prices);
+    return {
+      teardown: rebuild.exposure.teardown(v.positions.filter(p => (p.value ?? 0) > 0)),
+      total: v.total,
+      cash: v.cash,
+    };
+  },
+
+  // Refresh stored fund composition. Needs live Yahoo; when it cannot be
+  // reached the teardown keeps working off the stored copy and says how old
+  // it is, rather than failing.
+  'POST /rebuild/compositions/sync': async body => {
+    const v = pf.valuePortfolio(state.prices);
+    const held = v.positions.map(p => p.symbol);
+    const watched = all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol);
+    const symbols = body.symbols?.length
+      ? body.symbols
+      : [...new Set([...held, ...watched, ...CORE_SYMBOLS])].filter(s => rebuild.universe.isInvestable(s));
+    return rebuild.exposure.syncCompositions(symbols, yahoo.fetchSummary, {
+      maxAgeDays: body.maxAgeDays ?? 30,
+      force: body.force === true,
+    });
+  },
+
+  'POST /rebuild': async body => {
+    const v = pf.valuePortfolio(state.prices);
+    const held = v.positions.map(p => p.symbol);
+    const watched = all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol);
+    // Widen stored history before scanning, or a candidate is skipped for
+    // thin data that a single fetch would have fixed. Scoped to what the scan
+    // will actually consider.
+    const scope = body.includeTracked === false
+      ? [...held, ...watched]
+      : [...held, ...watched, ...CORE_SYMBOLS];
+    await yahoo.ensureHistory([...new Set(scope)], { minBars: 120 });
+
+    return rebuild.runRebuild(state.prices, {
+      strategy: body.strategy ?? 'balanced',
+      includeTracked: body.includeTracked !== false,
+      includeWatchlist: body.includeWatchlist !== false,
+      extraSymbols: body.extraSymbols ?? [],
+      minTradeValue: body.minTradeValue ?? 50,
+      save: body.save !== false,
+    });
+  },
+
+  'GET /rebuild/history': q => ({ runs: rebuild.listRuns(Math.min(Number(q.limit) || 20, 100)) }),
+
+  'GET /rebuild/run': q => rebuild.getRun(Number(q.id)) ?? { error: `No rebuild run with id ${q.id}.` },
 
   'POST /montecarlo': body => {
     let returns = null;
