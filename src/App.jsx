@@ -112,6 +112,7 @@ const NAV_ITEMS = [
   { id: "risk", label: "Risk", icon: "◉" },
   { id: "research", label: "Research", icon: "◎" },
   { id: "portfolio", label: "Portfolio", icon: "◰" },
+  { id: "allocate", label: "Allocate", icon: "◈" },
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
   { id: "markets", label: "Markets", icon: "◬" },
@@ -7086,7 +7087,7 @@ function Modal({ onClose, children }) {
   );
 }
 
-function CashTile({ cashAccounts, cash, onChanged, centered = false }) {
+function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = null }) {
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState(cash);
 
@@ -7131,11 +7132,17 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false }) {
           £{cash.toLocaleString(undefined, { maximumFractionDigits: 0 })}
         </div>
       )}
+      {!editing && onDeploy && cash > 0 && (
+        <button onClick={onDeploy} style={{
+          background: "transparent", border: "none", color: "#00d4aa", fontSize: 10.5,
+          fontFamily: "monospace", cursor: "pointer", padding: 0, marginTop: 5, letterSpacing: 0.5,
+        }}>DEPLOY THIS CASH →</button>
+      )}
     </div>
   );
 }
 
-function PortfolioPageV2() {
+function PortfolioPageV2({ onNavigate }) {
   const [data, setData] = useState(null);
   const [coverage, setCoverage] = useState([]);
   const [error, setError] = useState(null);
@@ -7212,7 +7219,7 @@ function PortfolioPageV2() {
                 £{data.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
             </div>
-            <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} />
+            <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} onDeploy={onNavigate ? () => onNavigate("allocate") : null} />
           </div>
           <RiskMetric align="center" label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%`}
@@ -7373,6 +7380,230 @@ function BreakdownPanel({ title, rows }) {
   );
 }
 
+// ============================================================
+// ALLOCATE — "I have cash, what do I do with it?"
+//
+// Two modes. Manual reads the target_pct you've set on holdings (in Add/Edit
+// Position) and is a thin view onto the existing directContribution engine —
+// nothing here invents that logic. Auto needs no targets: every candidate
+// (your holdings, Screener matches, watchlist symbols) is scored from the
+// same engines that already power Research, Risk and the Screener, and cash
+// splits toward whatever clears the bar. Every line says why. Nothing here
+// ever proposes a sale — it only ever directs new money.
+// ============================================================
+
+function TiltBar({ tilt }) {
+  if (tilt == null) return <span style={{ color: "#4a6080", fontSize: 10 }}>n/a</span>;
+  const pct = Math.round(((tilt + 1) / 2) * 100);
+  const color = tilt > 0.05 ? "#00d4aa" : tilt < -0.05 ? "#ff4757" : "#7a8ba0";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ width: 64, height: 5, background: "#1a2535", borderRadius: 3, position: "relative" }}>
+        <div style={{ position: "absolute", left: "50%", top: -2, bottom: -2, width: 1, background: "#2a3550" }} />
+        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 3 }} />
+      </div>
+      <span style={{ fontSize: 10, color, fontFamily: "monospace", width: 34 }}>{tilt >= 0 ? "+" : ""}{tilt.toFixed(2)}</span>
+    </div>
+  );
+}
+
+function AllocationRow({ a, tone = "#00d4aa" }) {
+  return (
+    <div style={{ padding: "12px 18px", borderBottom: "1px solid #12161f" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>{a.symbol}</span>
+        <span style={{ fontSize: 15, fontWeight: 700, color: tone, fontFamily: "monospace" }}>
+          £{a.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+          <span style={{ fontSize: 11, color: "#7a8ba0", fontWeight: 400, marginLeft: 8 }}>{a.pctOfContribution}%</span>
+        </span>
+      </div>
+      {(a.reasons ?? []).map((r, i) => (
+        <div key={i} style={{ fontSize: 11, color: "#7a8ba0", marginTop: 4 }}>· {r}</div>
+      ))}
+    </div>
+  );
+}
+
+function AllocatePage() {
+  const [mode, setMode] = useState("auto");
+  const [amount, setAmount] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [candidates, setCandidates] = useState(null);
+  const [loadingCandidates, setLoadingCandidates] = useState(true);
+  const [cashHint, setCashHint] = useState(null);
+  const [includeScreener, setIncludeScreener] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/portfolio`).then(r => r.json()).then(d => {
+      if (!cancelled && typeof d.cash === "number") setCashHint(d.cash);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (cashHint != null && amount === "") setAmount(String(Math.max(0, Math.round(cashHint))));
+  }, [cashHint]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingCandidates(true);
+    fetch(`${API}/allocate/candidates?includeScreener=${includeScreener ? "1" : "0"}`)
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setCandidates(d); })
+      .catch(() => { if (!cancelled) setCandidates(null); })
+      .finally(() => { if (!cancelled) setLoadingCandidates(false); });
+    return () => { cancelled = true; };
+  }, [includeScreener]);
+
+  async function generate() {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { setError("Enter an amount greater than zero."); return; }
+    setBusy(true); setError(null); setResult(null);
+    try {
+      const res = await fetch(`${API}/allocate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: amt, mode, includeScreener }),
+      });
+      const d = await res.json();
+      if (d.error) setError(d.error); else setResult(d);
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const hasTargets = candidates?.scored?.some(s => s.weight > 0) ?? true; // best-effort hint only
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 860 }}>
+      <div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: "#e8f0fe", fontFamily: "monospace" }}>ALLOCATE</div>
+        <div style={{ fontSize: 13, color: "#4a6080", marginTop: 3 }}>
+          {cashHint != null ? `£${cashHint.toLocaleString(undefined, { maximumFractionDigits: 0 })} cash available` : "New cash to deploy"}
+        </div>
+      </div>
+
+      <Panel style={{ padding: 18 }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 10, color: "#4a6080", letterSpacing: 1, marginBottom: 6 }}>MODE</div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {[{ key: "auto", label: "AUTO" }, { key: "manual", label: "MY TARGETS" }].map(m => (
+                <button key={m.key} onClick={() => { setMode(m.key); setResult(null); setError(null); }} style={{
+                  background: mode === m.key ? "#0d1421" : "transparent",
+                  border: `1px solid ${mode === m.key ? "#3d8bff40" : "#1a2535"}`,
+                  color: mode === m.key ? "#c8d6e8" : "#4a6080",
+                  fontSize: 11, fontWeight: 700, padding: "7px 12px", borderRadius: 3,
+                  cursor: "pointer", fontFamily: "monospace", letterSpacing: 0.5,
+                }}>{m.label}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: "#4a6080", letterSpacing: 1, marginBottom: 6 }}>AMOUNT (£)</div>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)}
+              style={fieldStyle(140)} placeholder="5000" />
+          </div>
+          <button onClick={generate} disabled={busy} style={{ ...btn("#00d4aa"), padding: "8px 18px", fontSize: 12, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "WORKING…" : "GENERATE PLAN"}
+          </button>
+          {mode === "auto" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#7a8ba0", cursor: "pointer", paddingBottom: 8 }}>
+              <input type="checkbox" checked={includeScreener} onChange={e => setIncludeScreener(e.target.checked)} />
+              Also search the Screener for new ideas (slower — scans your whole tracked universe)
+            </label>
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: "#4a6080", marginTop: 12, lineHeight: 1.5 }}>
+          {mode === "auto"
+            ? "Scores your holdings and watchlist against Bull/Bear, Precedents, the Screener and current risk contribution — cash splits toward whatever clears the bar, with reasons. Never proposes a sale."
+            : "Reads the target % you've set on each holding (Portfolio → Add/Edit Position) and splits this amount to move you toward those targets, same as the numbers already shown there."}
+        </div>
+        {mode === "manual" && !hasTargets && (
+          <div style={{ fontSize: 11, color: "#ffa502", marginTop: 8 }}>
+            ⚠ None of your holdings have a target % set yet — set one on each holding first, or use AUTO instead.
+          </div>
+        )}
+        {error && <div style={{ fontSize: 12, color: "#ff4757", marginTop: 10 }}>⚠ {error}</div>}
+      </Panel>
+
+      {result && (
+        <>
+          <Panel>
+            <SectionHeader title="ALLOCATION" subtitle={mode === "auto" ? "ranked by conviction" : "toward your targets"} />
+            {(result.allocations ?? []).length ? (
+              result.allocations.map(a => <AllocationRow key={a.symbol} a={a} />)
+            ) : (
+              <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>
+                {(result.notes ?? []).join(" ") || "Nothing allocated."}
+              </div>
+            )}
+            {mode === "manual" && result.driftAfter != null && (
+              <div style={{ padding: "10px 18px", fontSize: 11, color: "#4a6080", borderTop: "1px solid #12161f" }}>
+                Max drift from target: {result.driftBefore}% before → {result.driftAfter}% after.
+              </div>
+            )}
+          </Panel>
+
+          {result.rejected?.length > 0 && (
+            <Panel>
+              <SectionHeader title="CONSIDERED, NOT FUNDED" subtitle={`${result.rejected.length} candidate${result.rejected.length === 1 ? "" : "s"}`} />
+              {result.rejected.map(r => (
+                <div key={r.symbol} style={{ padding: "10px 18px", borderBottom: "1px solid #12161f" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#7a8ba0", fontFamily: "monospace" }}>{r.symbol}</span>
+                    <TiltBar tilt={r.tilt} />
+                  </div>
+                  {r.reasons?.[0] && <div style={{ fontSize: 10.5, color: "#4a6080", marginTop: 3 }}>{r.reasons[0]}</div>}
+                </div>
+              ))}
+            </Panel>
+          )}
+
+          {result.secondOpinion && (
+            <Panel style={{ padding: 18 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#7a8ba0", letterSpacing: 1, marginBottom: 4 }}>
+                STATISTICAL ALTERNATIVE — {result.secondOpinion.method === "maxSharpe" ? "MAX SHARPE" : result.secondOpinion.method.toUpperCase()}
+              </div>
+              <div style={{ fontSize: 10.5, color: "#4a6080", marginBottom: 10 }}>
+                Mean-variance optimisation over the same symbols, for comparison — not the recommendation above.
+                A handful of overlapping index trackers can produce brittle, corner-heavy weights here, so treat this as a second opinion, not an answer.
+              </div>
+              {Object.entries(result.secondOpinion.weights).map(([sym, w]) => (
+                <div key={sym} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", fontFamily: "monospace" }}>
+                  <span style={{ color: "#c8d6e8" }}>{sym}</span>
+                  <span style={{ color: "#00d4aa" }}>{(w * 100).toFixed(1)}%</span>
+                </div>
+              ))}
+            </Panel>
+          )}
+        </>
+      )}
+
+      {!result && (
+        <Panel>
+          <SectionHeader title="CANDIDATES" subtitle={loadingCandidates ? "loading…" : `${candidates?.scored?.length ?? 0} in view`} />
+          {loadingCandidates ? (
+            <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>Loading…</div>
+          ) : !candidates?.scored?.length ? (
+            <div style={{ padding: 18, fontSize: 12, color: "#7a8ba0" }}>No candidates yet — add a holding or watchlist symbol first.</div>
+          ) : (
+            candidates.scored.map(s => (
+              <div key={s.symbol} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 18px", borderBottom: "1px solid #12161f" }}>
+                <span style={{ fontSize: 12, color: "#c8d6e8", fontFamily: "monospace" }}>{s.symbol}</span>
+                <TiltBar tilt={s.tilt} />
+              </div>
+            ))
+          )}
+        </Panel>
+      )}
+    </div>
+  );
+}
 
 // ============================================================
 // MAIN APP
@@ -7976,7 +8207,10 @@ export default function TradingTerminal() {
             <ResearchPage prices={prices} jumpTo={researchJump} />
           )}
           {activePage === "portfolio" && (
-            <PortfolioPageV2 />
+            <PortfolioPageV2 onNavigate={setActivePage} />
+          )}
+          {activePage === "allocate" && (
+            <AllocatePage />
           )}
           {activePage === "watchlist" && (
             <WatchlistPage />
