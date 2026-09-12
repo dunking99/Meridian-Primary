@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS instrument_composition (
 /** Normalise Yahoo's topHoldings into the stored shape.
  *  Yahoo expresses weights as fractions (0.0712 = 7.12%); kept as fractions
  *  throughout this module and only converted for display. */
+// This module is the first thing in Meridian to actually consume
+// topHoldings/sectorWeightings — every other call site only ever read
+// expenseRatio from that module. yahoo-finance2 has a long history of
+// returning some numeric fields as a plain number and others as a
+// { raw, fmt, longFmt } object depending on the module and field, and that
+// has never been exercised here before now. Rather than assume one shape and
+// silently drop every holding if it turns out to be the other, both are
+// accepted and anything else is treated as genuinely missing.
+function numeric(v) {
+  if (typeof v === 'number' && isFinite(v)) return v;
+  if (v && typeof v === 'object' && typeof v.raw === 'number' && isFinite(v.raw)) return v.raw;
+  return null;
+}
+
 export function compositionFromSummary(symbol, summary) {
   if (!summary || summary.error) return null;
 
@@ -70,17 +84,25 @@ export function compositionFromSummary(symbol, summary) {
     .map(h => ({
       symbol: h.symbol ?? null,
       name: h.holdingName ?? null,
-      weight: typeof h.holdingPercent === 'number' ? h.holdingPercent : null,
+      weight: numeric(h.holdingPercent),
     }))
     .filter(h => h.weight != null && (h.symbol || h.name));
 
-  // Yahoo returns sectorWeightings as an array of single-key objects:
-  // [{realestate: 0.0247}, {technology: 0.3112}, ...]
+  // Yahoo's documented shape is an array of single-key objects —
+  // [{realestate: 0.0247}, {technology: 0.3112}, ...] — but some responses
+  // nest it as {sector: 'realestate', weight: 0.0247} instead. Both are
+  // accepted; anything that is neither is skipped rather than guessed at.
   const sectors = {};
   for (const entry of summary.sectorWeights ?? []) {
     if (!entry || typeof entry !== 'object') continue;
+    if (typeof entry.sector === 'string' && entry.weight !== undefined) {
+      const w = numeric(entry.weight);
+      if (w != null) sectors[entry.sector] = w;
+      continue;
+    }
     for (const [k, v] of Object.entries(entry)) {
-      if (typeof v === 'number' && isFinite(v)) sectors[k] = v;
+      const w = numeric(v);
+      if (w != null) sectors[k] = w;
     }
   }
 
@@ -91,7 +113,7 @@ export function compositionFromSummary(symbol, summary) {
     symbol,
     name: summary.name ?? null,
     category: summary.instrumentLabel ?? null,
-    expenseRatio: summary.expenseRatio ?? null,
+    expenseRatio: numeric(summary.expenseRatio),
     holdings,
     sectors,
     asOf: new Date().toISOString().slice(0, 10),

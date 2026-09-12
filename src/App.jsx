@@ -7397,7 +7397,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       {tab === "allocate" && <AllocatePage />}
-      {tab === "rebuild" && <RebuildPage />}
+      {tab === "rebuild" && <RebuildErrorBoundary><RebuildPage /></RebuildErrorBoundary>}
 
       {tab === "holdings" && <>
       {/* Summary strip */}
@@ -8007,6 +8007,51 @@ function ChangelogPanel() {
   );
 }
 
+// A page-level error boundary. Nothing else in this file has one, which means
+// a single uncaught exception anywhere in a page's render tree currently
+// unmounts the entire app back to a blank screen — sidebar, header, all of
+// it. Rebuild is the first page assembling a large amount of real-money data
+// through code paths (fund composition parsing, per-candidate diligence)
+// that have not yet run against live data, so a containment boundary here is
+// not optional. Class component because React only supports error boundaries
+// as classes; nothing else in this file needs to be one.
+class RebuildErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) {
+    console.error("Rebuild page crashed:", error, info?.componentStack);
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <RebuildCrashPanel error={this.state.error} onReset={() => this.setState({ error: null })} />;
+  }
+}
+
+function RebuildCrashPanel({ error, onReset }) {
+  const t = useTheme();
+  return (
+    <Panel style={{ borderColor: t.negative }}>
+      <div style={{ padding: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: t.negative, marginBottom: 8 }}>
+          ⚠ Rebuild hit an error rendering this report
+        </div>
+        <div style={{ fontSize: 12, color: t.textSecondary, lineHeight: 1.6, marginBottom: 10 }}>
+          Nothing was traded or changed — this is a display bug, not a data problem. The rest of the app is
+          unaffected. Please share this message so it can be fixed:
+        </div>
+        <div style={{
+          fontFamily: "monospace", fontSize: 11.5, color: t.text, background: t.surfaceInset,
+          border: `1px solid ${t.border}`, borderRadius: 4, padding: "10px 12px", marginBottom: 12,
+          whiteSpace: "pre-wrap", wordBreak: "break-word",
+        }}>
+          {error?.message ?? String(error)}
+        </div>
+        <button onClick={onReset} style={toggleBtn(t, false)}>TRY AGAIN</button>
+      </div>
+    </Panel>
+  );
+}
+
 // ============================================================
 // REBUILD — "what portfolio should exist?"
 //
@@ -8174,15 +8219,18 @@ function ExposureFindings({ teardown }) {
 
 function MandateBar({ mandate, onChange, busy }) {
   const t = useTheme();
-  if (!mandate) return null;
+  // A truthy-but-incomplete mandate (a server error body, an unexpected
+  // response shape) must render as "not loaded" rather than crash on the
+  // first missing field — riskLevel and horizon are on every real mandate.
+  if (!mandate || mandate.riskLevel == null || mandate.horizon == null) return null;
 
   const numbers = [
-    ["Max position", `${mandate.maxPositionPct}%`],
-    ["Max sector", `${mandate.maxSectorPct}%`],
-    ["Min position", `${mandate.minPositionPct}%`],
-    ["Max holdings", mandate.maxPositions],
-    ["Cash buffer", `${mandate.cashBufferPct}%`],
-    ["Conviction bar", mandate.minConviction.toFixed(2)],
+    ["Max position", `${mandate.maxPositionPct ?? "—"}%`],
+    ["Max sector", `${mandate.maxSectorPct ?? "—"}%`],
+    ["Min position", `${mandate.minPositionPct ?? "—"}%`],
+    ["Max holdings", mandate.maxPositions ?? "—"],
+    ["Cash buffer", `${mandate.cashBufferPct ?? "—"}%`],
+    ["Conviction bar", typeof mandate.minConviction === "number" ? mandate.minConviction.toFixed(2) : "—"],
   ];
 
   return (
