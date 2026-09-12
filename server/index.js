@@ -35,6 +35,7 @@ import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
 import * as bullbear from './engines/bullbear.js';
 import * as research from './engines/research.js';
+import * as allocate from './engines/allocate.js';
 
 // ─── Shared state ─────────────────────────────────────────────
 
@@ -630,6 +631,95 @@ const routes = {
       v.positions.filter(p => p.targetPct != null).map(p => [p.symbol, p.targetPct / 100]));
     return directContribution(holdings, targets, body.amount ?? 0, {});
   },
+
+  // ── allocate: "I have cash, what do I do with it?" ─────────
+  // manual mode is a thin pass-through to directContribution, unchanged.
+  // auto mode scores every candidate (holdings, top Screener matches,
+  // watchlist) off the engines that already exist, and splits the cash
+  // proportional to conviction. See engines/allocate.js for the full design
+  // rationale — nothing here computes anything new.
+  // includeScreener defaults OFF here: scanning the full tracked universe
+  // (benchmarks, FX, commodities, sector ETFs — ~60 symbols) on every page
+  // load is slow and mostly irrelevant to "what do I buy", so the fast
+  // default is holdings + watchlist only. Pass ?includeScreener=1 to widen it.
+  'GET /allocate/candidates': async q => {
+    const v = pf.valuePortfolio(state.prices);
+    const holdingsSymbols = v.positions.map(p => p.symbol);
+    const wantScreener = q.includeScreener === '1';
+    const screenerUniverse = wantScreener ? trackedSymbols() : [];
+    const watchlistSymbols = all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol);
+    await yahoo.ensureHistory([...new Set([...holdingsSymbols, ...watchlistSymbols, ...screenerUniverse])], { minBars: 120 });
+
+    const candidates = allocate.assembleCandidates({
+      holdingsSymbols,
+      includeScreener: wantScreener,
+      screenerStrategy: q.strategy ?? 'balanced',
+      screenerUniverse,
+      includeWatchlist: q.includeWatchlist !== '0',
+    });
+
+    const portfolioWeights = Object.fromEntries(v.positions.map(p => [p.symbol, p.weight / 100]));
+    const portfolioSeries = pf.holdingReturnSeries(holdingsSymbols, 750);
+    const scored = candidates.map(c => allocate.scoreCandidate(c.symbol, {
+      weight: portfolioWeights[c.symbol] ?? 0, portfolioWeights, portfolioSeries,
+    }));
+    return { candidates: candidates.map(c => c.source), scored, cash: v.cash, screenerIncluded: wantScreener };
+  },
+
+  'POST /allocate': async body => {
+    const amount = Number(body.amount) || 0;
+    if (amount <= 0) return { error: 'amount must be greater than 0.' };
+    const mode = body.mode === 'manual' ? 'manual' : 'auto';
+
+    const v = pf.valuePortfolio(state.prices);
+    const holdingsForContribution = v.positions.filter(p => p.hasPrice).map(p => ({
+      symbol: p.symbol, qty: p.qty, price: p.price, avgPrice: p.avgPrice,
+      wrapper: p.wrapper, account: p.account, currency: p.currency,
+    }));
+
+    if (mode === 'manual') {
+      const targets = body.targets ?? Object.fromEntries(
+        v.positions.filter(p => p.targetPct != null).map(p => [p.symbol, p.targetPct / 100]));
+      const result = allocate.generatePlan({ amount, mode, targets, holdings: holdingsForContribution });
+      return { mode, ...result };
+    }
+
+    const holdingsSymbols = v.positions.map(p => p.symbol);
+    const wantScreener = body.includeScreener === true;
+    const screenerUniverse = wantScreener ? (body.symbols?.length ? body.symbols : trackedSymbols()) : [];
+    const watchlistSymbols = all('SELECT DISTINCT symbol FROM watchlist').map(r => r.symbol);
+    await yahoo.ensureHistory([...new Set([...holdingsSymbols, ...watchlistSymbols, ...screenerUniverse])], { minBars: 120 });
+
+    const candidates = allocate.assembleCandidates({
+      holdingsSymbols,
+      includeScreener: wantScreener,
+      screenerStrategy: body.screenerStrategy ?? 'balanced',
+      screenerUniverse,
+      includeWatchlist: body.includeWatchlist !== false,
+      extra: body.extraSymbols ?? [],
+    });
+
+    const portfolioWeights = Object.fromEntries(v.positions.map(p => [p.symbol, p.weight / 100]));
+    const portfolioSeries = pf.holdingReturnSeries(holdingsSymbols, 750);
+    const scored = candidates.map(c => allocate.scoreCandidate(c.symbol, {
+      weight: portfolioWeights[c.symbol] ?? 0, portfolioWeights, portfolioSeries,
+    }));
+
+    const result = allocate.generatePlan({
+      amount, mode, scored,
+      maxShare: body.maxShare ?? 0.5,
+      minTilt: body.minTilt ?? 0.05,
+    });
+
+    const secondOpinionSymbols = [...new Set([...holdingsSymbols, ...result.allocations.map(a => a.symbol)])];
+    const secondOpinion = allocate.optimiserSecondOpinion(secondOpinionSymbols, {
+      method: body.optimiserMethod ?? 'maxSharpe',
+    });
+
+    return { mode, ...result, scored, secondOpinion };
+  },
+
+  'GET /allocate/history': q => ({ plans: allocate.listPlans(Math.min(Number(q.limit) || 20, 100)) }),
 
   'POST /montecarlo': body => {
     let returns = null;
