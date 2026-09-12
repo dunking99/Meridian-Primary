@@ -124,6 +124,7 @@ const NAV_ITEMS = [
   ] },
   { id: "portfolio", label: "Portfolio", icon: "◰", subItems: [
     { tab: "allocate", label: "Allocate" },
+    { tab: "rebuild", label: "Rebuild" },
   ] },
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
@@ -7384,7 +7385,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${t.border}` }}>
-        {[["holdings", "Holdings"], ["allocate", "Allocate"]].map(([id, label]) => (
+        {[["holdings", "Holdings"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{
             background: "transparent", border: "none",
             borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
@@ -7396,6 +7397,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       {tab === "allocate" && <AllocatePage />}
+      {tab === "rebuild" && <RebuildPage />}
 
       {tab === "holdings" && <>
       {/* Summary strip */}
@@ -8002,6 +8004,757 @@ function ChangelogPanel() {
         </div>
       )}
     </Panel>
+  );
+}
+
+// ============================================================
+// REBUILD — "what portfolio should exist?"
+//
+// A report, not a control panel. It reads top to bottom as an argument:
+// what is actually owned, where it is owned twice, what was considered,
+// what would be built instead, what to trade, and — last and deliberately
+// not buried — everything the pipeline could not see.
+// ============================================================
+
+const pct1 = v => (v == null ? "—" : `${v >= 0 ? "" : ""}${v.toFixed(1)}%`);
+const gbp0 = v => (v == null ? "—" : `£${Math.round(v).toLocaleString()}`);
+
+function RebuildHead({ label, note, right }) {
+  const t = useTheme();
+  return (
+    <div style={{
+      display: "flex", alignItems: "baseline", justifyContent: "space-between",
+      gap: 12, padding: "11px 16px", borderBottom: `1px solid ${t.border}`, flexWrap: "wrap",
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: t.text, letterSpacing: 1.4, fontFamily: "monospace" }}>
+          {label}
+        </span>
+        {note && <span style={{ fontSize: 11, color: t.textMuted }}>{note}</span>}
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function VerdictChip({ verdict }) {
+  const t = useTheme();
+  const map = {
+    duplicate: [t.negative, "DUPLICATE"],
+    "heavy-overlap": [t.warning, "HEAVY OVERLAP"],
+    related: [t.info, "RELATED"],
+    distinct: [t.textMuted, "DISTINCT"],
+    "cannot-assess": [t.textFaint, "CANNOT ASSESS"],
+    included: [t.positive, "INCLUDED"],
+    excluded: [t.textMuted, "EXCLUDED"],
+  };
+  const [color, text] = map[verdict] ?? [t.textMuted, String(verdict ?? "").toUpperCase()];
+  return (
+    <span style={{
+      fontSize: 9.5, fontFamily: "monospace", letterSpacing: 0.8, color,
+      border: `1px solid ${color}`, borderRadius: 3, padding: "1px 6px", whiteSpace: "nowrap",
+    }}>{text}</span>
+  );
+}
+
+function ConvictionBar({ value, bar = 0 }) {
+  const t = useTheme();
+  if (value == null) return <NoData reason="No component could be measured" compact />;
+  const color = value >= 0.6 ? t.positive : value >= bar ? t.info : t.textMuted;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ width: 70, height: 5, background: t.surfaceInset, borderRadius: 3, position: "relative" }}>
+        <div style={{ width: `${Math.round(value * 100)}%`, height: "100%", background: color, borderRadius: 3 }} />
+        {bar > 0 && (
+          <div style={{
+            position: "absolute", left: `${Math.round(bar * 100)}%`, top: -2, bottom: -2,
+            width: 1, background: t.borderStrong,
+          }} title={`Mandate bar: ${bar.toFixed(2)}`} />
+        )}
+      </div>
+      <span style={{ fontSize: 10.5, color, fontFamily: "monospace", width: 30 }}>{value.toFixed(2)}</span>
+    </div>
+  );
+}
+
+/** Stage A on its own. Loads without running the full pipeline, because it is
+ *  useful even when nothing else can run. */
+function ExposureFindings({ teardown }) {
+  const t = useTheme();
+  if (!teardown) return null;
+  const clusters = teardown.redundancy?.clusters ?? [];
+
+  return (
+    <Panel>
+      <RebuildHead
+        label="WHAT YOU ACTUALLY OWN"
+        note={`${teardown.coverage.positions} holdings · ${teardown.coverage.withComposition} with published composition`}
+      />
+
+      <div style={{ padding: "12px 16px" }}>
+        {clusters.length === 0 ? (
+          <div style={{ fontSize: 12, color: t.textSecondary }}>
+            No duplicated exposure found between holdings.
+            {teardown.coverage.note && (
+              <span style={{ color: t.warning }}> {teardown.coverage.note}</span>
+            )}
+          </div>
+        ) : (
+          clusters.map(c => (
+            <div key={c.anchor} style={{
+              border: `1px solid ${t.negative}`, borderRadius: 6,
+              padding: "10px 12px", marginBottom: 10, background: t.surfaceAlt,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                <VerdictChip verdict="duplicate" />
+                <span style={{ fontSize: 12.5, color: t.text, fontFamily: "monospace", fontWeight: 700 }}>
+                  {c.members.join("  +  ")}
+                </span>
+                <span style={{ fontSize: 11, color: t.negative }}>{c.combinedWeight}% of portfolio</span>
+              </div>
+              <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.55 }}>{c.explain}</div>
+              {c.pairs?.map((p, i) => (
+                <div key={i} style={{ fontSize: 10.5, color: t.textMuted, marginTop: 5, lineHeight: 1.5 }}>
+                  {p.basis.join(" · ")}
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </div>
+
+      {teardown.names?.duplicatedAcross?.length > 0 && (
+        <>
+          <RebuildHead
+            label="HELD THROUGH MORE THAN ONE FUND"
+            note={teardown.names.note ? "floors only — top-ten holdings are all that is published" : null}
+          />
+          <div style={{ padding: "8px 16px 12px" }}>
+            {teardown.names.duplicatedAcross.slice(0, 8).map(n => (
+              <div key={n.name} style={{
+                display: "flex", justifyContent: "space-between", gap: 10,
+                padding: "5px 0", borderBottom: `1px solid ${t.borderSubtle}`, fontSize: 11.5,
+              }}>
+                <span style={{ color: t.text }}>{n.name}</span>
+                <span style={{ color: t.textMuted, fontFamily: "monospace" }}>
+                  ≥{n.pctOfPortfolio}% · via {n.heldVia.join(", ")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {teardown.sectors?.sectors?.length > 0 && (
+        <>
+          <RebuildHead label="SECTOR, SEEN THROUGH THE FUNDS" note={`${teardown.sectors.covered}% of the portfolio could be seen through`} />
+          <div style={{ padding: "8px 16px 14px" }}>
+            {teardown.sectors.sectors.slice(0, 8).map(s => (
+              <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10, padding: "3px 0" }}>
+                <span style={{ fontSize: 11.5, color: t.textSecondary, width: 150 }}>{s.label}</span>
+                <div style={{ flex: 1, height: 6, background: t.surfaceInset, borderRadius: 3 }}>
+                  <div style={{ width: `${s.pctOfSeen}%`, height: "100%", background: t.info, borderRadius: 3 }} />
+                </div>
+                <span style={{ fontSize: 11, color: t.textMuted, fontFamily: "monospace", width: 48, textAlign: "right" }}>
+                  {s.pctOfSeen}%
+                </span>
+              </div>
+            ))}
+            {teardown.sectors.note && (
+              <div style={{ fontSize: 10.5, color: t.warning, marginTop: 8, lineHeight: 1.5 }}>
+                {teardown.sectors.note}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function MandateBar({ mandate, onChange, busy }) {
+  const t = useTheme();
+  if (!mandate) return null;
+
+  const numbers = [
+    ["Max position", `${mandate.maxPositionPct}%`],
+    ["Max sector", `${mandate.maxSectorPct}%`],
+    ["Min position", `${mandate.minPositionPct}%`],
+    ["Max holdings", mandate.maxPositions],
+    ["Cash buffer", `${mandate.cashBufferPct}%`],
+    ["Conviction bar", mandate.minConviction.toFixed(2)],
+  ];
+
+  return (
+    <Panel>
+      <RebuildHead label="MANDATE" note="what “better” means here — everything downstream follows from these" />
+      <div style={{ padding: "12px 16px" }}>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 1, marginBottom: 5 }}>RISK</div>
+            <div style={{ display: "flex", gap: 5 }}>
+              {["low", "balanced", "high"].map(id => (
+                <button key={id} disabled={busy} onClick={() => onChange({ riskLevel: id })}
+                  style={rangeBtn(t, mandate.riskLevel === id)}>
+                  {id}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 1, marginBottom: 5 }}>HORIZON</div>
+            <div style={{ display: "flex", gap: 5 }}>
+              {["short", "medium", "long"].map(id => (
+                <button key={id} disabled={busy} onClick={() => onChange({ horizon: id })}
+                  style={rangeBtn(t, mandate.horizon === id)}>
+                  {id}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 18, flexWrap: "wrap" }}>
+          {numbers.map(([label, value]) => (
+            <div key={label}>
+              <div style={{ fontSize: 9.5, color: t.textFaint, letterSpacing: 0.8 }}>{label.toUpperCase()}</div>
+              <div style={{ fontSize: 14, color: t.text, fontFamily: "monospace", fontWeight: 700 }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 11, lineHeight: 1.55 }}>
+          Signal weights for this horizon —{" "}
+          {Object.entries(mandate.signalWeights ?? {})
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => `${k} ${Math.round(v * 100)}%`)
+            .join(" · ")}
+        </div>
+
+        {mandate.conflicts?.length > 0 && mandate.conflicts.map((c, i) => (
+          <div key={i} style={{
+            marginTop: 9, fontSize: 11, color: t.warning,
+            border: `1px solid ${t.warning}`, borderRadius: 4, padding: "7px 10px", background: t.warningSoft,
+          }}>⚠ {c}</div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function FunnelTable({ diligence, mandate }) {
+  const t = useTheme();
+  const [open, setOpen] = useState(null);
+  if (!diligence?.candidates?.length) return null;
+
+  const rows = [...diligence.candidates].sort((a, b) => (b.conviction ?? -1) - (a.conviction ?? -1));
+
+  return (
+    <Panel>
+      <RebuildHead
+        label="EVERY CANDIDATE CONSIDERED"
+        note={`${diligence.assessed} assessed · ${diligence.included} cleared the bar · ${diligence.excluded} did not`}
+      />
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${t.border}` }}>
+              {["", "Symbol", "Conviction", "Evidence", "Verdict", "Why"].map(h => (
+                <th key={h} style={{
+                  textAlign: h === "Conviction" || h === "Evidence" ? "left" : "left",
+                  padding: "7px 10px", color: t.textMuted, fontSize: 10, letterSpacing: 1, fontWeight: 400,
+                }}>{h.toUpperCase()}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(c => (
+              <React.Fragment key={c.symbol}>
+                <tr
+                  onClick={() => setOpen(open === c.symbol ? null : c.symbol)}
+                  style={{ borderBottom: `1px solid ${t.borderSubtle}`, cursor: "pointer" }}
+                >
+                  <td style={{ padding: "7px 10px", color: t.textFaint, width: 16 }}>
+                    {open === c.symbol ? "▾" : "▸"}
+                  </td>
+                  <td style={{ padding: "7px 10px", fontFamily: "monospace", color: t.text }}>
+                    {c.symbol}
+                    {c.held && <span style={{ color: t.textFaint, marginLeft: 6, fontSize: 10 }}>held</span>}
+                  </td>
+                  <td style={{ padding: "7px 10px" }}>
+                    <ConvictionBar value={c.conviction} bar={mandate?.minConviction ?? 0} />
+                  </td>
+                  <td style={{ padding: "7px 10px", fontFamily: "monospace", color: c.evidence < 0.5 ? t.warning : t.textMuted }}>
+                    {c.evidence == null ? "—" : `${Math.round(c.evidence * 100)}%`}
+                  </td>
+                  <td style={{ padding: "7px 10px" }}><VerdictChip verdict={c.verdict} /></td>
+                  <td style={{ padding: "7px 10px", color: t.textSecondary, lineHeight: 1.45 }}>{c.reason}</td>
+                </tr>
+
+                {open === c.symbol && (
+                  <tr>
+                    <td colSpan={6} style={{ background: t.surfaceAlt, padding: "10px 16px 14px" }}>
+                      <div style={{ display: "flex", gap: 22, flexWrap: "wrap" }}>
+                        {Object.entries(c.components ?? {}).map(([name, comp]) => (
+                          <div key={name} style={{ minWidth: 150 }}>
+                            <div style={{ fontSize: 9.5, color: t.textFaint, letterSpacing: 0.8, marginBottom: 3 }}>
+                              {name.toUpperCase()}
+                            </div>
+                            {comp.available ? (
+                              <>
+                                <div style={{ fontSize: 13, color: t.text, fontFamily: "monospace" }}>
+                                  {comp.value.toFixed(2)}
+                                  <span style={{ fontSize: 10, color: t.textMuted, marginLeft: 6 }}>
+                                    conf {(comp.confidence ?? 1).toFixed(2)}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: 10, color: t.textMuted, marginTop: 2, lineHeight: 1.45 }}>
+                                  {comp.source}
+                                </div>
+                              </>
+                            ) : (
+                              <div style={{ fontSize: 10.5, color: t.textFaint, lineHeight: 1.45 }}>
+                                not measured — {comp.reason}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {c.cautions?.length > 0 && (
+                        <div style={{ marginTop: 10 }}>
+                          {c.cautions.map((w, i) => (
+                            <div key={i} style={{ fontSize: 11, color: t.warning, lineHeight: 1.5 }}>⚠ {w}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 10, lineHeight: 1.5 }}>
+                        News gate: {c.news?.reason ?? "not run"}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function ProposalPanel({ construction, redundancy, total }) {
+  const t = useTheme();
+  if (!construction?.ok) {
+    return (
+      <Panel>
+        <RebuildHead label="PROPOSED PORTFOLIO" />
+        <div style={{ padding: "16px", fontSize: 12, color: t.negative, lineHeight: 1.6 }}>
+          ⚠ {construction?.error ?? "No portfolio could be constructed."}
+        </div>
+      </Panel>
+    );
+  }
+
+  const weights = Object.entries(construction.targetWeights).sort((a, b) => b[1] - a[1]);
+  const invested = construction.constraints?.investedShare ?? weights.reduce((a, [, w]) => a + w, 0);
+
+  return (
+    <Panel>
+      <RebuildHead
+        label="PROPOSED PORTFOLIO"
+        note={`${construction.method} · ${weights.length} holdings · ${(invested * 100).toFixed(1)}% invested`}
+      />
+
+      <div style={{ padding: "12px 16px" }}>
+        {weights.map(([symbol, w]) => (
+          <div key={symbol} style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0" }}>
+            <span style={{ fontSize: 12, fontFamily: "monospace", color: t.text, width: 90 }}>{symbol}</span>
+            <div style={{ flex: 1, height: 8, background: t.surfaceInset, borderRadius: 3 }}>
+              <div style={{ width: `${w * 100}%`, height: "100%", background: t.accent, borderRadius: 3 }} />
+            </div>
+            <span style={{ fontSize: 11.5, fontFamily: "monospace", color: t.text, width: 52, textAlign: "right" }}>
+              {(w * 100).toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {redundancy?.dropped?.length > 0 && (
+        <>
+          <RebuildHead label="COLLAPSED AS DUPLICATES" note="resolved before optimising, not by it" />
+          <div style={{ padding: "8px 16px 12px" }}>
+            {redundancy.dropped.map(d => (
+              <div key={d.symbol} style={{ fontSize: 11.5, color: t.textSecondary, padding: "4px 0", lineHeight: 1.5 }}>
+                <span style={{ fontFamily: "monospace", color: t.negative }}>{d.symbol}</span>{" "}
+                {d.reason}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {construction.sectorExposure?.length > 0 && (
+        <>
+          <RebuildHead label="SECTOR EXPOSURE OF THE PROPOSAL" note="proportional look-through, not fund labels" />
+          <div style={{ padding: "8px 16px 12px" }}>
+            {construction.sectorExposure.slice(0, 8).map(s => (
+              <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 10, padding: "3px 0" }}>
+                <span style={{ fontSize: 11.5, color: t.textSecondary, width: 150 }}>{s.label}</span>
+                <div style={{ flex: 1, height: 6, background: t.surfaceInset, borderRadius: 3 }}>
+                  <div style={{ width: `${s.pct}%`, height: "100%", background: t.info, borderRadius: 3 }} />
+                </div>
+                <span style={{ fontSize: 11, color: t.textMuted, fontFamily: "monospace", width: 48, textAlign: "right" }}>
+                  {s.pct}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {(construction.constraints?.adjustments?.length > 0 || construction.constraints?.note) && (
+        <div style={{ padding: "10px 16px 14px", borderTop: `1px solid ${t.borderSubtle}` }}>
+          {construction.constraints.adjustments.map((a, i) => (
+            <div key={i} style={{ fontSize: 10.5, color: t.textMuted, lineHeight: 1.55, marginBottom: 4 }}>
+              <span style={{ color: t.textFaint, fontFamily: "monospace" }}>{a.rule}</span> — {a.detail}
+            </div>
+          ))}
+          {construction.constraints.note && (
+            <div style={{ fontSize: 10.5, color: t.warning, lineHeight: 1.55, marginTop: 4 }}>
+              {construction.constraints.note}
+            </div>
+          )}
+          {construction.expectedReturns?.note && (
+            <div style={{ fontSize: 10.5, color: t.textMuted, lineHeight: 1.55, marginTop: 6 }}>
+              {construction.expectedReturns.note}
+            </div>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ActionTable({ construction }) {
+  const t = useTheme();
+  if (!construction?.ok) return null;
+  const { actions, summary } = construction;
+
+  const colorFor = a => ({
+    BUY: t.positive, ADD: t.positive, SELL: t.negative, TRIM: t.warning, HOLD: t.textMuted,
+  }[a] ?? t.textMuted);
+
+  return (
+    <Panel>
+      <RebuildHead
+        label="WHAT TO TRADE"
+        note={`${summary.sells} to sell · ${summary.buys} to buy · ${summary.turnoverPct}% turnover · ${gbp0(summary.cashAfter)} left in cash`}
+      />
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${t.border}` }}>
+              {["Action", "Symbol", "Now", "Target", "Change", "Units"].map(h => (
+                <th key={h} style={{
+                  textAlign: h === "Action" || h === "Symbol" ? "left" : "right",
+                  padding: "7px 10px", color: t.textMuted, fontSize: 10, letterSpacing: 1, fontWeight: 400,
+                }}>{h.toUpperCase()}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {actions.map(a => (
+              <tr key={a.symbol} style={{ borderBottom: `1px solid ${t.borderSubtle}` }}>
+                <td style={{ padding: "7px 10px" }}>
+                  <span style={{
+                    fontSize: 10, fontFamily: "monospace", letterSpacing: 0.8, color: colorFor(a.action),
+                    border: `1px solid ${colorFor(a.action)}`, borderRadius: 3, padding: "1px 6px",
+                  }}>{a.action}</span>
+                </td>
+                <td style={{ padding: "7px 10px", fontFamily: "monospace", color: t.text }}>{a.symbol}</td>
+                <td style={{ padding: "7px 10px", textAlign: "right", color: t.textMuted, fontFamily: "monospace" }}>
+                  {a.currentWeightPct.toFixed(1)}%
+                </td>
+                <td style={{ padding: "7px 10px", textAlign: "right", color: t.text, fontFamily: "monospace" }}>
+                  {a.targetWeightPct.toFixed(1)}%
+                </td>
+                <td style={{
+                  padding: "7px 10px", textAlign: "right", fontFamily: "monospace",
+                  color: a.deltaValue > 0 ? t.positive : a.deltaValue < 0 ? t.negative : t.textMuted,
+                }}>
+                  {a.deltaValue >= 0 ? "+" : "−"}{gbp0(Math.abs(a.deltaValue)).replace("£", "£")}
+                </td>
+                <td style={{ padding: "7px 10px", textAlign: "right", fontFamily: "monospace", color: t.textMuted }}>
+                  {a.units == null ? <NoData reason="No price known for this holding" compact /> : a.units.toFixed(2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ padding: "9px 16px", fontSize: 10.5, color: t.textFaint, lineHeight: 1.55 }}>
+        Advisory only — nothing here is placed or recorded. Moves smaller than {gbp0(summary.minTradeValue)} are
+        shown as HOLD rather than proposed as trades.
+      </div>
+    </Panel>
+  );
+}
+
+function RiskComparePanel({ risk, stress }) {
+  const t = useTheme();
+  if (!risk?.current?.available || !risk?.proposed?.available) {
+    return (
+      <Panel>
+        <RebuildHead label="RISK: NOW vs PROPOSED" />
+        <div style={{ padding: 16, fontSize: 11.5, color: t.textMuted }}>
+          {risk?.current?.reason ?? risk?.proposed?.reason ?? "Not enough overlapping history to compare."}
+        </div>
+      </Panel>
+    );
+  }
+
+  const rows = [
+    ["Annual volatility", `${risk.current.annualVolPct}%`, `${risk.proposed.annualVolPct}%`, risk.changes?.annualVolPct, true],
+    ["Diversification ratio", risk.current.diversificationRatio, risk.proposed.diversificationRatio, risk.changes?.diversificationRatio, false],
+    ["Effective holdings", risk.current.effectiveHoldings, risk.proposed.effectiveHoldings, risk.changes?.effectiveHoldings, false],
+    ["Largest position", `${risk.current.largestWeightPct}%`, `${risk.proposed.largestWeightPct}%`, risk.changes?.largestWeightPct, true],
+  ];
+
+  return (
+    <Panel>
+      <RebuildHead label="RISK: NOW vs PROPOSED" note="same measure, computed identically for both" />
+      <div style={{ padding: "10px 16px" }}>
+        {rows.map(([label, now, next, delta, lowerIsBetter]) => (
+          <div key={label} style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "7px 0", borderBottom: `1px solid ${t.borderSubtle}`, fontSize: 11.5, gap: 10,
+          }}>
+            <span style={{ color: t.textSecondary, flex: 1 }}>{label}</span>
+            <span style={{ color: t.textMuted, fontFamily: "monospace", width: 70, textAlign: "right" }}>{now}</span>
+            <span style={{ color: t.textFaint, width: 18, textAlign: "center" }}>→</span>
+            <span style={{ color: t.text, fontFamily: "monospace", width: 70, textAlign: "right" }}>{next}</span>
+            <span style={{
+              width: 62, textAlign: "right", fontFamily: "monospace", fontSize: 11,
+              color: delta == null ? t.textFaint
+                : (lowerIsBetter ? delta < 0 : delta > 0) ? t.positive
+                : delta === 0 ? t.textMuted : t.negative,
+            }}>
+              {delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta}`}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {stress?.comparison && (
+        <>
+          <RebuildHead label="WORST STORED SCENARIO" note={stress.comparison.scenario} />
+          <div style={{ padding: "10px 16px 12px", display: "flex", gap: 26, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 9.5, color: t.textFaint, letterSpacing: 0.8 }}>CURRENT</div>
+              <div style={{ fontSize: 17, color: t.negative, fontFamily: "monospace", fontWeight: 700 }}>
+                {pct1(stress.comparison.worstCaseCurrentPct)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9.5, color: t.textFaint, letterSpacing: 0.8 }}>PROPOSED</div>
+              <div style={{ fontSize: 17, color: t.negative, fontFamily: "monospace", fontWeight: 700 }}>
+                {pct1(stress.comparison.worstCaseProposedPct)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9.5, color: t.textFaint, letterSpacing: 0.8 }}>DIFFERENCE</div>
+              <div style={{
+                fontSize: 17, fontFamily: "monospace", fontWeight: 700,
+                color: stress.comparison.differencePct > 0 ? t.positive : t.negative,
+              }}>
+                {stress.comparison.differencePct >= 0 ? "+" : ""}{stress.comparison.differencePct}pp
+              </div>
+            </div>
+          </div>
+          {stress.note && (
+            <div style={{ padding: "0 16px 12px", fontSize: 10.5, color: t.textFaint, lineHeight: 1.55 }}>
+              {stress.note}
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function DataGapsPanel({ gaps }) {
+  const t = useTheme();
+  if (!gaps?.length) return null;
+  return (
+    <Panel style={{ borderColor: t.warning }}>
+      <RebuildHead label="WHAT THIS REPORT COULD NOT SEE" note={`${gaps.length} gaps`} />
+      <div style={{ padding: "10px 16px 14px" }}>
+        {gaps.map((g, i) => (
+          <div key={i} style={{ padding: "6px 0", borderBottom: i < gaps.length - 1 ? `1px solid ${t.borderSubtle}` : "none" }}>
+            <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.55 }}>
+              <span style={{ fontFamily: "monospace", color: t.warning, fontSize: 10, letterSpacing: 0.8 }}>
+                {g.stage.toUpperCase()}
+              </span>{" "}
+              {g.issue}
+            </div>
+            {g.detail && (
+              <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 3, fontFamily: "monospace" }}>
+                {Array.isArray(g.detail) ? g.detail.join(", ") : g.detail}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function RebuildPage() {
+  const t = useTheme();
+  const [mandate, setMandate] = useState(null);
+  const [exposure, setExposure] = useState(null);
+  const [report, setReport] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
+  const [includeTracked, setIncludeTracked] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API}/rebuild/mandate`).then(r => r.json()).then(setMandate).catch(() => setMandate(null));
+    fetch(`${API}/rebuild/exposure`).then(r => r.json()).then(setExposure).catch(() => setExposure(null));
+  }, []);
+
+  async function saveMandate(patch) {
+    try {
+      const res = await fetch(`${API}/rebuild/mandate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      setMandate(await res.json());
+    } catch { /* leave the current mandate showing rather than blanking it */ }
+  }
+
+  async function run() {
+    setRunning(true); setError(null);
+    try {
+      const res = await fetch(`${API}/rebuild`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeTracked }),
+      });
+      const data = await res.json();
+      if (data.error && !data.stages) setError(data.error);
+      else setReport(data);
+    } catch {
+      setError("Could not reach the server.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function syncCompositions() {
+    setSyncing(true); setSyncMsg(null);
+    try {
+      const res = await fetch(`${API}/rebuild/compositions/sync`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+      const d = await res.json();
+      setSyncMsg(`${d.updated?.length ?? 0} updated, ${d.skipped?.length ?? 0} skipped, ${d.failed?.length ?? 0} failed.`);
+      const ex = await fetch(`${API}/rebuild/exposure`).then(r => r.json());
+      setExposure(ex);
+    } catch {
+      setSyncMsg("Composition sync could not reach Yahoo. The teardown is still running on stored data.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: t.text, fontFamily: "monospace", letterSpacing: 1 }}>
+          REBUILD
+        </div>
+        <div style={{ fontSize: 12, color: t.textMuted, marginTop: 4, lineHeight: 1.6, maxWidth: 780 }}>
+          Assesses every holding and every investable tracked symbol against the mandate below, then proposes the
+          portfolio it would build from scratch — including selling out of things entirely and buying things never
+          held. Advisory only: it produces a trade list and never touches your holdings.
+        </div>
+      </div>
+
+      <MandateBar mandate={mandate} onChange={saveMandate} busy={running} />
+
+      <Panel>
+        <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <button onClick={run} disabled={running} style={{
+            background: running ? t.surfaceInset : t.accentSoft,
+            border: `1px solid ${t.accent}`, color: t.accent,
+            padding: "9px 20px", borderRadius: 4, cursor: running ? "default" : "pointer",
+            fontFamily: "monospace", fontSize: 12, fontWeight: 700, letterSpacing: 1,
+          }}>
+            {running ? "RUNNING…" : "RUN REBUILD"}
+          </button>
+
+          <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 11.5, color: t.textSecondary, cursor: "pointer" }}>
+            <input type="checkbox" checked={includeTracked} onChange={e => setIncludeTracked(e.target.checked)} />
+            Search the whole tracked universe, not just holdings and watchlist
+          </label>
+
+          <button onClick={syncCompositions} disabled={syncing} style={toggleBtn(t, false)}>
+            {syncing ? "SYNCING…" : "SYNC FUND COMPOSITION"}
+          </button>
+          {syncMsg && <span style={{ fontSize: 11, color: t.textMuted }}>{syncMsg}</span>}
+        </div>
+
+        {error && (
+          <div style={{ padding: "0 16px 12px", fontSize: 12, color: t.negative }}>⚠ {error}</div>
+        )}
+        {report && (
+          <div style={{ padding: "0 16px 12px", fontSize: 10.5, color: t.textFaint }}>
+            Generated {new Date(report.generatedAt).toLocaleString("en-GB")} in {report.elapsedMs}ms.
+          </div>
+        )}
+      </Panel>
+
+      <ExposureFindings teardown={report?.stages?.exposure ?? exposure?.teardown} />
+
+      {report?.stages?.regime && (
+        <Panel>
+          <RebuildHead label="MARKET CONTEXT" note={report.stages.regime.label} />
+          <div style={{ padding: "11px 16px" }}>
+            <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.6 }}>
+              {report.stages.regime.explain}
+            </div>
+            <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 7, lineHeight: 1.55 }}>
+              {report.stages.regime.role}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {report && <FunnelTable diligence={report.stages.diligence} mandate={report.mandate} />}
+      {report && (
+        <ProposalPanel
+          construction={report.stages.construction}
+          redundancy={report.stages.redundancy}
+          total={report.portfolio.total}
+        />
+      )}
+      {report && <ActionTable construction={report.stages.construction} />}
+      {report && <RiskComparePanel risk={report.stages.construction?.risk} stress={report.stress} />}
+      {report && <DataGapsPanel gaps={report.dataGaps} />}
+
+      {!report && !running && (
+        <Panel>
+          <div style={{ padding: "22px 16px", textAlign: "center", fontSize: 12, color: t.textMuted, lineHeight: 1.6 }}>
+            Nothing run yet. The exposure teardown above works from stored data;
+            press <span style={{ color: t.accent, fontFamily: "monospace" }}>RUN REBUILD</span> for the full assessment.
+          </div>
+        </Panel>
+      )}
+    </div>
   );
 }
 
