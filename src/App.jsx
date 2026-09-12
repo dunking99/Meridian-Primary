@@ -112,7 +112,6 @@ const NAV_ITEMS = [
   { id: "risk", label: "Risk", icon: "◉" },
   { id: "research", label: "Research", icon: "◎" },
   { id: "portfolio", label: "Portfolio", icon: "◰" },
-  { id: "allocate", label: "Allocate", icon: "◈" },
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
   { id: "markets", label: "Markets", icon: "◬" },
@@ -7142,7 +7141,8 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = 
   );
 }
 
-function PortfolioPageV2({ onNavigate }) {
+function PortfolioPageV2() {
+  const [tab, setTab] = useState("holdings");
   const [data, setData] = useState(null);
   const [coverage, setCoverage] = useState([]);
   const [error, setError] = useState(null);
@@ -7208,6 +7208,21 @@ function PortfolioPageV2({ onNavigate }) {
         </div>
       </div>
 
+      <div style={{ display: "flex", gap: 2, borderBottom: "1px solid #1a1f2e" }}>
+        {[["holdings", "Holdings"], ["allocate", "Allocate"]].map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{
+            background: "transparent", border: "none",
+            borderBottom: tab === id ? "2px solid #00d4aa" : "2px solid transparent",
+            color: tab === id ? "#00d4aa" : "#4a6080",
+            padding: "8px 14px", cursor: "pointer", fontFamily: "monospace",
+            fontSize: 11, letterSpacing: 1, textTransform: "uppercase",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "allocate" && <AllocatePage />}
+
+      {tab === "holdings" && <>
       {/* Summary strip */}
       <Panel>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
@@ -7219,7 +7234,7 @@ function PortfolioPageV2({ onNavigate }) {
                 £{data.invested.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
             </div>
-            <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} onDeploy={onNavigate ? () => onNavigate("allocate") : null} />
+            <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} onDeploy={() => setTab("allocate")} />
           </div>
           <RiskMetric align="center" label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
             sub={`${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%`}
@@ -7317,6 +7332,7 @@ function PortfolioPageV2({ onNavigate }) {
         <BreakdownPanel title="CURRENCY" rows={data.breakdowns.currency} />
         <BreakdownPanel title="WRAPPER" rows={data.breakdowns.wrapper} />
       </div>
+      </>}
     </div>
   );
 }
@@ -8207,10 +8223,7 @@ export default function TradingTerminal() {
             <ResearchPage prices={prices} jumpTo={researchJump} />
           )}
           {activePage === "portfolio" && (
-            <PortfolioPageV2 onNavigate={setActivePage} />
-          )}
-          {activePage === "allocate" && (
-            <AllocatePage />
+            <PortfolioPageV2 />
           )}
           {activePage === "watchlist" && (
             <WatchlistPage />
