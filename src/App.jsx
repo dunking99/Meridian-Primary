@@ -107,14 +107,35 @@ const DISPLAY_NAMES = {
   "GBPUSD=X": "GBP/USD", "EURUSD=X": "EUR/USD",
 };
 
+// Sub-items are the internal tabs of a page that's worth surfacing directly
+// in the sidebar rather than making the user land on the front tab and click
+// again. The page's own front/overview tab is never listed here — that's
+// what clicking the parent item already does.
 const NAV_ITEMS = [
   { id: "changed", label: "What Changed", icon: "⬡" },
   { id: "risk", label: "Risk", icon: "◉" },
-  { id: "research", label: "Research", icon: "◎" },
-  { id: "portfolio", label: "Portfolio", icon: "◰" },
+  { id: "research", label: "Research", icon: "◎", subItems: [
+    { tab: "compare", label: "Compare" },
+    { tab: "precedents", label: "Precedents" },
+    { tab: "news", label: "News" },
+    { tab: "bullbear", label: "Bull / Bear" },
+    { tab: "filings", label: "Filings" },
+    { tab: "ai", label: "AI Note" },
+  ] },
+  { id: "portfolio", label: "Portfolio", icon: "◰", subItems: [
+    { tab: "allocate", label: "Allocate" },
+  ] },
   { id: "watchlist", label: "Watchlist", icon: "◫" },
   { id: "screener", label: "Screener", icon: "▦" },
-  { id: "markets", label: "Markets", icon: "◬" },
+  { id: "markets", label: "Markets", icon: "◬", subItems: [
+    { tab: "indices", label: "Indices" },
+    { tab: "fx", label: "FX" },
+    { tab: "commod", label: "Commodities" },
+    { tab: "sectors", label: "Sectors" },
+    { tab: "rates", label: "Rates" },
+    { tab: "crypto", label: "Crypto" },
+    { tab: "banks", label: "Central Banks" },
+  ] },
   { id: "news", label: "News", icon: "◉" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
@@ -2037,8 +2058,16 @@ const periodChange = s => (Array.isArray(s) && s.length > 1 && s[0] ? (s[s.lengt
 
 // ─── Page ────────────────────────────────────────────────────
 
-function MarketsPage({ prices }) {
+function MarketsPage({ prices, tabJump, onTabChange }) {
   const [tab, setTab] = useState("overview");
+
+  // Arriving via a sidebar sub-item (e.g. Markets > FX).
+  useEffect(() => {
+    if (!tabJump?.tab) return;
+    setTab(tabJump.tab);
+  }, [tabJump?.ts]);
+
+  useEffect(() => { onTabChange?.(tab); }, [tab]);
   const [hist, setHist] = useState({});
   const [histLoaded, setHistLoaded] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -5842,7 +5871,7 @@ function ResearchBullBearTab({ symbol, name, bullbearData, bullbearLoading, onRe
   );
 }
 
-function ResearchPage({ prices, jumpTo }) {
+function ResearchPage({ prices, jumpTo, tabJump, onTabChange }) {
   const trackedSymbols = Object.keys(DISPLAY_NAMES);
   const [query, setQuery] = useState("^GSPC");
   const [symbol, setSymbol] = useState("^GSPC");
@@ -5934,6 +5963,15 @@ function ResearchPage({ prices, jumpTo }) {
     selectSymbol(jumpTo.symbol.toUpperCase(), jumpTo.name ?? null);
     setTab("overview");
   }, [jumpTo?.ts]);
+
+  // Arriving via a sidebar sub-item (e.g. Research > Precedents) — same
+  // symbol, just a different tab.
+  useEffect(() => {
+    if (!tabJump?.tab) return;
+    setTab(tabJump.tab);
+  }, [tabJump?.ts]);
+
+  useEffect(() => { onTabChange?.(tab); }, [tab]);
 
   const runSearch = () => {
     const s = query.trim();
@@ -7270,9 +7308,17 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = 
   );
 }
 
-function PortfolioPageV2() {
+function PortfolioPageV2({ tabJump, onTabChange } = {}) {
   const t = useTheme();
   const [tab, setTab] = useState("holdings");
+
+  // Arriving via a sidebar sub-item (e.g. Portfolio > Allocate).
+  useEffect(() => {
+    if (!tabJump?.tab) return;
+    setTab(tabJump.tab);
+  }, [tabJump?.ts]);
+
+  useEffect(() => { onTabChange?.(tab); }, [tab]);
   const [data, setData] = useState(null);
   const [coverage, setCoverage] = useState([]);
   const [error, setError] = useState(null);
@@ -8228,6 +8274,18 @@ function TradingTerminalInner() {
   // same symbol twice still re-triggers the effect listening to it.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [researchJump, setResearchJump] = useState(null);
+
+  // Sidebar sub-items (Research/Portfolio/Markets tabs). subNav carries a
+  // timestamp so clicking the same sub-item twice still re-fires the target
+  // page's effect. activeTabs mirrors each page's current tab back up so the
+  // sidebar can highlight whichever sub-item is actually showing.
+  const [subNav, setSubNav] = useState(null);
+  const [activeTabs, setActiveTabs] = useState({ research: "overview", portfolio: "holdings", markets: "overview" });
+  const goToSubItem = (page, tabId) => {
+    setActivePage(page);
+    setSubNav({ page, tab: tabId, ts: Date.now() });
+  };
+
   useEffect(() => {
     const onKey = e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
@@ -8339,28 +8397,59 @@ function TradingTerminalInner() {
           <div style={{ padding: "12px 0" }}>
             {NAV_ITEMS.map(item => {
               const active = activePage === item.id;
+              const expanded = active && !sidebarCollapsed && item.subItems?.length;
               return (
-                <button key={item.id} onClick={() => setActivePage(item.id)} style={{
-                  width: "100%",
-                  background: active ? t.surfaceInset : "transparent",
-                  border: "none",
-                  borderLeft: active ? `2px solid ${t.accent}` : "2px solid transparent",
-                  color: active ? t.accent : t.textMuted,
-                  padding: sidebarCollapsed ? "10px 0" : "10px 16px",
-                  textAlign: sidebarCollapsed ? "center" : "left",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  fontSize: 12,
-                  fontFamily: "monospace",
-                  letterSpacing: 0.5,
-                  transition: "all 0.15s",
-                  whiteSpace: "nowrap",
-                }}>
-                  <span style={{ fontSize: 14, minWidth: 16 }}>{item.icon}</span>
-                  {!sidebarCollapsed && item.label}
-                </button>
+                <div key={item.id}>
+                  <button onClick={() => setActivePage(item.id)} style={{
+                    width: "100%",
+                    background: active ? t.surfaceInset : "transparent",
+                    border: "none",
+                    borderLeft: active ? `2px solid ${t.accent}` : "2px solid transparent",
+                    color: active ? t.accent : t.textMuted,
+                    padding: sidebarCollapsed ? "10px 0" : "10px 16px",
+                    textAlign: sidebarCollapsed ? "center" : "left",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    fontSize: 12,
+                    fontFamily: "monospace",
+                    letterSpacing: 0.5,
+                    transition: "all 0.15s",
+                    whiteSpace: "nowrap",
+                  }}>
+                    <span style={{ fontSize: 14, minWidth: 16 }}>{item.icon}</span>
+                    {!sidebarCollapsed && item.label}
+                  </button>
+                  {expanded && (
+                    <div style={{
+                      borderLeft: `2px solid ${t.borderSubtle}`,
+                      marginLeft: 20,
+                      display: "flex",
+                      flexDirection: "column",
+                    }}>
+                      {item.subItems.map(sub => {
+                        const subActive = activeTabs[item.id] === sub.tab;
+                        return (
+                          <button key={sub.tab} onClick={() => goToSubItem(item.id, sub.tab)} style={{
+                            background: "transparent",
+                            border: "none",
+                            color: subActive ? t.accent : t.textFaint,
+                            padding: "6px 0 6px 14px",
+                            textAlign: "left",
+                            cursor: "pointer",
+                            fontSize: 11,
+                            fontFamily: "monospace",
+                            letterSpacing: 0.3,
+                            whiteSpace: "nowrap",
+                          }}>
+                            {sub.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -8375,10 +8464,18 @@ function TradingTerminalInner() {
             <RiskPage />
           )}
           {activePage === "research" && (
-            <ResearchPage prices={prices} jumpTo={researchJump} />
+            <ResearchPage
+              prices={prices}
+              jumpTo={researchJump}
+              tabJump={subNav?.page === "research" ? subNav : null}
+              onTabChange={tab => setActiveTabs(a => (a.research === tab ? a : { ...a, research: tab }))}
+            />
           )}
           {activePage === "portfolio" && (
-            <PortfolioPageV2 />
+            <PortfolioPageV2
+              tabJump={subNav?.page === "portfolio" ? subNav : null}
+              onTabChange={tab => setActiveTabs(a => (a.portfolio === tab ? a : { ...a, portfolio: tab }))}
+            />
           )}
           {activePage === "watchlist" && (
             <WatchlistPage />
@@ -8387,7 +8484,11 @@ function TradingTerminalInner() {
             <ScreenerPage />
           )}
           {activePage === "markets" && (
-            <MarketsPage prices={prices} />
+            <MarketsPage
+              prices={prices}
+              tabJump={subNav?.page === "markets" ? subNav : null}
+              onTabChange={tab => setActiveTabs(a => (a.markets === tab ? a : { ...a, markets: tab }))}
+            />
           )}
           {activePage === "news" && (
             <NewsPage />
