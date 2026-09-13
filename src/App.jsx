@@ -8659,6 +8659,60 @@ function DataGapsPanel({ gaps }) {
   );
 }
 
+function VerdictPanel({ construction }) {
+  const t = useTheme();
+  if (!construction?.ok) return null;
+  const actions = construction.actions ?? [];
+  const sells = actions.filter(a => a.action === "SELL");
+  const trims = actions.filter(a => a.action === "TRIM");
+  const buys = actions.filter(a => a.action === "BUY" || a.action === "ADD");
+  const holds = actions.filter(a => a.action === "HOLD");
+  const moves = [...sells, ...trims, ...buys];
+
+  const parts = [];
+  if (sells.length) parts.push(`sell ${sells.length}`);
+  if (trims.length) parts.push(`trim ${trims.length}`);
+  if (buys.length) parts.push(`buy ${buys.length} new`);
+  const lead = parts.length
+    ? `${parts.join(", ")}${holds.length ? `, and hold ${holds.length} as-is` : ""}.`
+    : "hold everything as-is — nothing here clears the bar for a change under this mandate.";
+
+  const colorFor = a => ({ SELL: t.negative, TRIM: t.warning, BUY: t.positive, ADD: t.positive }[a] ?? t.textMuted);
+
+  return (
+    <Panel style={{ borderColor: t.accent }}>
+      <div style={{ padding: "18px 20px 6px" }}>
+        <div style={{ fontSize: 11, letterSpacing: 1, color: t.accent, fontWeight: 700, marginBottom: 8 }}>THE CALL</div>
+        <div style={{ fontSize: 16, color: t.text, lineHeight: 1.55, maxWidth: 680 }}>
+          This mandate would {lead}
+        </div>
+      </div>
+      {moves.length > 0 && (
+        <div style={{ padding: "8px 8px 14px" }}>
+          {moves.map(a => (
+            <div key={a.symbol} style={{ display: "flex", alignItems: "center", gap: 14, padding: "9px 12px", flexWrap: "wrap" }}>
+              <span style={{
+                fontSize: 10.5, fontFamily: "monospace", fontWeight: 700, letterSpacing: 0.6,
+                color: colorFor(a.action), border: `1px solid ${colorFor(a.action)}`,
+                borderRadius: 4, padding: "2px 8px", width: 46, textAlign: "center", flexShrink: 0,
+              }}>{a.action}</span>
+              <span style={{ fontFamily: "monospace", fontWeight: 600, color: t.text, width: 84, flexShrink: 0 }}>{a.symbol}</span>
+              <span style={{ fontSize: 12, color: t.textSecondary, flex: 1, minWidth: 160 }}>{a.reason ?? ""}</span>
+              <span style={{
+                fontFamily: "monospace", fontSize: 12, flexShrink: 0,
+                color: a.deltaValue > 0 ? t.positive : a.deltaValue < 0 ? t.negative : t.textMuted,
+              }}>{a.deltaValue >= 0 ? "+" : "−"}{gbp0(Math.abs(a.deltaValue))}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ padding: "0 20px 14px", fontSize: 10.5, color: t.textFaint }}>
+        Advisory only — nothing here is placed or recorded.
+      </div>
+    </Panel>
+  );
+}
+
 function RebuildPage() {
   const t = useTheme();
   const [mandate, setMandate] = useState(null);
@@ -8766,33 +8820,47 @@ function RebuildPage() {
         )}
       </Panel>
 
-      <ExposureFindings teardown={report?.stages?.exposure ?? exposure?.teardown} />
+      {!report && <ExposureFindings teardown={exposure?.teardown} />}
 
-      {report?.stages?.regime && (
-        <Panel>
-          <RebuildHead label="MARKET CONTEXT" note={report.stages.regime.label} />
-          <div style={{ padding: "11px 16px" }}>
-            <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.6 }}>
-              {report.stages.regime.explain}
-            </div>
-            <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 7, lineHeight: 1.55 }}>
-              {report.stages.regime.role}
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      {report && <FunnelTable diligence={report.stages.diligence} mandate={report.mandate} />}
-      {report && (
-        <ProposalPanel
-          construction={report.stages.construction}
-          redundancy={report.stages.redundancy}
-          total={report.portfolio.total}
-        />
-      )}
-      {report && <ActionTable construction={report.stages.construction} />}
+      {report && <VerdictPanel construction={report.stages.construction} />}
       {report && <RiskComparePanel risk={report.stages.construction?.risk} stress={report.stress} />}
-      {report && <DataGapsPanel gaps={report.dataGaps} />}
+
+      {report && (
+        <details>
+          <summary style={{
+            cursor: "pointer", fontSize: 11.5, color: t.textMuted, padding: "8px 4px",
+            fontFamily: "monospace", letterSpacing: 0.6, userSelect: "none",
+          }}>
+            SHOW FULL REASONING — exposure, market context, every candidate, the raw trade table
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+            <ExposureFindings teardown={report.stages.exposure ?? exposure?.teardown} />
+
+            {report.stages.regime && (
+              <Panel>
+                <RebuildHead label="MARKET CONTEXT" note={report.stages.regime.label} />
+                <div style={{ padding: "11px 16px" }}>
+                  <div style={{ fontSize: 11.5, color: t.textSecondary, lineHeight: 1.6 }}>
+                    {report.stages.regime.explain}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 7, lineHeight: 1.55 }}>
+                    {report.stages.regime.role}
+                  </div>
+                </div>
+              </Panel>
+            )}
+
+            <FunnelTable diligence={report.stages.diligence} mandate={report.mandate} />
+            <ProposalPanel
+              construction={report.stages.construction}
+              redundancy={report.stages.redundancy}
+              total={report.portfolio.total}
+            />
+            <ActionTable construction={report.stages.construction} />
+            <DataGapsPanel gaps={report.dataGaps} />
+          </div>
+        </details>
+      )}
 
       {!report && !running && (
         <Panel>
