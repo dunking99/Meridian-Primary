@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect, useId } from "react";
-import { AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { AreaChart, Area, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar } from "recharts";
 import { fetchLivePrices, fetchFearAndGreed } from "./prices.js";
 import { GEMINI_API_KEY, GEMINI_MODEL } from "./config.js";
 
@@ -123,6 +123,7 @@ const NAV_ITEMS = [
     { tab: "ai", label: "AI Note" },
   ] },
   { id: "portfolio", label: "Portfolio", icon: "◰", subItems: [
+    { tab: "analysis", label: "Analysis" },
     { tab: "allocate", label: "Allocate" },
     { tab: "rebuild", label: "Rebuild" },
   ] },
@@ -6738,10 +6739,9 @@ async function detectCurrency(symbol) {
 const HOLDINGS_GRID_COLUMNS = "22px minmax(280px, 2.6fr) 0.5fr 0.65fr 0.65fr 0.85fr 0.95fr 0.6fr 0.5fr 44px";
 const numCell = { textAlign: "right" };
 
-function HoldingRow({ p, coverage, onChanged }) {
+function HoldingRow({ p, coverage, onChanged, onOpen, active = false }) {
   const t = useTheme();
   const [editing, setEditing] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [qty, setQty] = useState(p.qty);
   const [avg, setAvg] = useState(p.avgPrice);
@@ -6780,13 +6780,17 @@ function HoldingRow({ p, coverage, onChanged }) {
 
   return (
     <div style={{ borderBottom: `1px solid ${t.borderSubtle}` }}>
-      <div onClick={() => setExpanded(e => !e)} style={{
+      <div onClick={() => onOpen?.()} title="Open detail panel" style={{
         display: "grid",
         gridTemplateColumns: HOLDINGS_GRID_COLUMNS,
         alignItems: "center", padding: "14px 20px", gap: 8,
         fontSize: 14, fontFamily: "monospace", cursor: "pointer",
+        background: active ? t.surfaceInset : "transparent",
+        // The active row keeps a visible marker while the panel is open, so it
+        // stays obvious which holding the panel is describing.
+        boxShadow: active ? `inset 3px 0 0 ${t.accent}` : "none",
       }}>
-        <span style={{ color: t.textMuted, fontSize: 11, transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
+        <span style={{ color: active ? t.accent : t.textMuted, fontSize: 11 }}>▶</span>
 
         <div style={{ minWidth: 0, overflow: "hidden" }}>
           <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -6871,7 +6875,6 @@ function HoldingRow({ p, coverage, onChanged }) {
         </div>
       </div>
 
-      {expanded && <HoldingDetail p={p} onChanged={onChanged} />}
     </div>
   );
 }
@@ -6884,175 +6887,6 @@ function formatBigNumber(n) {
   if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
   if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return n.toLocaleString();
-}
-
-function HoldingDetail({ p }) {
-  const t = useTheme();
-  const [quote, setQuote] = useState(null);
-  const [quoteLoading, setQuoteLoading] = useState(true);
-  const [range, setRange] = useState("3M");
-  const [view, setView] = useState("value");
-  const [allBars, setAllBars] = useState(null);
-  const [barsLoading, setBarsLoading] = useState(true);
-  const [aiText, setAiText] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${API}/quote?symbol=${encodeURIComponent(p.symbol)}`).then(r => r.json())
-      .then(q => { if (!cancelled) setQuote(q); })
-      .catch(() => { if (!cancelled) setQuote(null); })
-      .finally(() => { if (!cancelled) setQuoteLoading(false); });
-    return () => { cancelled = true; };
-  }, [p.symbol]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setBarsLoading(true);
-    fetch(`${API}/history?symbol=${encodeURIComponent(p.symbol)}`).then(r => r.json())
-      .then(d => { if (!cancelled) setAllBars(d?.data ?? []); })
-      .catch(() => { if (!cancelled) setAllBars([]); })
-      .finally(() => { if (!cancelled) setBarsLoading(false); });
-    return () => { cancelled = true; };
-  }, [p.symbol]);
-
-  async function askAI() {
-    setAiLoading(true);
-    setAiText("");
-    const prompt = `${AI_RULES}
-
-A quick take on one holding, not a report.
-Holding: ${p.name || p.symbol} (${p.symbol}), tagged ${p.sector}/${p.geography} in this portfolio.
-Current price ${ccySymbol(p.currency)}${p.price?.toFixed(2) ?? "—"}, position P&L ${p.pnlPct >= 0 ? "+" : ""}${p.pnlPct?.toFixed(1)}%, portfolio weight ${p.weight?.toFixed(1)}%.
-${quote?.marketCap != null ? `Market cap ${formatBigNumber(quote.marketCap)}. ` : ""}${quote?.beta != null ? `Beta ${quote.beta.toFixed(2)}. ` : ""}${quote?.low52 != null && quote?.high52 != null ? `52-week range ${ccySymbol(p.currency)}${quote.low52.toFixed(2)}–${ccySymbol(p.currency)}${quote.high52.toFixed(2)}.` : ""}
-
-Give a short take in 4-6 sentences: what the figures above do and do not say
-about this holding's position in the portfolio. Reference the valuation and
-weight context given. Where the data is too thin to support a view, say that
-instead of supplying one.`;
-    const res = await callAI(prompt, 350);
-    setAiText(res.text);
-    setAiLoading(false);
-  }
-
-  const symbol = p.symbol;
-  const lookback = PORTFOLIO_CHART_RANGES.find(r => r.key === range).lookback;
-  const bars = allBars ?? [];
-  let sliced = bars.slice(-lookback);
-  if (range === "YTD") sliced = bars.filter(b => b.date >= `${new Date().getFullYear()}-01-01`);
-
-  const priceSeries = sliced.map(b => ({ date: b.date, value: b.adj_close ?? b.close }));
-  const basePrice = priceSeries[0]?.value;
-  const percentSeries = priceSeries.map(b => ({ date: b.date, value: basePrice ? +(((b.value / basePrice) - 1) * 100).toFixed(2) : 0 }));
-  const activeSeries = view === "value" ? priceSeries : percentSeries;
-  const up = activeSeries.length >= 2 && activeSeries[activeSeries.length - 1].value >= activeSeries[0].value;
-  const chartColor = up ? t.positive : t.negative;
-  const insufficientHistory = bars.length > 0 && bars.length < 30;
-
-  const stats = [
-    { label: "52W RANGE", val: quote?.low52 != null && quote?.high52 != null ? `${ccySymbol(p.currency)}${quote.low52.toFixed(2)} – ${ccySymbol(p.currency)}${quote.high52.toFixed(2)}` : "—" },
-    { label: "MARKET CAP", val: quote?.marketCap != null ? `${ccySymbol(p.currency)}${formatBigNumber(quote.marketCap)}` : "—" },
-    { label: "SHARES OUTSTANDING", val: quote?.sharesOutstanding != null ? formatBigNumber(quote.sharesOutstanding) : "—" },
-    { label: "BETA", val: quote?.beta != null ? quote.beta.toFixed(2) : "—" },
-  ];
-
-  const dayColor = (p.dayChangePct ?? 0) >= 0 ? t.positive : t.negative;
-
-  return (
-    <div style={{ padding: "12px 16px 20px 32px", background: t.surfaceAlt, borderBottom: `1px solid ${t.border}` }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 14 }}>
-        <span style={{ fontSize: 26, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>
-          {ccySymbol(p.currency)}{p.price != null ? p.price.toFixed(p.price < 10 ? 4 : 2) : "—"}
-        </span>
-        <span style={{ fontSize: 12, color: dayColor, fontFamily: "monospace" }}>
-          {(p.dayChangePct ?? 0) >= 0 ? "+" : ""}{p.dayChangePct?.toFixed(2)}% today
-        </span>
-        <span style={{ fontSize: 11, color: t.textMuted }}>{p.name || p.symbol}</span>
-      </div>
-
-      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", alignItems: "flex-start" }}>
-        <div style={{ flex: "3 1 420px", minWidth: 320 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-            <div style={{ display: "flex", gap: 4 }}>
-              {[{ key: "value", label: "PRICE" }, { key: "percent", label: "% RETURN" }].map(v => (
-                <button key={v.key} onClick={() => setView(v.key)} style={toggleBtn(t, view === v.key)}>{v.label}</button>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-              {PORTFOLIO_CHART_RANGES.map(r => (
-                <button key={r.key} onClick={() => setRange(r.key)} style={rangeBtn(t, range === r.key)}>{r.label}</button>
-              ))}
-            </div>
-          </div>
-
-          {barsLoading ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11 }}>Loading…</div>
-          ) : activeSeries.length < 2 || insufficientHistory ? (
-            <div style={{ height: 260, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11, textAlign: "center", padding: "0 20px" }}>
-              {insufficientHistory ? "Insufficient stored history for this holding." : "Not enough overlapping price history yet."}
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={activeSeries} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id={`detailFill-${symbol}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={chartColor} stopOpacity={0.25} />
-                    <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={t.chartGrid} vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: t.chartAxis, fontSize: 11, fontFamily: "monospace" }} axisLine={{ stroke: t.border }} tickLine={false} minTickGap={50} />
-                <YAxis tick={{ fill: t.chartAxis, fontSize: 11, fontFamily: "monospace" }} axisLine={false} tickLine={false} width={54}
-                  domain={["auto", "auto"]}
-                  tickFormatter={v => view === "percent" ? `${v.toFixed(0)}%` : `${ccySymbol(p.currency)}${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
-                <Tooltip
-                  contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.border}`, borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}
-                  labelStyle={{ color: t.textSecondary }}
-                  formatter={v => [view === "percent" ? `${v >= 0 ? "+" : ""}${v.toFixed(1)}%` : `${ccySymbol(p.currency)}${v.toFixed(2)}`, view === "percent" ? "Return" : "Price"]}
-                />
-                <Area type="monotone" dataKey="value" stroke={chartColor} strokeWidth={1.5} fill={`url(#detailFill-${symbol})`} isAnimationActive={false} />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-
-        <div style={{ flex: "1 1 220px", minWidth: 200 }}>
-          <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 10 }}>KEY STATS</div>
-          {quoteLoading ? (
-            <div style={{ color: t.textMuted, fontSize: 11 }}>Loading…</div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              {stats.map(s => (
-                <div key={s.label} style={{
-                  background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4, padding: "8px 10px",
-                }}>
-                  <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 0.5, marginBottom: 5 }}>{s.label}</div>
-                  <div style={{ fontSize: 14, color: t.text, fontWeight: 700 }}>{s.val}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-              <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1 }}>ASK AI</div>
-              <button onClick={askAI} disabled={aiLoading} style={{
-                background: aiLoading ? t.surfaceInset : t.infoSoft, border: `1px solid ${t.info}`, color: t.info,
-                padding: "6px 13px", borderRadius: 3, fontSize: 11, fontFamily: "monospace",
-                cursor: aiLoading ? "default" : "pointer",
-              }}>{aiLoading ? "THINKING…" : "ASK OPINION"}</button>
-            </div>
-            {aiText && (
-              <div style={{
-                background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4,
-                padding: 13, fontSize: 13, color: t.text, lineHeight: 1.65, whiteSpace: "pre-wrap",
-              }}>{aiText}</div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 // Segmented-control button styles, shared by the portfolio charts. `active`
@@ -7309,6 +7143,967 @@ function CashTile({ cashAccounts, cash, onChanged, centered = false, onDeploy = 
   );
 }
 
+// ============================================================
+// PORTFOLIO ANALYSIS
+//
+// Everything below reads /portfolio/types, /portfolio/scorecard,
+// /portfolio/correlations and /portfolio/holding. None of it holds its own
+// copy of a figure: weights, scores and correlations are recomputed server-
+// side on every poll from stored bars and live prices, so what is on screen is
+// what the engines currently say, not a snapshot taken when the page loaded.
+// ============================================================
+
+/**
+ * Slice colours for the composition charts.
+ *
+ * Cash is pulled out of the rotation deliberately: the palette's fourth entry
+ * is the same red this app uses for losses everywhere else, and a cash balance
+ * rendered in loss-red reads as a warning about money that is simply sitting
+ * there. It gets a neutral grey, which is also the honest signal — cash is the
+ * one slice that is not an exposure to anything.
+ */
+function sliceColor(i, label, t) {
+  if (label === "Cash") return t.textFaint;
+  return HOLDING_LINE_COLORS[i % HOLDING_LINE_COLORS.length];
+}
+
+/** The donut and the table are two readings of one breakdown, so they share a
+ *  box and a fixed content height — switching view changes what you are
+ *  looking at, never where anything else on the page sits. */
+const COMPOSITION_BOX_HEIGHT = 268;
+
+function CompositionDonut({ rows, total, valueKey = "value", labelKey = "label", pctKey = "pct", onHover }) {
+  const t = useTheme();
+  const data = rows.filter(r => (r[valueKey] ?? 0) > 0);
+  if (!data.length) {
+    return (
+      <div style={{ height: COMPOSITION_BOX_HEIGHT, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 12 }}>
+        Nothing priced to chart yet.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, height: COMPOSITION_BOX_HEIGHT }}>
+      <div style={{ width: 220, height: COMPOSITION_BOX_HEIGHT, flexShrink: 0 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie data={data} dataKey={valueKey} nameKey={labelKey} innerRadius={52} outerRadius={88}
+              paddingAngle={1.5} stroke={t.surface} strokeWidth={2} isAnimationActive={false}
+              onMouseEnter={(_, i) => onHover?.(data[i]?.[labelKey] ?? null)}
+              onMouseLeave={() => onHover?.(null)}>
+              {data.map((r, i) => <Cell key={r[labelKey]} fill={sliceColor(i, r[labelKey], t)} />)}
+            </Pie>
+            <Tooltip
+              contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.borderStrong}`, borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}
+              labelStyle={{ color: t.textSecondary }}
+              formatter={(v, name, entry) => [
+                `£${Math.round(v).toLocaleString()} · ${(entry?.payload?.[pctKey] ?? 0).toFixed(1)}%`,
+                name,
+              ]} />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0, maxHeight: COMPOSITION_BOX_HEIGHT, overflowY: "auto", paddingRight: 4 }}>
+        {data.map((r, i) => (
+          <div key={r[labelKey]}
+            onMouseEnter={() => onHover?.(r[labelKey])}
+            onMouseLeave={() => onHover?.(null)}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 12 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: sliceColor(i, r[labelKey], t), flexShrink: 0 }} />
+            <span style={{ color: t.textSecondary, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {r[labelKey]}
+            </span>
+            <span style={{ color: t.text, fontFamily: "monospace", fontSize: 11.5 }}>
+              {(r[pctKey] ?? 0).toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Holdings grouped by what kind of instrument they are, typed from the
+ *  symbol rather than from whatever was typed into the asset-class field. */
+function PortfolioTypeBox() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [view, setView] = useState("donut");
+  const [error, setError] = useState(false);
+
+  const load = useCallback(() => {
+    fetch(`${API}/portfolio/types`).then(r => r.json())
+      .then(d => { setData(d); setError(false); })
+      .catch(() => setError(true));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const rows = data?.rows ?? [];
+
+  return (
+    <Panel>
+      <SectionHeader title="BY TYPE"
+        subtitle={rows.length ? `${rows.length} ${rows.length === 1 ? "type" : "types"}` : null}
+        extra={
+          <div style={{ display: "flex", gap: 3 }}>
+            {[["donut", "◕"], ["table", "▤"]].map(([key, glyph]) => (
+              <button key={key} onClick={() => setView(key)} title={key === "donut" ? "Donut" : "Table"}
+                style={{
+                  background: view === key ? t.accentSoft : "transparent",
+                  border: `1px solid ${view === key ? t.accent : t.borderStrong}`,
+                  color: view === key ? t.accent : t.textMuted,
+                  width: 30, height: 26, borderRadius: 3, cursor: "pointer", fontSize: 13, lineHeight: 1,
+                }}>{glyph}</button>
+            ))}
+          </div>
+        } />
+
+      <div style={{ padding: "12px 16px" }}>
+        {error ? (
+          <div style={{ height: COMPOSITION_BOX_HEIGHT, display: "flex", alignItems: "center", justifyContent: "center", color: t.negative, fontSize: 12 }}>
+            Could not reach the server.
+          </div>
+        ) : !data ? (
+          <div style={{ height: COMPOSITION_BOX_HEIGHT, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 12 }}>
+            Loading…
+          </div>
+        ) : view === "donut" ? (
+          <CompositionDonut rows={rows} total={data.total} />
+        ) : (
+          <div style={{ height: COMPOSITION_BOX_HEIGHT, overflowY: "auto" }}>
+            <div style={{
+              display: "grid", gridTemplateColumns: "1.5fr 0.6fr 1fr 1fr 0.8fr", gap: 8,
+              fontSize: 10, color: t.textMuted, letterSpacing: 0.8, paddingBottom: 7,
+              borderBottom: `1px solid ${t.border}`, position: "sticky", top: 0, background: t.surface,
+            }}>
+              <div>TYPE</div><div style={numCell}>ITEMS</div>
+              <div style={numCell}>VALUE</div><div style={numCell}>GAIN</div><div style={numCell}>ALLOC</div>
+            </div>
+            {rows.map((r, i) => (
+              <div key={r.label} style={{
+                display: "grid", gridTemplateColumns: "1.5fr 0.6fr 1fr 1fr 0.8fr", gap: 8,
+                alignItems: "center", padding: "9px 0", borderBottom: `1px solid ${t.borderSubtle}`, fontSize: 12,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: 2, background: sliceColor(i, r.label, t), flexShrink: 0 }} />
+                  <span style={{ color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</span>
+                </div>
+                <div style={{ ...numCell, color: t.textMuted, fontFamily: "monospace" }}>{r.items}</div>
+                <div style={{ ...numCell, color: t.text, fontFamily: "monospace" }}>
+                  {gbp0(r.value)}
+                  <div style={{ fontSize: 10, color: t.textFaint }}>{r.cost ? gbp0(r.cost) : ""}</div>
+                </div>
+                <div style={{ ...numCell, fontFamily: "monospace", color: r.gainPct == null ? t.textFaint : r.gain >= 0 ? t.positive : t.negative }}>
+                  {r.gainPct == null ? <NoData reason="Cash has no cost basis to gain against" compact /> : (
+                    <>
+                      {r.gain >= 0 ? "+" : "−"}{gbp0(Math.abs(r.gain))}
+                      <div style={{ fontSize: 10 }}>{r.gainPct >= 0 ? "+" : ""}{r.gainPct.toFixed(1)}%</div>
+                    </>
+                  )}
+                </div>
+                <div style={{ ...numCell, color: t.textSecondary, fontFamily: "monospace" }}>{r.pct.toFixed(1)}%</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ── Holding side panel ────────────────────────────────────────
+
+const AXIS_ORDER = ["quality", "trend", "technical", "precedent", "cost"];
+
+function MeterBar({ value, color, height = 6 }) {
+  const t = useTheme();
+  return (
+    <div style={{ flex: 1, height, background: t.surfaceInset, borderRadius: height / 2, overflow: "hidden" }}>
+      <div style={{ width: `${Math.max(0, Math.min(100, value))}%`, height: "100%", background: color, borderRadius: height / 2 }} />
+    </div>
+  );
+}
+
+/** The five diligence axes for one instrument. An axis that could not be
+ *  measured says why instead of rendering an empty or zeroed bar — a zero and
+ *  an unknown are different claims. */
+function AxisList({ components }) {
+  const t = useTheme();
+  if (!components) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {AXIS_ORDER.map(key => {
+        const c = components[key];
+        const available = c?.available && c.value != null;
+        const pct = available ? Math.round(c.value * 100) : null;
+        return (
+          <div key={key}>
+            <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 11.5 }}>
+              <span style={{ color: t.textSecondary, width: 76, textTransform: "capitalize" }}>{key}</span>
+              {available ? (
+                <>
+                  <MeterBar value={pct} color={pct >= 60 ? t.positive : pct >= 40 ? t.warning : t.negative} />
+                  <span style={{ color: t.text, fontFamily: "monospace", width: 30, textAlign: "right" }}>{pct}</span>
+                </>
+              ) : (
+                <span style={{ color: t.textFaint, fontSize: 11, flex: 1, lineHeight: 1.4 }}>
+                  not measured — {c?.reason ?? "no reading"}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Where the current price sits in its stored 52-week range. A price outside
+ *  the range is said to be outside it rather than pinned to the end and left
+ *  looking like it merely reached the edge. */
+function RangeMeter({ range52, price, currency }) {
+  const t = useTheme();
+  if (!range52?.available) {
+    return <div style={{ fontSize: 11, color: t.textFaint }}>52-week range — {range52?.reason ?? "unavailable"}</div>;
+  }
+  const outside = range52.aboveRange || range52.belowRange;
+  const pos = Math.max(0, Math.min(100, range52.positionPct ?? 0));
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: t.textMuted, marginBottom: 5 }}>
+        <span>52W LOW {ccySymbol(currency)}{range52.low.toFixed(2)}</span>
+        <span>{ccySymbol(currency)}{range52.high.toFixed(2)} HIGH</span>
+      </div>
+      <div style={{ position: "relative", height: 6, background: t.surfaceInset, borderRadius: 3 }}>
+        <div style={{
+          position: "absolute", left: `${pos}%`, top: -3, width: 3, height: 12,
+          background: outside ? t.warning : t.accent, borderRadius: 2, transform: "translateX(-1.5px)",
+        }} />
+      </div>
+      <div style={{ fontSize: 10.5, color: outside ? t.warning : t.textFaint, marginTop: 5 }}>
+        {range52.aboveRange ? "Trading above its stored 52-week high."
+          : range52.belowRange ? "Trading below its stored 52-week low."
+          : `${pos.toFixed(0)}% of the way up its 52-week range, over ${range52.observations} stored closes.`}
+      </div>
+    </div>
+  );
+}
+
+function PanelSection({ label, children, note }) {
+  const t = useTheme();
+  return (
+    <div style={{ padding: "14px 16px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+      <div style={{ fontSize: 10, letterSpacing: 1.2, color: t.textMuted, marginBottom: 10 }}>{label}</div>
+      {children}
+      {note && <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8, lineHeight: 1.5 }}>{note}</div>}
+    </div>
+  );
+}
+
+function HoldingSidePanel({ symbol, onClose, onChanged }) {
+  const t = useTheme();
+  const [tab, setTab] = useState("overview");
+  const [d, setD] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [bars, setBars] = useState(null);
+  const [range, setRange] = useState("1Y");
+  const [quote, setQuote] = useState(null);
+  const [noteText, setNoteText] = useState("");
+  const [noteDate, setNoteDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  const load = useCallback(() => {
+    if (!symbol) return;
+    setLoading(true);
+    fetch(`${API}/portfolio/holding?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(j => { setD(j); setError(j?.error ?? null); })
+      .catch(() => setError("Could not reach the server."))
+      .finally(() => setLoading(false));
+  }, [symbol]);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!symbol) return;
+    let cancelled = false;
+    setBars(null);
+    fetch(`${API}/history?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(j => { if (!cancelled) setBars(j?.data ?? []); })
+      .catch(() => { if (!cancelled) setBars([]); });
+    fetch(`${API}/quote?symbol=${encodeURIComponent(symbol)}`).then(r => r.json())
+      .then(j => { if (!cancelled) setQuote(j); })
+      .catch(() => { if (!cancelled) setQuote(null); });
+    return () => { cancelled = true; };
+  }, [symbol]);
+
+  // Escape closes, matching every other dismissible surface in the app.
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function addNote() {
+    if (!noteText.trim()) return;
+    await fetch(`${API}/research/notes`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol, date: noteDate, text: noteText.trim() }),
+    });
+    setNoteText("");
+    load();
+  }
+
+  const p = d?.position ?? null;
+  const ccy = p?.currency ?? "GBP";
+  const dayColor = (p?.dayChangePct ?? 0) >= 0 ? t.positive : t.negative;
+
+  const lookback = PORTFOLIO_CHART_RANGES.find(r => r.key === range)?.lookback ?? 252;
+  const sliced = (bars ?? []).slice(-lookback);
+  const series = sliced.map(b => ({ date: b.date, value: b.adj_close ?? b.close })).filter(b => b.value != null);
+  const up = series.length >= 2 && series[series.length - 1].value >= series[0].value;
+  const chartColor = up ? t.positive : t.negative;
+
+  return (
+    <>
+      <div onClick={onClose} style={{
+        position: "fixed", inset: 0, background: t.name === "light" ? "rgba(40,50,65,0.28)" : "rgba(3,5,10,0.55)", zIndex: 400,
+      }} />
+      <div style={{
+        position: "fixed", top: 0, right: 0, bottom: 0, width: "min(420px, 94vw)", zIndex: 401,
+        background: t.surface, borderLeft: `1px solid ${t.borderStrong}`,
+        display: "flex", flexDirection: "column", boxShadow: "-18px 0 44px rgba(0,0,0,0.28)",
+      }}>
+        {/* Header */}
+        <div style={{ padding: "14px 16px 0", borderBottom: `1px solid ${t.border}`, background: t.surfaceAlt }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: t.accent, fontFamily: "monospace" }}>{symbol}</span>
+                {p?.price != null && (
+                  <span style={{ fontSize: 15, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>
+                    {ccySymbol(ccy)}{p.price.toFixed(p.price < 10 ? 4 : 2)}
+                  </span>
+                )}
+                {p?.dayChangePct != null && (
+                  <span style={{ fontSize: 11.5, color: dayColor, fontFamily: "monospace" }}>
+                    {p.dayChangePct >= 0 ? "▲" : "▼"} {Math.abs(p.dayChangePct).toFixed(2)}%
+                  </span>
+                )}
+              </div>
+              <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {d?.name ?? ""}{d?.instrument?.label ? ` · ${d.instrument.label}` : ""}
+              </div>
+            </div>
+            <button onClick={onClose} title="Close (Esc)" style={{
+              background: "transparent", border: "none", color: t.textMuted, fontSize: 20, cursor: "pointer", lineHeight: 1, padding: 0,
+            }}>×</button>
+          </div>
+
+          <div style={{ display: "flex", gap: 2, marginTop: 12 }}>
+            {[["overview", "Overview"], ["holding", "Holding"], ["updates", "Updates"], ["notes", "Notes"]].map(([id, label]) => (
+              <button key={id} onClick={() => setTab(id)} style={{
+                background: "transparent", border: "none",
+                borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
+                color: tab === id ? t.accent : t.textMuted,
+                padding: "8px 11px", cursor: "pointer", fontSize: 11.5, letterSpacing: 0.4,
+              }}>{label}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {loading && <div style={{ padding: 26, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Loading…</div>}
+          {error && <div style={{ padding: 18, color: t.negative, fontSize: 12 }}>⚠ {error}</div>}
+
+          {!loading && !error && d && tab === "overview" && (
+            <>
+              <PanelSection label="PRICE">
+                <div style={{ display: "flex", gap: 3, marginBottom: 8, flexWrap: "wrap" }}>
+                  {["3M", "1Y", "3Y", "MAX"].map(r => (
+                    <button key={r} onClick={() => setRange(r)} style={rangeBtn(t, range === r)}>{r}</button>
+                  ))}
+                </div>
+                {bars == null ? (
+                  <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: t.textMuted, fontSize: 11 }}>Loading…</div>
+                ) : series.length < 2 ? (
+                  <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: t.textFaint, fontSize: 11, textAlign: "center" }}>
+                    {d.barCount ? `Only ${d.barCount} stored bars — not enough to chart this range.` : "No stored price history for this holding."}
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={120}>
+                    <AreaChart data={series} margin={{ top: 2, right: 2, left: 0, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id={`sideFill-${symbol}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={chartColor} stopOpacity={0.3} />
+                          <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <XAxis dataKey="date" hide />
+                      <YAxis domain={["auto", "auto"]} hide />
+                      <Tooltip
+                        contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.borderStrong}`, borderRadius: 4, fontFamily: "monospace", fontSize: 11.5 }}
+                        labelStyle={{ color: t.textSecondary }}
+                        formatter={v => [`${ccySymbol(ccy)}${v.toFixed(2)}`, "Close"]} />
+                      <Area type="monotone" dataKey="value" stroke={chartColor} strokeWidth={1.5}
+                        fill={`url(#sideFill-${symbol})`} isAnimationActive={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                )}
+                <div style={{ marginTop: 12 }}>
+                  <RangeMeter range52={d.range52} price={p?.price} currency={ccy} />
+                </div>
+              </PanelSection>
+
+              <PanelSection label="CONVICTION"
+                note={d.scores.evidence != null
+                  ? `Built on ${(d.scores.evidence * 100).toFixed(0)}% of the intended evidence. Same five axes, same code, as a rebuild run.`
+                  : "No component could be measured for this instrument."}>
+                {d.scores.conviction != null ? (
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
+                    <span style={{ fontSize: 26, fontWeight: 700, fontFamily: "monospace", color: t.text }}>
+                      {Math.round(d.scores.conviction * 100)}
+                    </span>
+                    <span style={{ fontSize: 11, color: t.textMuted }}>/ 100</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: t.textFaint, marginBottom: 10 }}>Not scoreable.</div>
+                )}
+                <AxisList components={d.scores.components} />
+              </PanelSection>
+
+              {d.composition?.expenseRatio != null || d.composition?.topHoldings?.length ? (
+                <PanelSection label="WHAT IT HOLDS"
+                  note={d.composition.asOf ? `Published composition, stored ${d.composition.ageDays ?? 0} days ago. Yahoo publishes the top ten only.` : null}>
+                  {d.composition.expenseRatio != null && (
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 10 }}>
+                      <span style={{ color: t.textSecondary }}>Expense ratio</span>
+                      <span style={{ color: t.text, fontFamily: "monospace" }}>{d.composition.expenseRatio.toFixed(2)}%</span>
+                    </div>
+                  )}
+                  {(d.composition.topHoldings ?? []).slice(0, 6).map(h => (
+                    <div key={h.name} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 11.5, padding: "3px 0" }}>
+                      <span style={{ color: t.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.name}</span>
+                      <span style={{ color: t.textMuted, fontFamily: "monospace", flexShrink: 0 }}>{h.weight.toFixed(1)}%</span>
+                    </div>
+                  ))}
+                </PanelSection>
+              ) : (
+                <PanelSection label="WHAT IT HOLDS">
+                  <div style={{ fontSize: 11.5, color: t.textFaint, lineHeight: 1.5 }}>
+                    {d.composition?.reason ?? "No stored composition for this instrument."}
+                  </div>
+                </PanelSection>
+              )}
+
+              {d.correlatedWith?.length > 0 && (
+                <PanelSection label="MOVES WITH"
+                  note="Daily return correlation against your other holdings, joined on date.">
+                  {d.correlatedWith.map(c => (
+                    <div key={c.symbol} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, padding: "4px 0" }}>
+                      <span style={{ color: t.text, fontFamily: "monospace", width: 72 }}>{c.symbol}</span>
+                      <MeterBar value={Math.abs(c.correlation) * 100} color={c.correlation >= 0.8 ? t.negative : c.correlation >= 0.5 ? t.warning : t.positive} />
+                      <span style={{ color: t.textSecondary, fontFamily: "monospace", width: 40, textAlign: "right" }}>
+                        {c.correlation.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </PanelSection>
+              )}
+
+              {d.bullbear?.tally && (
+                <PanelSection label="BULL / BEAR">
+                  <div style={{ display: "flex", gap: 14, fontSize: 12 }}>
+                    <span style={{ color: t.positive }}>{d.bullbear.tally.bull} bullish</span>
+                    <span style={{ color: t.negative }}>{d.bullbear.tally.bear} bearish</span>
+                    <span style={{ color: t.textMuted }}>{d.bullbear.tally.neutral} neutral</span>
+                  </div>
+                </PanelSection>
+              )}
+
+              <PanelSection label="PRECEDENT">
+                {d.precedent?.matches ? (
+                  <div style={{ display: "flex", gap: 18, fontSize: 12 }}>
+                    <div>
+                      <div style={{ color: t.text, fontFamily: "monospace", fontSize: 16 }}>{d.precedent.matches}</div>
+                      <div style={{ color: t.textMuted, fontSize: 10 }}>MATCHES</div>
+                    </div>
+                    <div>
+                      <div style={{ color: t.text, fontFamily: "monospace", fontSize: 16 }}>{d.precedent.positiveRatePct}%</div>
+                      <div style={{ color: t.textMuted, fontSize: 10 }}>WENT UP AFTER</div>
+                    </div>
+                    {d.precedent.medianForward63Pct != null && (
+                      <div>
+                        <div style={{ color: d.precedent.medianForward63Pct >= 0 ? t.positive : t.negative, fontFamily: "monospace", fontSize: 16 }}>
+                          {d.precedent.medianForward63Pct >= 0 ? "+" : ""}{d.precedent.medianForward63Pct.toFixed(1)}%
+                        </div>
+                        <div style={{ color: t.textMuted, fontSize: 10 }}>TYPICAL 3M</div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: t.textFaint }}>{d.precedent?.reason ?? "No precedent study available."}</div>
+                )}
+              </PanelSection>
+            </>
+          )}
+
+          {!loading && !error && d && tab === "holding" && (
+            <>
+              <PanelSection label="POSITION">
+                {p ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {[
+                      ["Units", p.qty],
+                      ["Avg price", `${ccySymbol(ccy)}${p.avgPrice?.toFixed(2)}`],
+                      ["Value", gbp0(p.value)],
+                      ["Cost", gbp0(p.cost)],
+                      ["P&L", `${p.pnl >= 0 ? "+" : "−"}${gbp0(Math.abs(p.pnl))}`],
+                      ["Return", `${p.pnlPct >= 0 ? "+" : ""}${p.pnlPct?.toFixed(1)}%`],
+                      ["Weight", `${p.weight?.toFixed(1)}%`],
+                      ["Target", p.targetPct != null ? `${p.targetPct}%` : "—"],
+                    ].map(([label, val]) => (
+                      <div key={label} style={{ background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 9.5, color: t.textMuted, letterSpacing: 0.5 }}>{label.toUpperCase()}</div>
+                        <div style={{ fontSize: 13.5, color: t.text, fontFamily: "monospace", marginTop: 3 }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11.5, color: t.textFaint }}>Not currently held.</div>
+                )}
+              </PanelSection>
+
+              <PanelSection label="KEY STATS" note="Live from the quote feed. Fields a fund or index structurally lacks are shown as unavailable rather than blank.">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  {[
+                    ["Market cap", quote?.marketCap != null ? formatBigNumber(quote.marketCap) : null],
+                    ["Beta", quote?.beta != null ? quote.beta.toFixed(2) : null],
+                    ["Expense ratio", d.composition?.expenseRatio != null ? `${d.composition.expenseRatio.toFixed(2)}%` : null],
+                    ["Stored bars", d.barCount || null],
+                  ].map(([label, val]) => (
+                    <div key={label} style={{ background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 9.5, color: t.textMuted, letterSpacing: 0.5 }}>{label.toUpperCase()}</div>
+                      <div style={{ fontSize: 13.5, color: t.text, fontFamily: "monospace", marginTop: 3 }}>
+                        {val ?? <NoData reason={`No ${label.toLowerCase()} published for this instrument`} compact />}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </PanelSection>
+
+              {d.scores.components?.quality?.available && (
+                <PanelSection label="LONG-RUN DELIVERY" note={d.scores.components.quality.source}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    {[
+                      ["CAGR", `${d.scores.components.quality.detail.cagrPct}%`],
+                      ["Sharpe", d.scores.components.quality.detail.sharpe],
+                      ["Volatility", `${d.scores.components.quality.detail.annualVolPct}%`],
+                      ["Max drawdown", `−${d.scores.components.quality.detail.maxDrawdownPct}%`],
+                    ].map(([label, val]) => (
+                      <div key={label} style={{ background: t.surfaceInset, border: `1px solid ${t.border}`, borderRadius: 4, padding: "8px 10px" }}>
+                        <div style={{ fontSize: 9.5, color: t.textMuted, letterSpacing: 0.5 }}>{label.toUpperCase()}</div>
+                        <div style={{ fontSize: 13.5, color: t.text, fontFamily: "monospace", marginTop: 3 }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                </PanelSection>
+              )}
+
+              {d.thesis && (
+                <PanelSection label="YOUR THESIS">
+                  <div style={{ fontSize: 12, color: t.textSecondary, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{d.thesis}</div>
+                </PanelSection>
+              )}
+            </>
+          )}
+
+          {!loading && !error && d && tab === "updates" && (
+            <div style={{ padding: "4px 0" }}>
+              {d.news?.length ? d.news.map((n, i) => (
+                <a key={i} href={n.url} target="_blank" rel="noopener noreferrer" style={{
+                  display: "block", padding: "12px 16px", borderBottom: `1px solid ${t.borderSubtle}`, textDecoration: "none",
+                }}>
+                  <div style={{ fontSize: 10, color: t.textMuted, marginBottom: 4 }}>
+                    {n.source}{n.published ? ` · ${new Date(n.published).toLocaleDateString("en-GB")}` : ""}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: t.text, lineHeight: 1.45 }}>{n.title}</div>
+                </a>
+              )) : (
+                <div style={{ padding: "20px 16px", fontSize: 11.5, color: t.textFaint, lineHeight: 1.6 }}>
+                  No stored stories mention {symbol} in the last 60 days. The news feed tags stories by
+                  symbol — an instrument the feeds do not name individually stays empty here rather than
+                  showing unrelated market coverage.
+                </div>
+              )}
+            </div>
+          )}
+
+          {!loading && !error && d && tab === "notes" && (
+            <>
+              <PanelSection label="ADD A NOTE">
+                <div style={{ display: "flex", gap: 6, marginBottom: 7 }}>
+                  <input type="date" value={noteDate} onChange={e => setNoteDate(e.target.value)}
+                    style={{ ...fieldStyle(130, t), padding: "5px 7px", fontSize: 11 }} />
+                  <button onClick={addNote} disabled={!noteText.trim()} style={btn(t.accent)}>SAVE</button>
+                </div>
+                <textarea value={noteText} onChange={e => setNoteText(e.target.value)} rows={3}
+                  placeholder="What happened, and why it matters."
+                  style={{ ...fieldStyle("100%", t), padding: "7px 9px", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
+              </PanelSection>
+              {d.notes?.length ? d.notes.map(n => (
+                <div key={n.id} style={{ padding: "11px 16px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+                  <div style={{ fontSize: 10, color: t.textMuted, fontFamily: "monospace", marginBottom: 4 }}>{n.date}</div>
+                  <div style={{ fontSize: 12, color: t.textSecondary, lineHeight: 1.55 }}>{n.text}</div>
+                </div>
+              )) : (
+                <div style={{ padding: "16px", fontSize: 11.5, color: t.textFaint }}>No notes on {symbol} yet.</div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Summary tiles ─────────────────────────────────────────────
+
+/** Total profit with today's move folded in underneath. Two readings of the
+ *  same thing at different time scales, so one box rather than two. */
+function ProfitTile({ data }) {
+  const t = useTheme();
+  const up = data.pnl >= 0;
+  const dayUp = data.dayChange >= 0;
+  return (
+    <div style={{
+      padding: "16px 20px", borderRight: `1px solid ${t.border}`,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center",
+    }}>
+      <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 7 }}>TOTAL PROFIT</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 9, flexWrap: "wrap", justifyContent: "center" }}>
+        <span style={{ fontSize: 28, fontWeight: 700, fontFamily: "monospace", color: up ? t.positive : t.negative }}>
+          {up ? "+" : "−"}£{Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+        </span>
+        <span style={{ fontSize: 13, fontFamily: "monospace", color: up ? t.positive : t.negative }}>
+          {up ? "▲" : "▼"} {Math.abs(data.pnlPct).toFixed(1)}%
+        </span>
+      </div>
+      <div style={{
+        marginTop: 9, paddingTop: 8, borderTop: `1px solid ${t.borderSubtle}`, width: "100%",
+        display: "flex", alignItems: "baseline", gap: 7, justifyContent: "center", fontSize: 12, fontFamily: "monospace",
+      }}>
+        <span style={{ color: dayUp ? t.positive : t.negative }}>
+          {dayUp ? "+" : "−"}£{Math.abs(data.dayChange).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+        </span>
+        <span style={{ color: dayUp ? t.positive : t.negative }}>
+          {dayUp ? "▲" : "▼"} {Math.abs(data.dayChangePct).toFixed(2)}%
+        </span>
+        <span style={{ color: t.textFaint, fontFamily: "inherit", fontSize: 11 }}>today</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the portfolio has compounded at.
+ *
+ * Deliberately the reconstructed figure rather than an IRR: a money-weighted
+ * return needs dated cash flows, and this project stores holdings rather than
+ * a trade-by-trade record. Showing an "IRR" derived from holdings alone would
+ * mean inventing the contribution dates it depends on, so this states plainly
+ * what it is instead.
+ */
+function ReturnTile() {
+  const t = useTheme();
+  const [r, setR] = useState(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    const load = () => fetch(`${API}/portfolio/return`).then(x => x.json())
+      .then(j => { setR(j); setFailed(false); })
+      .catch(() => setFailed(true));
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const body = () => {
+    if (failed) return <NoData reason="Could not reach the server" />;
+    if (!r) return <span style={{ fontSize: 13, color: t.textMuted }}>…</span>;
+    if (!r.available) return <NoData reason={r.reason ?? "Not enough overlapping stored history"} />;
+    return (
+      <span style={{ fontSize: 28, fontWeight: 700, fontFamily: "monospace", color: r.annualisedPct >= 0 ? t.positive : t.negative }}>
+        {r.annualisedPct >= 0 ? "+" : "−"}{Math.abs(r.annualisedPct).toFixed(1)}%
+      </span>
+    );
+  };
+
+  return (
+    <div style={{
+      padding: "16px 20px", display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", textAlign: "center",
+    }}>
+      <div style={{ fontSize: 11, color: t.textMuted, letterSpacing: 1, marginBottom: 7 }}>ANNUALISED</div>
+      {body()}
+      <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 7, lineHeight: 1.45 }}>
+        {r?.available
+          ? `${r.totalPct >= 0 ? "+" : ""}${r.totalPct.toFixed(0)}% over ${r.years}y · fixed-weight reconstruction`
+          : "Reconstructed from stored bars at current weights"}
+      </div>
+    </div>
+  );
+}
+
+// ── Analysis sub-page ─────────────────────────────────────────
+
+function ScorecardPanel() {
+  const t = useTheme();
+  const [d, setD] = useState(null);
+  const [axis, setAxis] = useState("quality");
+  const [error, setError] = useState(null);
+
+  const load = useCallback(() => {
+    fetch(`${API}/portfolio/scorecard`).then(r => r.json())
+      .then(j => { setD(j); setError(null); })
+      .catch(() => setError("Could not reach the server."));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  if (error) return <Panel><div style={{ padding: 18, color: t.negative, fontSize: 12 }}>⚠ {error}</div></Panel>;
+  if (!d) return <Panel><div style={{ padding: 26, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Scoring holdings…</div></Panel>;
+
+  if (!d.available) {
+    return (
+      <Panel>
+        <SectionHeader title="PORTFOLIO SCORECARD" />
+        <div style={{ padding: 18, fontSize: 12, color: t.textMuted, lineHeight: 1.6 }}>{d.reason}</div>
+      </Panel>
+    );
+  }
+
+  const selected = d.axes.find(a => a.key === axis) ?? d.axes[0];
+  const radarData = d.axes.map(a => ({ axis: a.label, score: a.scoreOutOf100 ?? 0, measured: a.score != null }));
+
+  return (
+    <Panel>
+      <SectionHeader title="PORTFOLIO SCORECARD"
+        subtitle={d.mandate ? `${d.mandate.riskLabel} · ${d.mandate.horizonLabel}` : null} />
+
+      <div style={{ padding: "14px 18px", display: "flex", gap: 20, flexWrap: "wrap", alignItems: "flex-start" }}>
+        <div style={{ width: 260, flexShrink: 0 }}>
+          <ResponsiveContainer width="100%" height={230}>
+            <RadarChart data={radarData} outerRadius={82}>
+              <PolarGrid stroke={t.chartGrid} />
+              <PolarAngleAxis dataKey="axis" tick={{ fill: t.textMuted, fontSize: 10.5 }} />
+              <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+              <Radar dataKey="score" stroke={t.accent} fill={t.accent} fillOpacity={0.28} isAnimationActive={false} />
+              <Tooltip
+                contentStyle={{ background: t.tooltipBg, border: `1px solid ${t.borderStrong}`, borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}
+                formatter={(v, n, e) => [e?.payload?.measured ? `${v} / 100` : "not measured", e?.payload?.axis]} />
+            </RadarChart>
+          </ResponsiveContainer>
+          <div style={{ textAlign: "center", marginTop: -4 }}>
+            <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "monospace", color: t.text }}>
+              {d.overall != null ? Math.round(d.overall * 100) : "—"}
+            </div>
+            <div style={{ fontSize: 10, color: t.textMuted, letterSpacing: 0.8 }}>OVERALL / 100</div>
+            {d.overallBasis && <div style={{ fontSize: 9.5, color: t.textFaint, marginTop: 4 }}>{d.overallBasis}</div>}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 300 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 12 }}>
+            {d.axes.map(a => (
+              <button key={a.key} onClick={() => setAxis(a.key)} style={{
+                background: axis === a.key ? t.accentSoft : "transparent",
+                border: `1px solid ${axis === a.key ? t.accent : t.borderStrong}`,
+                color: a.score == null ? t.textFaint : axis === a.key ? t.accent : t.textSecondary,
+                padding: "5px 11px", borderRadius: 3, cursor: "pointer", fontSize: 11, fontFamily: "monospace",
+              }}>
+                {a.label}{a.score != null ? ` ${a.scoreOutOf100}` : " —"}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 12, color: t.textSecondary, lineHeight: 1.6, marginBottom: 6 }}>
+            {selected.description}
+          </div>
+          <div style={{ fontSize: 10.5, color: t.textFaint, marginBottom: 14 }}>
+            Covers {selected.coverage}% of invested value{selected.note ? ` · ${selected.note}` : ""}
+          </div>
+
+          {selected.score == null ? (
+            <div style={{ fontSize: 12, color: t.textFaint }}>{selected.note}</div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+              <div>
+                <div style={{ fontSize: 10, color: t.positive, letterSpacing: 1, marginBottom: 8 }}>LIFTING THE SCORE</div>
+                {selected.lifting.length ? selected.lifting.map(c => (
+                  <ContributionRow key={c.symbol} c={c} positive />
+                )) : <div style={{ fontSize: 11, color: t.textFaint }}>Nothing above the portfolio average.</div>}
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: t.negative, letterSpacing: 1, marginBottom: 8 }}>HOLDING IT BACK</div>
+                {selected.holdingBack.length ? selected.holdingBack.map(c => (
+                  <ContributionRow key={c.symbol} c={c} />
+                )) : <div style={{ fontSize: 11, color: t.textFaint }}>Nothing below the portfolio average.</div>}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div style={{ padding: "10px 18px 14px", borderTop: `1px solid ${t.borderSubtle}`, fontSize: 10, color: t.textFaint, lineHeight: 1.55 }}>
+        Lifting and holding back are measured by each holding's actual pull on the weighted average —
+        position size times its distance from the mean — not by which scored highest. A large holding
+        scoring slightly below average drags the portfolio more than a small one scoring zero.
+        Cash is excluded; axes are weighted as this mandate weights them.
+      </div>
+    </Panel>
+  );
+}
+
+function ContributionRow({ c, positive = false }) {
+  const t = useTheme();
+  return (
+    <div style={{ marginBottom: 9 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 3 }}>
+        <span style={{ color: t.text, fontFamily: "monospace" }}>{c.symbol}</span>
+        <span style={{ color: t.textMuted, fontFamily: "monospace" }}>{c.scoreOutOf100}/100</span>
+      </div>
+      <MeterBar value={c.scoreOutOf100} color={positive ? t.positive : t.negative} height={4} />
+      <div style={{ fontSize: 9.5, color: t.textFaint, marginTop: 3 }}>
+        {c.weight.toFixed(1)}% of invested · pulls the axis {c.pull >= 0 ? "+" : ""}{c.pull.toFixed(1)} pts
+      </div>
+    </div>
+  );
+}
+
+function CorrelationPanel() {
+  const t = useTheme();
+  const [d, setD] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const load = () => fetch(`${API}/portfolio/correlations?limit=5`).then(r => r.json())
+      .then(j => { setD(j); setError(null); })
+      .catch(() => setError("Could not reach the server."));
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (error) return <Panel><div style={{ padding: 18, color: t.negative, fontSize: 12 }}>⚠ {error}</div></Panel>;
+  if (!d) return <Panel><div style={{ padding: 26, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Correlating holdings…</div></Panel>;
+
+  const Pair = ({ p, tone }) => (
+    <div style={{ padding: "9px 0", borderBottom: `1px solid ${t.borderSubtle}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 12 }}>
+        <span style={{ color: t.text, fontFamily: "monospace", flex: 1, minWidth: 0 }}>
+          {p.symbols[0]} <span style={{ color: t.textFaint }}>/</span> {p.symbols[1]}
+        </span>
+        <MeterBar value={Math.abs(p.correlation) * 100} color={tone} height={5} />
+        <span style={{ color: t.text, fontFamily: "monospace", width: 42, textAlign: "right" }}>
+          {p.correlation >= 0 ? "" : "−"}{Math.abs(p.correlation).toFixed(2)}
+        </span>
+      </div>
+      <div style={{ fontSize: 9.5, color: t.textFaint, marginTop: 3 }}>
+        {p.combinedWeight.toFixed(1)}% of the portfolio combined · {p.observations} overlapping days
+      </div>
+    </div>
+  );
+
+  return (
+    <Panel>
+      <SectionHeader title="CORRELATION"
+        subtitle={d.averageCorrelation != null ? `average pair ${d.averageCorrelation.toFixed(2)}` : null} />
+      {!d.available ? (
+        <div style={{ padding: 18, fontSize: 12, color: t.textMuted, lineHeight: 1.6 }}>{d.note}</div>
+      ) : (
+        <>
+          <div style={{ padding: "12px 18px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 22 }}>
+            <div>
+              <div style={{ fontSize: 10, color: t.negative, letterSpacing: 1 }}>MOVES TOGETHER</div>
+              <div style={{ fontSize: 10.5, color: t.textFaint, margin: "3px 0 6px" }}>The pairings doing least to spread your risk.</div>
+              {d.movesTogether.map(p => <Pair key={p.symbols.join()} p={p} tone={t.negative} />)}
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: t.positive, letterSpacing: 1 }}>MOVES LEAST TOGETHER</div>
+              <div style={{ fontSize: 10.5, color: t.textFaint, margin: "3px 0 6px" }}>The pairings doing most to spread it.</div>
+              {d.movesLeastTogether.map(p => <Pair key={p.symbols.join()} p={p} tone={t.positive} />)}
+            </div>
+          </div>
+          <div style={{ padding: "8px 18px 14px", fontSize: 10, color: t.textFaint, lineHeight: 1.55 }}>
+            {d.note}
+            {d.unassessable.length > 0 && ` Not measurable: ${d.unassessable.map(u => u.symbols.join("/")).join(", ")}.`}
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function PortfolioAnalysisPage({ onOpenHolding }) {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    const load = () => fetch(`${API}/portfolio`).then(r => r.json())
+      .then(d => { setData(d); setError(null); })
+      .catch(() => setError("Could not reach the server."));
+    load();
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (error) return <Panel style={{ padding: 20 }}><div style={{ color: t.negative, fontSize: 12 }}>⚠ {error}</div></Panel>;
+  if (!data) return <div style={{ padding: 40, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Loading…</div>;
+
+  const holdingRows = (data.positions ?? [])
+    .filter(p => (p.value ?? 0) > 0)
+    .map(p => ({ label: p.symbol, name: p.name, value: p.value, pct: p.weight }));
+  const withCash = data.cash > 0
+    ? [...holdingRows, { label: "Cash", name: "Cash", value: data.cash, pct: +(data.cash / data.total * 100).toFixed(2) }]
+    : holdingRows;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Panel>
+          <SectionHeader title="ALL HOLDINGS" subtitle={`${holdingRows.length} priced`} />
+          <div style={{ padding: "12px 16px" }}>
+            <CompositionDonut rows={withCash} total={data.total} />
+          </div>
+        </Panel>
+        <PortfolioTypeBox />
+      </div>
+
+      <ScorecardPanel />
+      <CorrelationPanel />
+
+      <div style={{ fontSize: 10.5, color: t.textFaint, lineHeight: 1.6, padding: "0 4px 8px" }}>
+        Every figure on this page is computed server-side from stored daily bars, published fund
+        composition and live prices at the moment of the request. Nothing here is cached in the browser
+        or carried over from a previous session.
+      </div>
+    </div>
+  );
+}
+
 function PortfolioPageV2({ tabJump, onTabChange } = {}) {
   const t = useTheme();
   const [tab, setTab] = useState("holdings");
@@ -7327,6 +8122,10 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
   const [addOpen, setAddOpen] = useState(false);
   const [namesBusy, setNamesBusy] = useState(false);
   const [namesMsg, setNamesMsg] = useState(null);
+  // Which holding the side panel is showing. Held here rather than per row so
+  // clicking a second holding swaps the panel's contents instead of opening a
+  // second panel on top of the first.
+  const [openSymbol, setOpenSymbol] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -7385,7 +8184,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${t.border}` }}>
-        {[["holdings", "Holdings"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
+        {[["holdings", "Holdings"], ["analysis", "Analysis"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{
             background: "transparent", border: "none",
             borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
@@ -7396,11 +8195,16 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
         ))}
       </div>
 
+      {tab === "analysis" && <PortfolioAnalysisPage />}
       {tab === "allocate" && <AllocatePage />}
       {tab === "rebuild" && <RebuildErrorBoundary><RebuildPage /></RebuildErrorBoundary>}
 
       {tab === "holdings" && <>
-      {/* Summary strip */}
+      {/* Summary strip. Total profit and today's move are one box rather than
+          two: they answer the same question at two time scales, and splitting
+          them left the fourth slot spent on a figure that duplicates the
+          third. The freed slot carries what the portfolio has actually
+          compounded at. */}
       <Panel>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
           <RiskMetric align="center" label="TOTAL VALUE" value={`£${data.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
@@ -7413,16 +8217,15 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
             </div>
             <CashTile centered cashAccounts={data.cashAccounts} cash={data.cash} onChanged={load} onDeploy={() => setTab("allocate")} />
           </div>
-          <RiskMetric align="center" label="TOTAL P&L" value={`${data.pnl >= 0 ? "+" : ""}£${Math.abs(data.pnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-            sub={`${data.pnlPct >= 0 ? "+" : ""}${data.pnlPct.toFixed(1)}%`}
-            color={data.pnl >= 0 ? t.positive : t.negative} />
-          <RiskMetric align="center" label="TODAY" value={`${data.dayChange >= 0 ? "+" : ""}£${Math.abs(data.dayChange).toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
-            sub={`${data.dayChangePct >= 0 ? "+" : ""}${data.dayChangePct.toFixed(2)}%`}
-            color={data.dayChange >= 0 ? t.positive : t.negative} />
+          <ProfitTile data={data} />
+          <ReturnTile />
         </div>
       </Panel>
 
-      <PortfolioValueChart />
+      <div style={{ display: "grid", gridTemplateColumns: "1.35fr 1fr", gap: 12 }}>
+        <PortfolioValueChart />
+        <PortfolioTypeBox />
+      </div>
 
       {addOpen && (
         <Modal onClose={() => setAddOpen(false)}>
@@ -7470,7 +8273,8 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
           </div>
         ) : (
           data.positions.map(p => (
-            <HoldingRow key={p.id} p={p} coverage={coverage} onChanged={load} />
+            <HoldingRow key={p.id} p={p} coverage={coverage} onChanged={load}
+              onOpen={() => setOpenSymbol(p.symbol)} active={openSymbol === p.symbol} />
           ))
         )}
       </Panel>
@@ -7510,6 +8314,10 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
         <BreakdownPanel title="WRAPPER" rows={data.breakdowns.wrapper} />
       </div>
       </>}
+
+      {openSymbol && (
+        <HoldingSidePanel symbol={openSymbol} onClose={() => setOpenSymbol(null)} onChanged={load} />
+      )}
     </div>
   );
 }

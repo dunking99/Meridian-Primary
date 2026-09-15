@@ -376,6 +376,28 @@ function blend(components, signalWeights) {
 // ─── Entry point ──────────────────────────────────────────────
 
 /**
+ * The five measurable components for one symbol, without the verdict
+ * machinery around them.
+ *
+ * Split out so the Portfolio scorecard can score what is already held on
+ * exactly the same axes, computed by exactly the same code, as the rebuild
+ * pipeline scores candidates. Two engines each with their own idea of what
+ * "quality" means would be worse than useless — the whole point of showing a
+ * held position's score next to a candidate's is that they are comparable.
+ */
+export function componentScores(symbol, { lookbackDays = 750, strategy = 'balanced', timingTrust = 1 } = {}) {
+  return {
+    quality: qualityComponent(symbol, { lookbackDays }),
+    cost: costComponent(symbol),
+    trend: trendComponent(symbol),
+    technical: technicalComponent(symbol, { strategy, timingTrust }),
+    precedent: precedentComponent(symbol),
+  };
+}
+
+export { blend as blendComponents };
+
+/**
  * Assess one candidate end to end.
  *
  * @param {Object} candidate from universe.assembleUniverse
@@ -386,13 +408,7 @@ export function assess(candidate, { mandate, regime, strategy = 'balanced', curr
   const lookbackDays = mandate?.lookbackDays ?? 750;
   const timingTrust = regime?.timingTrust ?? 1;
 
-  const components = {
-    quality: qualityComponent(symbol, { lookbackDays }),
-    cost: costComponent(symbol),
-    trend: trendComponent(symbol),
-    technical: technicalComponent(symbol, { strategy, timingTrust }),
-    precedent: precedentComponent(symbol),
-  };
+  const components = componentScores(symbol, { lookbackDays, strategy, timingTrust });
 
   const support = corroboration(symbol);
   const news = newsGate(symbol);

@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 106 routes
+  index.js               HTTP server, 111 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -90,6 +90,8 @@ server/
     analytics.js         all quantitative primitives
     optimiser.js         FISTA-solved portfolio optimisation
     portfolio.js         valuation, exposure, history reconstruction
+    portfolio-analysis.js  scorecard, correlation pairs, holdings-by-type and
+                         the per-holding detail read behind the side panel
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -125,6 +127,9 @@ scripts/
                          refuses to run against anything but a *.test.db
   test-rebuild.mjs       rebuild pipeline assertions against synthetic
                          fixtures with known-correct answers
+  test-portfolio-analysis.mjs
+                         scorecard, correlation and holding-detail assertions
+                         against the same synthetic world
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -183,6 +188,54 @@ builds a synthetic portfolio containing a deliberate duplicate pair, a
 deliberate junk holding and a strong unheld candidate, and asserts the
 pipeline finds each. `SEED_ONLY=1` stops after seeding, for driving the UI.
 
+## Portfolio → Analysis
+
+The Portfolio page could always say what is held and what it is worth. It could
+not say whether the things held are any good, whether two of them are the same
+bet, or which one is dragging the rest down. That is what this sub-page adds,
+and it adds it without inventing a new scoring system:
+
+- **Scorecard.** The five axes are the *same* axes the rebuild pipeline scores
+  candidates on — quality, trend, technicals, precedent, cost — computed by the
+  same function, so a holding's quality score here and in a rebuild run are the
+  same number rather than two engines quietly disagreeing about one instrument.
+  They are deliberately not Value/Future/Past/Health/Dividend: those are built
+  for picking individual shares, and "dividend" or a blended P/E means very
+  little for an index tracker or a gold ETF.
+- **Attribution.** Each axis names which holdings lift it and which hold it
+  back, ranked by each one's *actual pull on the weighted average* — position
+  size times its distance from the mean — not by whose raw score is highest. A
+  25% holding scoring slightly below average drags the portfolio more than an
+  11% holding scoring zero, and ranking by score would tell you the opposite.
+  The pulls sum to zero across holdings by construction, which the test suite
+  asserts.
+- **Correlation.** The most and least correlated pairs, each with the combined
+  weight of the two holdings, because 0.97 between two 4% positions and 0.97
+  between two 25% positions are not the same finding. The full matrix is
+  deliberately not drawn: with six holdings it is fifteen numbers to read in
+  order to find the two that matter. The two lists are always disjoint.
+- **Coverage, everywhere.** Every axis reports the share of invested value that
+  actually produced a reading, and names the holdings that produced none. A
+  holding with no published expense ratio is missing from the cost axis rather
+  than scored as though it were free. Cash is excluded from the axes, and the
+  page says so.
+
+The side panel on the Holdings tab is one read (`GET /portfolio/holding`)
+rather than six, so opening it does not stall on a chain of round trips. Each
+block degrades on its own: no stored composition means that block explains
+itself and the rest still renders.
+
+**The fourth summary tile is a reconstruction, not an IRR.** A money-weighted
+return needs dated cash flows, and this project stores holdings rather than a
+trade-by-trade record — an "IRR" derived from holdings alone would mean
+inventing the contribution dates it depends on. It is labelled as what it is.
+
+Verify with `MERIDIAN_DB=/tmp/rb.db node scripts/test-portfolio-analysis.mjs`
+against the same seeded world: it asserts the cheap fund lifts the cost axis,
+the expensive near-duplicate holds it back, the junk holding is missing from
+the cost axis entirely rather than scored as free, and that the duplicate pair
+is the top "moves together" result.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -196,6 +249,12 @@ pipeline finds each. `SEED_ONLY=1` stops after seeding, for driving the UI.
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
 `/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`
+
+**Portfolio analysis** — `GET /portfolio/types` (holdings grouped by what kind
+of instrument they actually are) `/portfolio/scorecard` (the five diligence
+axes, portfolio-weighted, with per-axis attribution) `/portfolio/correlations`
+(most and least correlated pairs) `/portfolio/holding?symbol=` (one read for
+the whole side panel) `/portfolio/return` (reconstructed annualised return)
 
 **Rebuild** — `POST /rebuild` `/rebuild/mandate` `/rebuild/compositions/sync` ·
 `GET /rebuild/mandate` `/rebuild/mandate/options` `/rebuild/exposure`
