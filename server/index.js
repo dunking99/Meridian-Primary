@@ -26,6 +26,7 @@ import { rebalance, directContribution } from './engines/rebalance.js';
 import { simulate, goalProbability } from './engines/montecarlo.js';
 import { runAllScenarios, runScenario, shockTest } from './engines/stress.js';
 import * as pf from './engines/portfolio.js';
+import * as pfa from './engines/portfolio-analysis.js';
 import { screen, scoreSymbol, STRATEGIES as SCREEN_STRATEGIES } from './engines/screener.js';
 import { backtest, walkForward, STRATEGIES as BT_STRATEGIES } from './engines/backtest.js';
 import * as paper from './engines/paper.js';
@@ -352,6 +353,54 @@ const routes = {
     pf.reconstructHistoryByHolding(state.prices, Number(q.lookback) || 750),
 
   'GET /portfolio/snapshots': () => ({ snapshots: getSnapshots() }),
+
+  // ── portfolio analysis ─────────────────────────────────────
+  //
+  // Weights come from live prices on every call; the expensive per-instrument
+  // scoring behind them is cached for ten minutes, since it reads stored daily
+  // bars and published fees that do not change between polls.
+
+  'GET /portfolio/types': () => {
+    const v = pf.valuePortfolio(state.prices);
+    return {
+      rows: pfa.holdingsByType(v.positions, v.cash, v.total),
+      total: v.total,
+      invested: v.invested,
+      cash: v.cash,
+    };
+  },
+
+  'GET /portfolio/return': q => {
+    const lookback = Number(q.lookback) || 2500;
+    return pfa.reconstructedReturn(pf.reconstructHistory(state.prices, lookback));
+  },
+
+  'GET /portfolio/scorecard': () => {
+    const v = pf.valuePortfolio(state.prices);
+    const m = rebuild.mandate.loadMandate();
+    const regime = rebuild.regime.readRegime(state.prices, m);
+    return {
+      ...pfa.scorecard(v.positions, { mandate: m, regime }),
+      // Named so the page can say which mandate these axes are weighted for,
+      // rather than presenting one set of weights as universal.
+      regime: { label: regime?.label ?? null, timingTrust: regime?.timingTrust ?? null },
+    };
+  },
+
+  'GET /portfolio/correlations': q => {
+    const v = pf.valuePortfolio(state.prices);
+    return pfa.correlationPairs(v.positions, {
+      minObs: Number(q.minObs) || 60,
+      limit: Number(q.limit) || 5,
+    });
+  },
+
+  'GET /portfolio/holding': q => {
+    const v = pf.valuePortfolio(state.prices);
+    const m = rebuild.mandate.loadMandate();
+    const regime = rebuild.regime.readRegime(state.prices, m);
+    return pfa.holdingDetail(q.symbol, v.positions, { mandate: m, regime });
+  },
 
   'GET /holdings': () => {
     const rows = all('SELECT * FROM holdings ORDER BY symbol');
