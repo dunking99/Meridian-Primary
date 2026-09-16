@@ -4,6 +4,8 @@
 import { all, one, run, getBars, saveSnapshot, getSnapshots, getFundNav } from '../db.js';
 import { SYMBOLS } from '../config.js';
 import * as A from './analytics.js';
+import { regionExposure } from './lookthrough.js';
+import { listCompositions } from './rebuild/exposure.js';
 
 /** Convert any currency amount to GBP using live FX from the price cache. */
 export function toGBP(amount, ccy, prices) {
@@ -107,31 +109,30 @@ export function valuePortfolio(prices) {
 }
 
 /**
- * Concentration diagnostics. The one that matters most is `lookThroughUS`:
- * a global tracker is mostly US equity, so headline geography weights
- * systematically understate real US exposure.
+ * Concentration diagnostics.
+ *
+ * `lookThroughUS` used to come from a hardcoded table of nineteen UK ETF
+ * tickers with a US fraction typed beside each, falling back — for anything
+ * not in that list — to reading the geography label as a string and crediting
+ * "Global" with 0.65. Nothing measured any of it, nothing updated it when a
+ * tracker changed shape, and the Risk page rendered the result to one decimal
+ * place as though it were observed. It is now computed by lookthrough.js from
+ * the fund compositions actually stored, and is unavailable rather than zero
+ * when there is nothing to see through — "we cannot tell" and "you have none"
+ * being different findings.
  */
-const US_LOOKTHROUGH = {
-  'VUSA.L': 1.00, 'SWDA.L': 0.71, 'IWDA.L': 0.71, 'VDPG.L': 0.68,
-  'SEMI.L': 0.55, 'DFND.L': 0.55, 'EXCS.L': 0.02, 'IIND.L': 0.00,
-  'SJPA.L': 0.00, 'ISF.L': 0.00, 'FTAL.L': 0.00, 'IEUX.L': 0.00,
-  'VERX.L': 0.00, 'VERG.L': 0.00, 'VAPX.L': 0.00, 'IPXJ.L': 0.00,
-  'IGLN.L': 0.00, 'SGLN.L': 0.00, 'EEM': 0.00,
-};
-
 function concentrationMetrics(positions, total) {
   if (!total || !positions.length) return null;
   const weights = positions.map(p => p.value / total);
   const sorted = [...weights].sort((a, b) => b - a);
   const hhi = weights.reduce((a, w) => a + w * w, 0);
 
-  let lookThroughUS = 0;
-  for (const p of positions) {
-    const f = US_LOOKTHROUGH[p.symbol];
-    const factor = f != null ? f
-      : (p.geography || '').toLowerCase().includes('us') ? 1
-      : (p.geography || '').toLowerCase().includes('global') ? 0.65 : 0;
-    lookThroughUS += (p.value / total) * factor;
+  let northAmerica = null;
+  try {
+    const compositions = listCompositions(positions.map(p => p.symbol));
+    northAmerica = regionExposure(positions, compositions, 'North America');
+  } catch {
+    northAmerica = { available: false, reason: 'Look-through could not be computed.' };
   }
 
   return {
@@ -141,7 +142,10 @@ function concentrationMetrics(positions, total) {
     herfindahl: +hhi.toFixed(4),
     effectiveHoldings: hhi ? +(1 / hhi).toFixed(2) : 0,
     positionCount: positions.length,
-    lookThroughUS: +(lookThroughUS * 100).toFixed(2),
+    // Kept under the old key so existing callers keep working, but null when
+    // unmeasurable instead of a fabricated number. Consumers must handle null.
+    lookThroughUS: northAmerica?.available ? northAmerica.pctOfSeen : null,
+    lookThrough: northAmerica,
   };
 }
 
