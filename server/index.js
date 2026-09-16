@@ -34,6 +34,7 @@ import * as alerts from './engines/alerts.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
+import * as briefing from './engines/briefing.js';
 import * as bullbear from './engines/bullbear.js';
 import * as research from './engines/research.js';
 import * as allocate from './engines/allocate.js';
@@ -298,6 +299,25 @@ const routes = {
     return { ...r, ...calendar.buildCalendar({ days: Math.min(Number(body?.days) || 120, 400) }) };
   },
   'GET /relationships': q => memory.correlationShifts({ window: Number(q.window) || 60 }),
+
+  // ── daily briefing ─────────────────────────────────────────
+  // The cross-engine read: portfolio, alerts, news, calendar, signals, regime
+  // and correlation, ranked against each other on one materiality scale.
+  // Strictly read-only — state.fired is passed in so alert messages survive
+  // (the poll loop keeps them in memory, not in the row), but nothing here
+  // evaluates or mutates an alert.
+  'GET /briefing': q => briefing.buildBriefing(state.prices, {
+    headlineLimit: Math.min(Number(q.limit) || 6, 30),
+    newsHours: Math.min(Number(q.newsHours) || 36, 168),
+    calendarDays: Math.min(Number(q.calendarDays) || 21, 120),
+    zThreshold: Number(q.z) || 1.5,
+    newsMinRelevance: q.newsMinRelevance != null ? Number(q.newsMinRelevance) : 45,
+    recentlyFired: state.fired,
+  }),
+  // Acknowledgement takes the fingerprints the client actually rendered rather
+  // than rebuilding here, so a finding that appears between render and click
+  // is not silently marked as already seen.
+  'POST /briefing/read': body => briefing.markRead(body?.fingerprints ?? [], body?.generatedAt ?? Date.now()),
   'GET /memory/regime': q => ({ series: memory.regimeHistory({ days: Number(q.days) || 252 }) }),
   'GET /memory/symbol': q => ({
     symbol: q.symbol,

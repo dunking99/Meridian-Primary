@@ -112,6 +112,7 @@ const DISPLAY_NAMES = {
 // again. The page's own front/overview tab is never listed here — that's
 // what clicking the parent item already does.
 const NAV_ITEMS = [
+  { id: "briefing", label: "Briefing", icon: "◆" },
   { id: "changed", label: "What Changed", icon: "⬡" },
   { id: "risk", label: "Risk", icon: "◉" },
   { id: "research", label: "Research", icon: "◎", subItems: [
@@ -823,6 +824,322 @@ function RegimeStat({ label, value, percentile, hint, invert }) {
       ) : (
         <div style={{ fontSize: 9, color: "#2a3548", marginTop: 2 }}>no percentile yet</div>
       )}
+    </div>
+  );
+}
+
+/* ─── Daily Briefing ────────────────────────────────────────────
+ *
+ * The cross-engine page. Every other page answers its own question well and
+ * in isolation; this one asks the backend to rank findings from all of them
+ * against each other and shows the result newest-and-most-material first.
+ *
+ * The design leans on two things the engine guarantees: every finding carries
+ * a materiality on one comparable scale, and every section states its own
+ * coverage. So an empty section is rendered with its reason rather than
+ * hidden, which is what stops a quiet day looking like a broken page.
+ */
+
+const BRIEF_KIND_LABEL = {
+  alert: "ALERT", position_move: "MOVE", news: "NEWS", risk: "RISK",
+  event: "EVENT", signal: "SIGNAL", regime: "REGIME", correlation: "CORR",
+};
+
+function MaterialityDot({ value }) {
+  const t = useTheme();
+  // Three bands rather than a continuous ramp: the number is a ranking device,
+  // and implying it is precise to the point would overstate what it is.
+  const band = value >= 45 ? 2 : value >= 20 ? 1 : 0;
+  const colour = [t.textFaint, "#ffa502", t.negative][band];
+  return (
+    <span
+      title={`Materiality ${value.toFixed(1)} of 100 — how much this is worth your attention, combining how extreme it is, how much of the portfolio it touches, and how actionable its kind is.`}
+      style={{
+        width: 6, height: 6, borderRadius: "50%", background: colour,
+        flex: "none", marginTop: 6, cursor: "help",
+      }}
+    />
+  );
+}
+
+function BriefingItem({ item, onOpenSymbol }) {
+  const t = useTheme();
+  const dirColour = item.direction === "up" ? t.positive
+    : item.direction === "down" ? t.negative : t.textMuted;
+  return (
+    <div style={{
+      display: "flex", gap: 10, padding: "10px 0",
+      borderBottom: `1px solid ${t.border}`,
+    }}>
+      <MaterialityDot value={item.materiality} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span style={{
+            fontSize: 9, fontFamily: "monospace", letterSpacing: 1,
+            color: t.textFaint, border: `1px solid ${t.border}`,
+            borderRadius: 3, padding: "1px 5px",
+          }}>{BRIEF_KIND_LABEL[item.kind] ?? item.kind.toUpperCase()}</span>
+          {item.isNew && (
+            <span style={{
+              fontSize: 9, fontFamily: "monospace", letterSpacing: 1,
+              color: t.accent, border: `1px solid ${t.accent}`,
+              borderRadius: 3, padding: "1px 5px",
+            }}>NEW</span>
+          )}
+          <span style={{ fontSize: 13, color: t.text, fontWeight: 500 }}>{item.title}</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 3 }}>
+          {item.detail}
+          {item.weight != null && (
+            <span style={{ color: t.textFaint }}> · {item.weight.toFixed(1)}% of portfolio</span>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 4, alignItems: "center", flexWrap: "wrap" }}>
+          {item.symbol && (
+            <button
+              onClick={() => onOpenSymbol?.(item.symbol)}
+              style={{
+                background: "transparent", border: "none", padding: 0,
+                color: dirColour, fontSize: 11, fontFamily: "monospace",
+                cursor: "pointer", textDecoration: "underline",
+              }}
+            >{item.symbol}</button>
+          )}
+          {item.meta?.url && (
+            <a href={item.meta.url} target="_blank" rel="noreferrer"
+               style={{ color: t.textMuted, fontSize: 11 }}>read ↗</a>
+          )}
+          <span title={item.source} style={{ fontSize: 10, color: t.textFaint, cursor: "help" }}>
+            source ⓘ
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BriefingSection({ section, onOpenSymbol }) {
+  const t = useTheme();
+  const [open, setOpen] = useState(section.count > 0);
+  return (
+    <div style={{ borderBottom: `1px solid ${t.border}` }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 10,
+          background: "transparent", border: "none", cursor: "pointer",
+          padding: "12px 20px", textAlign: "left",
+        }}
+      >
+        <span style={{ color: t.textFaint, fontSize: 10, fontFamily: "monospace" }}>{open ? "▾" : "▸"}</span>
+        <span style={{
+          fontSize: 12, fontWeight: 700, letterSpacing: 1.2,
+          fontFamily: "monospace", color: t.text, whiteSpace: "nowrap", flex: "none",
+        }}>{section.title.toUpperCase()}</span>
+        <span style={{ fontSize: 11, color: t.textMuted }}>{section.count}</span>
+        {section.newCount > 0 && (
+          <span style={{ fontSize: 10, color: t.accent, fontFamily: "monospace" }}>{section.newCount} new</span>
+        )}
+        {/* An empty section says why it is empty without needing to be opened.
+            Hiding the reason behind a click is what makes a quiet day look
+            like a broken page. Once open, the body carries it instead, so it
+            is not repeated. */}
+        {section.count === 0 && !open && (
+          <span style={{
+            fontSize: 10.5, color: t.textFaint, marginLeft: 4,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0,
+          }}>
+            {section.reason || section.coverage || "Nothing to report."}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div style={{ padding: "0 20px 14px" }}>
+          {section.items.length === 0 ? (
+            section.reason ? (
+              <div style={{ fontSize: 11.5, color: t.textFaint, padding: "4px 0 10px" }}>
+                {section.reason}
+              </div>
+            ) : null
+          ) : (
+            section.items.map(item => (
+              <BriefingItem key={item.fp} item={item} onOpenSymbol={onOpenSymbol} />
+            ))
+          )}
+          {section.coverage && (
+            <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 8, lineHeight: 1.5 }}>
+              {section.coverage}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BriefingPage({ onOpenSymbol }) {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [marking, setMarking] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch(`${API}/briefing?limit=8`);
+      setData(await r.json());
+    } catch {
+      setErr("Could not reach the Meridian API. Start it with: npm run server");
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Sends back the fingerprints this render actually showed, so a finding that
+  // arrives between render and click is not silently marked as already seen.
+  async function markRead() {
+    if (!data) return;
+    setMarking(true);
+    try {
+      await fetch(`${API}/briefing/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fingerprints: data.fingerprints, generatedAt: data.generatedAt }),
+      });
+      await load();
+    } catch { /* the badge staying is a better failure than a false "read" */ }
+    finally { setMarking(false); }
+  }
+
+  if (err) {
+    return (
+      <Panel>
+        <SectionHeader title="BRIEFING" action="RETRY" onAction={load} />
+        <div style={{ padding: 20, color: t.negative, fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+      </Panel>
+    );
+  }
+  if (loading && !data) {
+    return (
+      <Panel>
+        <SectionHeader title="BRIEFING" />
+        <div style={{ padding: 20, color: t.textMuted, fontSize: 12, fontFamily: "monospace" }}>
+          Reading across the engines…
+        </div>
+      </Panel>
+    );
+  }
+  if (!data) return null;
+
+  const toneColour = {
+    action: t.negative, broad: "#ffa502", isolated: "#ffa502",
+    mild: t.textMuted, quiet: t.textMuted,
+  }[data.verdict.tone] ?? t.textMuted;
+
+  const p = data.portfolio;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Panel>
+        <SectionHeader
+          title="BRIEFING"
+          subtitle={new Date(data.generatedAt).toLocaleString("en-GB")}
+          action={marking ? "SAVING…" : "MARK AS READ"}
+          onAction={markRead}
+          extra={
+            <span style={{ fontSize: 11, color: t.textMuted, fontFamily: "monospace" }}>
+              {data.counts.new} new / {data.counts.total}
+            </span>
+          }
+        />
+
+        {/* The verdict. Allowed — and on most days expected — to say nothing
+            happened, which is why it is computed from the findings rather than
+            written by a model that would rather find something. */}
+        <div style={{ padding: "16px 20px", borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ fontSize: 15, color: toneColour, fontWeight: 500, lineHeight: 1.45 }}>
+            {data.verdict.text}
+          </div>
+          {data.lastRead && (
+            <div style={{ fontSize: 11, color: t.textFaint, marginTop: 6 }}>
+              Last read {new Date(data.lastRead.readAt).toLocaleString("en-GB")}
+            </div>
+          )}
+        </div>
+
+        {/* Portfolio line. Kept to what the briefing needs for context — the
+            Portfolio page is where this is the subject rather than the frame. */}
+        <div style={{
+          padding: "12px 20px", display: "flex", gap: 24, flexWrap: "wrap",
+          borderBottom: `1px solid ${t.border}`,
+        }}>
+          {p.available ? (
+            <>
+              <div>
+                <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>VALUE</div>
+                <div style={{ fontSize: 16, color: t.text, fontFamily: "monospace" }}>{gbp0(p.total)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>TODAY</div>
+                <div style={{
+                  fontSize: 16, fontFamily: "monospace",
+                  color: p.dayChange == null ? t.textFaint : p.dayChange >= 0 ? t.positive : t.negative,
+                }}>
+                  {p.dayChange == null ? <NoData reason="No live quotes yet" />
+                    : `${p.dayChange >= 0 ? "+" : ""}${gbp0(p.dayChange)}${p.dayChangePct != null ? ` (${p.dayChangePct >= 0 ? "+" : ""}${p.dayChangePct}%)` : ""}`}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>PRICED</div>
+                <div style={{ fontSize: 16, color: t.text, fontFamily: "monospace" }}>
+                  {p.priced}/{p.positions}
+                </div>
+                {p.unpriced?.length > 0 && (
+                  <div style={{ fontSize: 10, color: t.textFaint }} title={p.unpriced.join(", ")}>
+                    {p.unpriced.length} without a live price
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 12, color: t.textFaint }}>{p.reason}</div>
+          )}
+        </div>
+
+        {/* Headline: the ranked cross-engine list, which is the whole point. */}
+        <div style={{ padding: "6px 20px 14px" }}>
+          <div style={{
+            fontSize: 10, color: t.textFaint, letterSpacing: 1.2,
+            fontFamily: "monospace", padding: "10px 0 2px",
+          }}>WHAT MATTERS MOST</div>
+          {data.headline.length === 0 ? (
+            <div style={{ fontSize: 12, color: t.textFaint, padding: "8px 0" }}>
+              Nothing crossed the threshold today. The sections below show what was checked.
+            </div>
+          ) : (
+            data.headline.map(item => (
+              <BriefingItem key={item.fp} item={item} onOpenSymbol={onOpenSymbol} />
+            ))
+          )}
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionHeader title="EVERYTHING CHECKED" subtitle={`${data.sections.length} sources`} />
+        {data.sections.map(s => (
+          <BriefingSection key={s.key} section={s} onOpenSymbol={onOpenSymbol} />
+        ))}
+        <div style={{ padding: "12px 20px", fontSize: 10.5, color: t.textFaint, lineHeight: 1.6 }}>
+          {data.coverage}
+        </div>
+        {data.failures.length > 0 && (
+          <div style={{ padding: "0 20px 14px", fontSize: 11, color: t.negative }}>
+            {data.failures.length} section{data.failures.length === 1 ? "" : "s"} failed to build:{" "}
+            {data.failures.map(f => `${f.section} (${f.error})`).join("; ")}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -10134,6 +10451,9 @@ function TradingTerminalInner() {
 
         {/* Main content */}
         <div style={{ flex: 1, padding: 20, overflowY: "auto", animation: "fadeIn 0.3s ease", minWidth: 0 }}>
+          {activePage === "briefing" && (
+            <BriefingPage onOpenSymbol={sym => { setResearchJump({ symbol: sym, ts: Date.now() }); setActivePage("research"); }} />
+          )}
           {activePage === "changed" && (
             <WhatChangedPage prices={prices} pulseCount={pulseCount} poll={poll} feed={feed} />
           )}
