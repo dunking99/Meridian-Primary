@@ -513,6 +513,27 @@ deliberately:
   system is Windows-only by design; a Mac clone is a manual `git pull` +
   `npm install` + `npm start` each time, with no persistent second
   install intended.
+- **Base currency and instrument universe are hardcoded to GBP/UK, not
+  user-configurable.** This grew out of always developing against the
+  same real portfolio, and it's now baked further in than "just theming":
+  - `server/engines/portfolio.js` names its own valuation function
+    `toGBP()`, and GBP is the literal base currency throughout, not read
+    from any config — converting to a different base means renaming and
+    rewriting call sites, not flipping a setting.
+  - `server/config.js`'s `WATCHLIST` is a curated list of specific UK
+    ETFs tagged `group: 'ukEtfs'` — there's no equivalent seed for other
+    regions/exchanges.
+  - `'GBP'` is the hardcoded fallback default in roughly a dozen places
+    across `server/index.js` and `server/db.js` (column defaults, request
+    body fallbacks) rather than derived from a single configurable base
+    currency.
+  - `server/sources/ft.js`'s fund-NAV fetch defaults to GBP.
+  - Scope for a future pass: introduce a single configurable base
+    currency (GBP remains the default), replace the `toGBP`/`toGBPOnDate`
+    naming and hardcoded defaults with base-currency-aware equivalents,
+    and make the watchlist/universe seed region-agnostic rather than
+    UK-ETF-specific. Deliberately not started yet — flagged so new work
+    doesn't add further hardcoded GBP/UK assumptions in the meantime.
 
 ## 14. Testing methodology
 
