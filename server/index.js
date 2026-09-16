@@ -33,6 +33,8 @@ import * as paper from './engines/paper.js';
 import * as alerts from './engines/alerts.js';
 import * as signals from './engines/signals.js';
 import * as performance from './engines/performance.js';
+import * as lookthrough from './engines/lookthrough.js';
+import * as exposure from './engines/rebuild/exposure.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
@@ -410,6 +412,17 @@ const routes = {
       benchmark: q.benchmark || undefined,
     });
   },
+  // Full look-through by listing venue, with per-holding basis and the
+  // coverage the headline figure on the Risk page is a share of.
+  'GET /lookthrough': q => {
+    const v = pf.valuePortfolio(state.prices);
+    const priced = v.positions.filter(p => (p.value ?? 0) > 0);
+    const compositions = exposure.listCompositions(priced.map(p => p.symbol));
+    return q.region
+      ? lookthrough.regionExposure(priced, compositions, String(q.region))
+      : lookthrough.lookThrough(priced, compositions);
+  },
+
   'GET /performance/flows': () => ({ flows: performance.listFlows() }),
   'POST /performance/flows': body => performance.addFlow({
     date: body?.date, amount: body?.amount, currency: body?.currency ?? 'GBP',

@@ -7145,12 +7145,26 @@ function RiskPage() {
               <span style={{ color: "#7a8ba0" }}>Top 3 positions</span>
               <span style={{ fontFamily: "monospace", color: "#c8d6e8" }}>{risk.concentration.top3.toFixed(1)}%</span>
             </div>
+            {/* Null when nothing could be looked through, which is a different
+                finding from zero exposure and must not render as one. */}
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
-              <span style={{ color: "#7a8ba0" }}>Look-through US exposure</span>
-              <span style={{ fontFamily: "monospace", color: risk.concentration.lookThroughUS > 50 ? "#ffa502" : "#c8d6e8" }}>
-                {risk.concentration.lookThroughUS.toFixed(1)}%
+              <span style={{ color: "#7a8ba0" }} title={risk.concentration.lookThrough?.basis}>
+                North America, looked through
               </span>
+              {risk.concentration.lookThroughUS == null ? (
+                <NoData reason={risk.concentration.lookThrough?.reason ?? "Nothing could be looked through"} />
+              ) : (
+                <span style={{ fontFamily: "monospace", color: risk.concentration.lookThroughUS > 50 ? "#ffa502" : "#c8d6e8" }}>
+                  {risk.concentration.lookThroughUS.toFixed(1)}%
+                </span>
+              )}
             </div>
+            {risk.concentration.lookThrough?.available && (
+              <div style={{ fontSize: 9.5, color: "#5a6b80", lineHeight: 1.5 }}>
+                of the {risk.concentration.lookThrough.coveragePct}% of the portfolio that could be seen
+                through. Listing venue, not revenue.
+              </div>
+            )}
           </div>
         </Panel>
       </div>
@@ -9183,7 +9197,8 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
         const flags = [
           c.largestPosition > 25 && `Largest position is ${c.largestPosition.toFixed(1)}% of the portfolio`,
           c.top3 > 60 && `Top three positions are ${c.top3.toFixed(1)}% combined`,
-          c.lookThroughUS > 65 && `Look-through US exposure is ~${c.lookThroughUS.toFixed(0)}% — well above the headline geography split`,
+          c.lookThroughUS != null && c.lookThroughUS > 65
+            && `North America is ~${c.lookThroughUS.toFixed(0)}% of what can be looked through — well above the headline geography split`,
           c.effectiveHoldings < 4 && data.positions?.length >= 4 && `Effectively ${c.effectiveHoldings} holdings once weights are accounted for, despite ${data.positions.length} lines`,
         ].filter(Boolean);
         return flags.length > 0 && (
