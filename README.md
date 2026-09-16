@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 119 routes
+  index.js               HTTP server, 123 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -92,6 +92,8 @@ server/
     portfolio.js         valuation, exposure, history reconstruction
     portfolio-analysis.js  scorecard, correlation pairs, holdings-by-type and
                          the per-holding detail read behind the side panel
+    performance.js       money-weighted (XIRR) and time-weighted return from
+                         a dated cash-flow ledger and stored snapshots
     signals.js           cross-engine alert kinds - news, sentiment tone,
                          bull/bear flips, scorecard axes, concentration and
                          correlation breaks - plus repeat/snooze lifecycle
@@ -141,6 +143,8 @@ scripts/
                          quiet-day behaviour, same synthetic world
   test-signals.mjs       each cross-engine alert kind firing and, just as
                          importantly, staying quiet on an unchanged world
+  test-performance.mjs   IRR and TWR against schedules whose answer is known
+                         analytically before the engine runs
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -246,6 +250,55 @@ against the same seeded world: it asserts the cheap fund lifts the cost axis,
 the expensive near-duplicate holds it back, the junk holding is missing from
 the cost axis entirely rather than scored as free, and that the duplicate pair
 is the top "moves together" result.
+
+## Performance
+
+The Portfolio page has shown a reconstructed return with an honest caveat
+attached: it holds current weights fixed and replays them over stored bars,
+which answers "how would this book have done" and not "how did I do". The
+difference is not academic — buy heavily into something just before it falls
+and the reconstruction never sees it, because it does not know when the money
+arrived.
+
+Knowing when the money arrived needed a fact the database did not hold.
+`transactions` records buys and sells, but those are *internal*: a buy moves
+value from cash into a security without changing what the portfolio is worth.
+The flows that matter are the ones crossing the boundary — money paid in and
+taken out — so `performance.js` ships with a ledger for exactly those.
+
+It then computes the two returns that answer different questions and routinely
+disagree:
+
+- **Money-weighted (XIRR)** — what *your money* earned, including the effect of
+  when you added and removed it. The honest answer to "how am I doing".
+- **Time-weighted** — what *the strategy* earned, with deposit timing stripped
+  out. The figure comparable to an index, because an index has no deposits.
+
+The gap between them is the timing effect, and it is the most useful number on
+the page: the only one that says whether *when* you bought helped or hurt,
+separately from *what* you bought. A portfolio can show a strong time-weighted
+return and a poor money-weighted one at the same time; both are correct, and
+showing only one is how a tool flatters its user.
+
+IRR is solved by **bisection, not Newton-Raphson**. Newton converges faster and
+can walk off to a nonsense root on the schedules real portfolios produce — a
+large late withdrawal, several sign changes — and a wrong IRR presented
+confidently is worse than a refused one. Bisection cannot leave its bracket: it
+either finds the root inside it or reports that it could not.
+
+Nothing is inferred. No ledger means no money-weighted return, and the page
+says so rather than guessing a contribution schedule. Under about a week of
+history is refused rather than annualised, because annualising a fortnight
+turns a rounding difference into a headline. Snapshots are only taken while the
+app runs, so time-weighted coverage is stated as a percentage of the days in
+the span rather than smoothed over.
+
+Verify with `MERIDIAN_DB=/tmp/perf.db node scripts/test-performance.mjs`: it
+checks the engine against schedules whose answer is known in advance — 100 in
+and 110 out a year later is exactly 10%; 121 after two years annualises to 10%
+and not 21%; a 9,000 deposit yesterday that raised the value by 9,000 is a zero
+return and not 900%; and money added before a fall produces an IRR below the
+TWR with a timing verdict that says so.
 
 ## Alerts
 
@@ -353,6 +406,9 @@ of instrument they actually are) `/portfolio/scorecard` (the five diligence
 axes, portfolio-weighted, with per-axis attribution) `/portfolio/correlations`
 (most and least correlated pairs) `/portfolio/holding?symbol=` (one read for
 the whole side panel) `/portfolio/return` (reconstructed annualised return)
+
+**Performance** — `GET /performance` (both returns, timing gap and benchmark
+comparison) · `GET|POST|DELETE /performance/flows` (the cash-flow ledger)
 
 **Alerts** — `GET /signals` (both families, with descriptions, progress and
 firing history) · `POST /signals` `/signals/snooze` `/signals/unsnooze`

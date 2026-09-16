@@ -125,6 +125,7 @@ const NAV_ITEMS = [
     { tab: "ai", label: "AI Note" },
   ] },
   { id: "portfolio", label: "Portfolio", icon: "◰", subItems: [
+    { tab: "performance", label: "Performance" },
     { tab: "analysis", label: "Analysis" },
     { tab: "allocate", label: "Allocate" },
     { tab: "rebuild", label: "Rebuild" },
@@ -8751,6 +8752,254 @@ function PortfolioAnalysisPage({ onOpenHolding }) {
   );
 }
 
+/* ─── Performance ───────────────────────────────────────────────
+ *
+ * Two returns, side by side, because they answer different questions and
+ * disagree whenever contribution timing mattered:
+ *
+ *   Money-weighted — what your money earned, timing included.
+ *   Time-weighted  — what the strategy earned, timing removed. The one
+ *                    comparable to an index.
+ *
+ * Neither is inferred from holdings. Where the ledger or the snapshot history
+ * cannot support a figure, the card says so and says what would fix it, rather
+ * than showing a number built on an assumed contribution schedule.
+ */
+
+function ReturnCard({ title, meaning, value, suffix = "% a year", detail, unavailable, children }) {
+  const t = useTheme();
+  const colour = unavailable ? t.textFaint : value >= 0 ? t.positive : t.negative;
+  return (
+    <div style={{
+      background: t.surface, border: `1px solid ${t.border}`, borderRadius: 8,
+      padding: 18, flex: 1, minWidth: 250,
+    }}>
+      <div style={{ fontSize: 10, color: t.textFaint, letterSpacing: 1.2, fontFamily: "monospace" }}>
+        {title.toUpperCase()}
+      </div>
+      {unavailable ? (
+        <>
+          <div style={{ fontSize: 22, color: t.textFaint, fontFamily: "monospace", marginTop: 8 }}>
+            <NoData reason={unavailable} />
+          </div>
+          <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 8, lineHeight: 1.55 }}>{unavailable}</div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 30, color: colour, fontFamily: "monospace", marginTop: 6, fontWeight: 600 }}>
+            {value >= 0 ? "+" : ""}{value.toFixed(2)}<span style={{ fontSize: 14 }}>{suffix}</span>
+          </div>
+          {detail && <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 4 }}>{detail}</div>}
+        </>
+      )}
+      <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 10, lineHeight: 1.5 }}>{meaning}</div>
+      {children}
+    </div>
+  );
+}
+
+function PerformanceTab() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [amount, setAmount] = useState("");
+  const [kind, setKind] = useState("deposit");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState(null);
+
+  const load = useCallback(async () => {
+    try { setData(await (await fetch(`${API}/performance`)).json()); setErr(null); }
+    catch { setErr("Could not reach the Meridian API."); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function addFlow() {
+    setSaving(true); setFormErr(null);
+    try {
+      const res = await fetch(`${API}/performance/flows`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ date, amount: Number(amount), kind, note: note || null }),
+      });
+      const out = await res.json();
+      if (out?.error) { setFormErr(out.error); return; }
+      setAmount(""); setNote("");
+      await load();
+    } catch (e) { setFormErr(String(e.message ?? e)); }
+    finally { setSaving(false); }
+  }
+
+  async function removeFlow(id) {
+    await fetch(`${API}/performance/flows?id=${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Measuring…</div>;
+  if (err) return <Panel style={{ padding: 20 }}><div style={{ color: t.negative, fontSize: 12 }}>⚠ {err}</div></Panel>;
+  if (!data) return null;
+
+  const mwr = data.moneyWeighted, twr = data.timeWeighted;
+  const inputStyle = {
+    background: t.surface, border: `1px solid ${t.border}`, color: t.text,
+    fontSize: 12, padding: "6px 8px", borderRadius: 3, fontFamily: "monospace",
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+        <ReturnCard
+          title="Money-weighted (your return)"
+          meaning="What your money actually earned, including the effect of when you added or removed it."
+          value={mwr.available ? mwr.annualisedPct : 0}
+          unavailable={mwr.available ? null : mwr.reason}
+          detail={mwr.available
+            ? `${gbp0(mwr.netContributed)} in · worth ${gbp0(mwr.currentValue)} · ${mwr.years}y`
+            : null}
+        />
+        <ReturnCard
+          title="Time-weighted (the strategy)"
+          meaning="What the strategy earned with contribution timing stripped out — the figure comparable to an index."
+          value={twr.available && twr.annualisedPct != null ? twr.annualisedPct : 0}
+          unavailable={twr.available
+            ? (twr.annualisedPct == null ? twr.annualisedNote : null)
+            : twr.reason}
+          detail={twr.available
+            ? `${twr.cumulativePct >= 0 ? "+" : ""}${twr.cumulativePct}% cumulative · ${twr.from} to ${twr.to}`
+            : null}
+        />
+      </div>
+
+      {data.timing && (
+        <Panel>
+          <SectionHeader title="TIMING" subtitle={`${data.timing.gapPct >= 0 ? "+" : ""}${data.timing.gapPct}pp`} />
+          <div style={{ padding: "14px 20px" }}>
+            <div style={{
+              fontSize: 14, lineHeight: 1.5,
+              color: data.timing.gapPct >= 0 ? t.positive : t.negative,
+            }}>{data.timing.verdict}</div>
+            <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 8, lineHeight: 1.6 }}>
+              {data.timing.explain}
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      {data.versusBenchmark && (
+        <Panel>
+          <SectionHeader title="VERSUS BENCHMARK" subtitle={data.versusBenchmark.symbol} />
+          <div style={{ padding: "14px 20px", display: "flex", gap: 30, flexWrap: "wrap", alignItems: "baseline" }}>
+            <div>
+              <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>PORTFOLIO</div>
+              <div style={{ fontSize: 20, fontFamily: "monospace", color: t.text }}>
+                {data.versusBenchmark.portfolioPct >= 0 ? "+" : ""}{data.versusBenchmark.portfolioPct}%
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>BENCHMARK</div>
+              <div style={{ fontSize: 20, fontFamily: "monospace", color: t.textMuted }}>
+                {data.versusBenchmark.benchmarkPct >= 0 ? "+" : ""}{data.versusBenchmark.benchmarkPct}%
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>DIFFERENCE</div>
+              <div style={{
+                fontSize: 20, fontFamily: "monospace",
+                color: data.versusBenchmark.differencePct >= 0 ? t.positive : t.negative,
+              }}>
+                {data.versusBenchmark.differencePct >= 0 ? "+" : ""}{data.versusBenchmark.differencePct}pp
+              </div>
+            </div>
+          </div>
+          <div style={{ padding: "0 20px 14px", fontSize: 10.5, color: t.textFaint }}>
+            {data.versusBenchmark.note}
+          </div>
+        </Panel>
+      )}
+
+      <Panel>
+        <SectionHeader
+          title="CASH FLOW LEDGER"
+          subtitle={`${data.flowSummary.count} recorded`}
+          extra={
+            <span style={{ fontSize: 11, color: t.textMuted, fontFamily: "monospace" }}>
+              {gbp0(data.flowSummary.deposited)} in · {gbp0(data.flowSummary.withdrawn)} out
+            </span>
+          }
+        />
+        <div style={{ padding: "14px 20px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>DATE</label>
+            <input id="flow-date" type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>KIND</label>
+            <select id="flow-kind" value={kind} onChange={e => setKind(e.target.value)} style={inputStyle}>
+              <option value="deposit">Paid in</option>
+              <option value="withdrawal">Took out</option>
+            </select>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>AMOUNT</label>
+            <input id="flow-amount" value={amount} onChange={e => setAmount(e.target.value)}
+                   placeholder="1000" style={{ ...inputStyle, width: 110 }} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 120 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>NOTE</label>
+            <input id="flow-note" value={note} onChange={e => setNote(e.target.value)}
+                   placeholder="optional" style={inputStyle} />
+          </div>
+          <button id="flow-add" onClick={addFlow} disabled={saving} style={{
+            background: t.accent, border: "none", color: "#04121a", fontSize: 12, fontWeight: 700,
+            padding: "8px 16px", borderRadius: 3, cursor: saving ? "default" : "pointer", fontFamily: "monospace",
+          }}>{saving ? "SAVING…" : "RECORD"}</button>
+        </div>
+        {formErr && <div style={{ padding: "0 20px 10px", fontSize: 12, color: t.negative }}>{formErr}</div>}
+
+        {/* Said here rather than in a footnote: this ledger is the only reason
+            the money-weighted figure above can exist at all. */}
+        <div style={{ padding: "0 20px 12px", fontSize: 10.5, color: t.textFaint, lineHeight: 1.6 }}>
+          Record money entering or leaving the portfolio as a whole — not buys and sells, which move value
+          between cash and a holding without changing what the portfolio is worth. Without these dates there
+          is no money-weighted return to compute.
+        </div>
+
+        {data.flows.length === 0 ? (
+          <div style={{ padding: "0 20px 18px", fontSize: 12, color: t.textFaint }}>
+            Nothing recorded yet.
+          </div>
+        ) : (
+          <div style={{ padding: "0 20px 16px" }}>
+            {data.flows.map(f => (
+              <div key={f.id} style={{
+                display: "flex", alignItems: "center", gap: 12, padding: "8px 0",
+                borderBottom: `1px solid ${t.border}`,
+              }}>
+                <span style={{ fontSize: 11.5, color: t.textMuted, fontFamily: "monospace", width: 92 }}>{f.date}</span>
+                <span style={{
+                  fontSize: 13, fontFamily: "monospace", width: 110,
+                  color: f.amount >= 0 ? t.positive : t.negative,
+                }}>{f.amount >= 0 ? "+" : ""}{gbp0(f.amount)}</span>
+                <span style={{ fontSize: 11.5, color: t.textFaint, flex: 1 }}>
+                  {f.kind}{f.note ? ` · ${f.note}` : ""}
+                </span>
+                <AlertButton danger onClick={() => removeFlow(f.id)}>DELETE</AlertButton>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <div style={{ fontSize: 10.5, color: t.textFaint, lineHeight: 1.6, padding: "0 2px" }}>
+        {data.coverage}
+        {twr.available && twr.coverageNote && <> {twr.coverageNote}</>}
+      </div>
+    </div>
+  );
+}
+
 function PortfolioPageV2({ tabJump, onTabChange } = {}) {
   const t = useTheme();
   const [tab, setTab] = useState("holdings");
@@ -8831,7 +9080,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${t.border}` }}>
-        {[["holdings", "Holdings"], ["analysis", "Analysis"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
+        {[["holdings", "Holdings"], ["performance", "Performance"], ["analysis", "Analysis"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{
             background: "transparent", border: "none",
             borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
@@ -8842,6 +9091,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
         ))}
       </div>
 
+      {tab === "performance" && <PerformanceTab />}
       {tab === "analysis" && <PortfolioAnalysisPage />}
       {tab === "allocate" && <AllocatePage />}
       {tab === "rebuild" && <RebuildErrorBoundary><RebuildPage /></RebuildErrorBoundary>}
