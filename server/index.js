@@ -31,6 +31,7 @@ import { screen, scoreSymbol, STRATEGIES as SCREEN_STRATEGIES } from './engines/
 import { backtest, walkForward, STRATEGIES as BT_STRATEGIES } from './engines/backtest.js';
 import * as paper from './engines/paper.js';
 import * as alerts from './engines/alerts.js';
+import * as signals from './engines/signals.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
@@ -85,6 +86,30 @@ async function refreshPrices() {
   console.log(`[${new Date().toLocaleTimeString()}] prices ${n}/${symbols.length} in ${Date.now() - t0}ms` +
               (missing.length ? `  missing: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''}` : ''));
   state.status = n > 0 ? 'live' : 'degraded';
+}
+
+/**
+ * The cross-engine alert pass.
+ *
+ * Runs on its own slow beat rather than on the price tick, and shares
+ * state.fired with the price alerts so both families reach the UI through one
+ * channel — a fired alert is a fired alert regardless of which engine noticed.
+ */
+function evaluateSignalAlerts() {
+  try {
+    const valued = pf.valuePortfolio(state.prices);
+    const { fired, skipped } = signals.evaluateSignals(state.prices, { research, valued });
+    if (fired.length) {
+      state.fired = [...fired, ...state.fired].slice(0, 50);
+      for (const f of fired) console.log(`  SIGNAL  ${f.message}`);
+    }
+    const failedEvals = skipped.filter(s => String(s.reason).startsWith('evaluation failed'));
+    if (failedEvals.length) {
+      console.log(`  signal alerts: ${failedEvals.length} failed to evaluate — ${failedEvals[0].reason}`);
+    }
+  } catch (e) {
+    console.log(`  signal alert pass failed: ${e.message}`);
+  }
 }
 
 async function refreshFearGreed() {
@@ -949,7 +974,54 @@ const routes = {
     return alerts.createAlert(body);
   },
   'PUT /alerts': body => alerts.updateAlert(body.id, body.status),
-  'DELETE /alerts': q => { alerts.deleteAlert(Number(q.id)); return { ok: true }; },
+  'DELETE /alerts': q => {
+    // Remembered readings are per-alert; leaving them behind would let a new
+    // alert that happened to reuse the id inherit a stale baseline.
+    signals.clearSignalState(Number(q.id));
+    alerts.deleteAlert(Number(q.id));
+    return { ok: true };
+  },
+
+  // ── cross-engine alerts ────────────────────────────────────
+  // Everything the alerts page needs in one read: both families of alert with
+  // their descriptions, progress toward price thresholds, and the firing
+  // history that survives a repeating alert re-arming.
+  'GET /signals': () => {
+    const rows = alerts.listAlerts();
+    return {
+      alerts: rows.map(a => ({
+        ...a,
+        signal: signals.isSignalKind(a.kind) ? signals.describe(a) : null,
+        history: signals.alertHistory(a.id, 5),
+      })),
+      progress: alerts.alertProgress(state.prices),
+      events: signals.recentEvents(40),
+      priceKinds: alerts.ALERT_KINDS,
+      signalKinds: signals.SIGNAL_KINDS,
+      portfolioSymbol: signals.PORTFOLIO_SYMBOL,
+      // Said plainly rather than implied: an alert that fires while nothing is
+      // open is only waiting in the app, not delivered anywhere.
+      delivery: 'In-app only. Alerts are recorded when they fire and shown here and on the Briefing; '
+        + 'there is no email or desktop notification wired up.',
+    };
+  },
+  'POST /signals': body => signals.createSignalAlert({
+    kind: body?.kind, symbol: body?.symbol ?? null,
+    threshold: body?.threshold ?? null, note: body?.note ?? null,
+    repeat: body?.repeat ?? 'once',
+  }),
+  'POST /signals/snooze': body => signals.snooze(Number(body?.id), Number(body?.days) || 7),
+  'POST /signals/unsnooze': body => signals.unsnooze(Number(body?.id)),
+  'POST /signals/rearm': body => signals.rearm(Number(body?.id)),
+  // Evaluating on demand matters after arming something: the scheduled pass is
+  // fifteen minutes away and a new alert with no baseline yet looks broken
+  // until it has run once.
+  'POST /signals/evaluate': () => {
+    const valued = pf.valuePortfolio(state.prices);
+    const r = signals.evaluateSignals(state.prices, { research, valued });
+    if (r.fired.length) state.fired = [...r.fired, ...state.fired].slice(0, 50);
+    return r;
+  },
 
   // ── watchlist ──────────────────────────────────────────────
   'GET /watchlist': () => ({ watchlist: all('SELECT * FROM watchlist ORDER BY tier, symbol') }),
@@ -1353,6 +1425,11 @@ const server = http.createServer(async (req, res) => {
   setInterval(refreshFearGreed, CADENCE.feargreed);
   setInterval(() => refreshNewsFeed().catch(() => {}), CADENCE.news);
   setInterval(snapshot, CADENCE.snapshot);
+  setInterval(evaluateSignalAlerts, CADENCE.signals);
+  // Once at boot too: after an update or a restart the machine may have been
+  // off for hours, and the first pass is where a flip that happened overnight
+  // gets noticed.
+  evaluateSignalAlerts();
 
   // Overnight history sync. The app already runs continuously on the user's
   // machine (Task Scheduler starts it at login and restarts it on update), so

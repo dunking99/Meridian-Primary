@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 113 routes
+  index.js               HTTP server, 119 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -92,6 +92,9 @@ server/
     portfolio.js         valuation, exposure, history reconstruction
     portfolio-analysis.js  scorecard, correlation pairs, holdings-by-type and
                          the per-holding detail read behind the side panel
+    signals.js           cross-engine alert kinds - news, sentiment tone,
+                         bull/bear flips, scorecard axes, concentration and
+                         correlation breaks - plus repeat/snooze lifecycle
     briefing.js          the cross-engine daily read: ranks findings from
                          portfolio, alerts, news, calendar, signals, regime
                          and correlation on one materiality scale, and diffs
@@ -136,6 +139,8 @@ scripts/
                          against the same synthetic world
   test-briefing.mjs      cross-engine ranking, read-state diffing and
                          quiet-day behaviour, same synthetic world
+  test-signals.mjs       each cross-engine alert kind firing and, just as
+                         importantly, staying quiet on an unchanged world
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -242,6 +247,47 @@ the expensive near-duplicate holds it back, the junk holding is missing from
 the cost axis entirely rather than scored as free, and that the duplicate pair
 is the top "moves together" result.
 
+## Alerts
+
+The alert engine has had ten price and technical kinds since v2, a full
+evaluation loop, and four routes — and no page. Nothing could be armed without
+curl, so in practice nothing ever was. There is now a page, and the kinds it
+can arm are no longer limited to what a price series knows.
+
+`signals.js` adds six cross-engine kinds: an important story on a holding, the
+tone of its coverage shifting, the bull/bear balance flipping, a scorecard axis
+falling through a line, a concentration breach, and two factors that used to
+move together coming apart.
+
+They are separate from `alerts.js` for two reasons that are not stylistic.
+**Cadence** — these read the news table, rebuild signals from bars and run the
+scorecard, which is hundreds of milliseconds rather than the microseconds a
+price comparison costs, so they run on their own 15-minute beat instead of the
+price tick. **State** — a price alert is stateless, but "the balance flipped"
+is only answerable against what it was last time, so each carries a remembered
+reading in `signal_state`.
+
+That remembered state is what stops the common failure: an alert that re-fires
+every cycle on the same unchanged finding. Every kind is tested in both
+directions — it fires when the world genuinely changes, and stays silent when
+asked again about the same world.
+
+Lifecycle is shared by both families: `once` retires on firing, `daily` fires
+at most once a day, `always` stays armed; any alert can be snoozed or muted.
+Firings are recorded in `alert_events`, so history survives a repeating alert
+re-arming.
+
+Portfolio-scoped alerts use a reserved `PORTFOLIO` symbol rather than a null.
+`alerts.symbol` is `NOT NULL`, and dropping that constraint in SQLite means
+rebuilding the table — on a live database holding real alerts, with no backup
+and no undo. A constant was the cheaper trade.
+
+**Delivery is in-app only, and the page says so.** An alert that fires while
+nothing is open is recorded and waiting, not delivered; there is no email or
+desktop notification wired up.
+
+Verify with `MERIDIAN_DB=/tmp/sig.db node scripts/test-signals.mjs`.
+
 ## Briefing
 
 Every other page answers one question in isolation. Noticing that a headline is
@@ -307,6 +353,10 @@ of instrument they actually are) `/portfolio/scorecard` (the five diligence
 axes, portfolio-weighted, with per-axis attribution) `/portfolio/correlations`
 (most and least correlated pairs) `/portfolio/holding?symbol=` (one read for
 the whole side panel) `/portfolio/return` (reconstructed annualised return)
+
+**Alerts** — `GET /signals` (both families, with descriptions, progress and
+firing history) · `POST /signals` `/signals/snooze` `/signals/unsnooze`
+`/signals/rearm` `/signals/evaluate` · `GET|POST|PUT|DELETE /alerts`
 
 **Briefing** — `GET /briefing` (the ranked cross-engine read, with per-section
 coverage) · `POST /briefing/read` (mark the rendered findings as seen, so the
