@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 111 routes
+  index.js               HTTP server, 113 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -92,6 +92,10 @@ server/
     portfolio.js         valuation, exposure, history reconstruction
     portfolio-analysis.js  scorecard, correlation pairs, holdings-by-type and
                          the per-holding detail read behind the side panel
+    briefing.js          the cross-engine daily read: ranks findings from
+                         portfolio, alerts, news, calendar, signals, regime
+                         and correlation on one materiality scale, and diffs
+                         them against the last briefing marked as read
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -130,6 +134,8 @@ scripts/
   test-portfolio-analysis.mjs
                          scorecard, correlation and holding-detail assertions
                          against the same synthetic world
+  test-briefing.mjs      cross-engine ranking, read-state diffing and
+                         quiet-day behaviour, same synthetic world
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -236,6 +242,52 @@ the expensive near-duplicate holds it back, the junk holding is missing from
 the cost axis entirely rather than scored as free, and that the duplicate pair
 is the top "moves together" result.
 
+## Briefing
+
+Every other page answers one question in isolation. Noticing that a headline is
+about your second-largest position, which also had a 2.6-sigma day and has an
+alert armed on it, is work left to the reader across five pages. The briefing
+does that join.
+
+Findings from eight sources — alerts, held-symbol moves, news touching
+holdings, concentration and scorecard flags, calendar events, signal balance,
+regime and correlation — are reduced to one **materiality** score so they can
+be ranked against each other:
+
+    materiality = 100 x strength x stake x kind weight
+
+- **strength** — how extreme the finding is in its own terms, normalised
+  against the point where that kind stops being routine (3 sigma for a move,
+  100 for a relevance score).
+- **stake** — how much of the portfolio it touches, on a square-root curve so a
+  5% position clears the floor while summed stakes stay discriminating at the
+  top of the range, where concentrated portfolios actually live.
+- **kind weight** — how inherently actionable it is. An alert the user set
+  themselves outranks an ambient regime reading of equal strength.
+
+**It reports change, not state.** "US is 33% of your portfolio" is true every
+day and belongs on the Portfolio page. Findings are fingerprinted and diffed
+against the last briefing marked as read (`POST /briefing/read`), so `isNew`
+means new *to the reader* — and new findings lead the headline even when a
+seen finding scores higher. Acknowledgement takes the fingerprints the client
+actually rendered, so a finding arriving between render and click is not
+silently marked as seen.
+
+It is strictly read-only. The alerts engine's `evaluate()` flips alerts to
+triggered as a side effect and the price-poll loop owns that call; the briefing
+reports what fired, it is never what makes an alert fire.
+
+Every section states its own coverage, an empty section says why it is empty
+without being opened, and the verdict is allowed to conclude that nothing
+happened — which on most days it should.
+
+Verify with `MERIDIAN_DB=/tmp/brief.db node scripts/test-briefing.mjs` against
+the seeded world: it asserts a triggered alert outranks ambient findings, a
+story touching two holdings outranks one touching a single holding at the same
+relevance, a high-relevance story about an untracked ticker is excluded
+entirely, fingerprints are stable across rebuilds, and an empty portfolio
+concludes nothing happened rather than inventing a finding.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -255,6 +307,10 @@ of instrument they actually are) `/portfolio/scorecard` (the five diligence
 axes, portfolio-weighted, with per-axis attribution) `/portfolio/correlations`
 (most and least correlated pairs) `/portfolio/holding?symbol=` (one read for
 the whole side panel) `/portfolio/return` (reconstructed annualised return)
+
+**Briefing** — `GET /briefing` (the ranked cross-engine read, with per-section
+coverage) · `POST /briefing/read` (mark the rendered findings as seen, so the
+next build can say what is new)
 
 **Rebuild** — `POST /rebuild` `/rebuild/mandate` `/rebuild/compositions/sync` ·
 `GET /rebuild/mandate` `/rebuild/mandate/options` `/rebuild/exposure`
