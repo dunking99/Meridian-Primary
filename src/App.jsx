@@ -114,6 +114,7 @@ const DISPLAY_NAMES = {
 const NAV_ITEMS = [
   { id: "briefing", label: "Briefing", icon: "◆" },
   { id: "changed", label: "What Changed", icon: "⬡" },
+  { id: "alerts", label: "Alerts", icon: "◭" },
   { id: "risk", label: "Risk", icon: "◉" },
   { id: "research", label: "Research", icon: "◎", subItems: [
     { tab: "compare", label: "Compare" },
@@ -824,6 +825,335 @@ function RegimeStat({ label, value, percentile, hint, invert }) {
       ) : (
         <div style={{ fontSize: 9, color: "#2a3548", marginTop: 2 }}>no percentile yet</div>
       )}
+    </div>
+  );
+}
+
+/* ─── Alerts ────────────────────────────────────────────────────
+ *
+ * The alert engine has existed since v2 and has never had a page. Ten price
+ * and technical kinds, a full evaluation loop and four routes, reachable only
+ * by curl — so in practice nothing was ever armed.
+ *
+ * This is that page, covering both families: the price kinds the poll loop
+ * evaluates on every tick, and the cross-engine kinds that fire on what the
+ * news, bull/bear, scorecard and memory engines know.
+ */
+
+function relTime(ts) {
+  if (!ts) return "never";
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function AlertRow({ row, progress, onAction, portfolioSymbol }) {
+  const t = useTheme();
+  const [busy, setBusy] = useState(false);
+  const isSignal = !!row.signal;
+  const snoozed = row.snooze_until && row.snooze_until > Date.now();
+  const armed = row.status === "active" && !snoozed;
+
+  const statusColour = row.status === "triggered" ? "#ffa502"
+    : row.status === "muted" ? t.textFaint
+    : snoozed ? t.textFaint : t.positive;
+  const statusText = row.status === "triggered" ? "FIRED"
+    : row.status === "muted" ? "MUTED"
+    : snoozed ? `SNOOZED ${relTime(row.snooze_until).replace(" ago", "")}` : "ARMED";
+
+  async function act(fn) { setBusy(true); try { await fn(); } finally { setBusy(false); } }
+
+  return (
+    <div style={{ padding: "12px 20px", borderBottom: `1px solid ${t.border}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <span style={{
+          fontSize: 9, fontFamily: "monospace", letterSpacing: 1, color: statusColour,
+          border: `1px solid ${statusColour}`, borderRadius: 3, padding: "1px 5px",
+        }}>{statusText}</span>
+        <span style={{ fontSize: 13, color: t.text, fontFamily: "monospace" }}>
+          {row.symbol === portfolioSymbol ? "Portfolio" : row.symbol}
+        </span>
+        <span style={{ fontSize: 12.5, color: t.textSecondary }}>
+          {isSignal ? row.signal.text : `${row.kind}${row.threshold != null ? ` ${row.direction} ${row.threshold}` : ""}`}
+        </span>
+        {isSignal && (
+          <span style={{ fontSize: 9, fontFamily: "monospace", color: t.accent, letterSpacing: 1 }}>
+            CROSS-ENGINE
+          </span>
+        )}
+      </div>
+
+      <div style={{ fontSize: 11, color: t.textFaint, marginTop: 4 }}>
+        repeats: {row.repeat_mode ?? "once"}
+        {row.fire_count > 0 && ` · fired ${row.fire_count}×, last ${relTime(row.last_fired_at)}`}
+        {row.note && ` · your note: ${row.note}`}
+      </div>
+
+      {/* Progress only means something for a price level — showing a bar for a
+          kind with no distance-to-threshold would invent a reading. */}
+      {progress?.progress != null && armed && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ height: 4, background: t.border, borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${progress.progress}%`, background: t.accent }} />
+          </div>
+          <div style={{ fontSize: 10, color: t.textFaint, marginTop: 3 }}>
+            now {progress.current} · {progress.distancePct > 0 ? "+" : ""}{progress.distancePct}% to go
+          </div>
+        </div>
+      )}
+
+      {row.history?.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: t.textMuted }}>
+          {row.history.slice(0, 2).map(h => (
+            <div key={h.id} style={{ marginTop: 2 }}>
+              <span style={{ color: t.textFaint, fontFamily: "monospace", fontSize: 10 }}>
+                {new Date(h.fired_at).toLocaleString("en-GB")}
+              </span>{" "}{h.message}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+        {row.status === "triggered" && (
+          <AlertButton disabled={busy} onClick={() => act(() => onAction("rearm", row))}>RE-ARM</AlertButton>
+        )}
+        {snoozed
+          ? <AlertButton disabled={busy} onClick={() => act(() => onAction("unsnooze", row))}>WAKE</AlertButton>
+          : <AlertButton disabled={busy} onClick={() => act(() => onAction("snooze", row))}>SNOOZE 7d</AlertButton>}
+        {row.status === "muted"
+          ? <AlertButton disabled={busy} onClick={() => act(() => onAction("unmute", row))}>UNMUTE</AlertButton>
+          : <AlertButton disabled={busy} onClick={() => act(() => onAction("mute", row))}>MUTE</AlertButton>}
+        <AlertButton disabled={busy} danger onClick={() => act(() => onAction("delete", row))}>DELETE</AlertButton>
+      </div>
+    </div>
+  );
+}
+
+function AlertButton({ children, onClick, disabled, danger }) {
+  const t = useTheme();
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      background: "transparent",
+      border: `1px solid ${danger ? t.negative : t.borderStrong}`,
+      color: disabled ? t.textFaint : danger ? t.negative : t.textSecondary,
+      fontSize: 10, padding: "4px 9px", borderRadius: 3,
+      cursor: disabled ? "default" : "pointer", fontFamily: "monospace", letterSpacing: 0.5,
+    }}>{children}</button>
+  );
+}
+
+function AlertsPage() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [kind, setKind] = useState("concentration");
+  const [symbol, setSymbol] = useState("");
+  const [threshold, setThreshold] = useState("");
+  const [repeat, setRepeat] = useState("once");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [formErr, setFormErr] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/signals`);
+      setData(await r.json());
+      setErr(null);
+    } catch { setErr("Could not reach the Meridian API. Start it with: npm run server"); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const signalKinds = data?.signalKinds ?? {};
+  const priceKinds = data?.priceKinds ?? {};
+  const spec = signalKinds[kind] ?? null;
+  const isSignal = !!spec;
+  const needsSymbol = isSignal ? spec.scope === "symbol" : true;
+  const needsThreshold = isSignal ? spec.needsThreshold : (priceKinds[kind]?.needsThreshold ?? false);
+
+  async function create() {
+    setSaving(true); setFormErr(null);
+    try {
+      const body = isSignal
+        ? { kind, symbol: needsSymbol ? symbol.toUpperCase().trim() : null,
+            threshold: threshold === "" ? null : Number(threshold), repeat, note: note || null }
+        : { symbol: symbol.toUpperCase().trim(), kind, direction: "above",
+            threshold: threshold === "" ? null : Number(threshold), note: note || null };
+      const res = await fetch(`${API}/${isSignal ? "signals" : "alerts"}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      const out = await res.json();
+      if (out?.error) { setFormErr(out.error); return; }
+      setSymbol(""); setThreshold(""); setNote("");
+      // A freshly armed cross-engine alert has no baseline until a pass has
+      // run, so it would sit there looking inert for fifteen minutes.
+      if (isSignal) await fetch(`${API}/signals/evaluate`, { method: "POST" }).catch(() => {});
+      await load();
+    } catch (e) { setFormErr(String(e.message ?? e)); }
+    finally { setSaving(false); }
+  }
+
+  async function onAction(action, row) {
+    const post = (path, body) => fetch(`${API}${path}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (action === "snooze") await post("/signals/snooze", { id: row.id, days: 7 });
+    if (action === "unsnooze") await post("/signals/unsnooze", { id: row.id });
+    if (action === "rearm") await post("/signals/rearm", { id: row.id });
+    if (action === "mute" || action === "unmute") {
+      await fetch(`${API}/alerts`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: row.id, status: action === "mute" ? "muted" : "active" }),
+      });
+    }
+    if (action === "delete") await fetch(`${API}/alerts?id=${row.id}`, { method: "DELETE" });
+    await load();
+  }
+
+  if (err) {
+    return (
+      <Panel>
+        <SectionHeader title="ALERTS" action="RETRY" onAction={load} />
+        <div style={{ padding: 20, color: t.negative, fontSize: 12, fontFamily: "monospace" }}>{err}</div>
+      </Panel>
+    );
+  }
+  if (loading && !data) {
+    return (
+      <Panel><SectionHeader title="ALERTS" />
+        <div style={{ padding: 20, color: t.textMuted, fontSize: 12, fontFamily: "monospace" }}>Loading alerts…</div>
+      </Panel>
+    );
+  }
+
+  const rows = data.alerts ?? [];
+  // Snoozed alerts keep status 'active' in the table — the snooze is a
+  // separate timestamp — but grouping one under "armed" while its own badge
+  // reads SNOOZED contradicts itself, so the page treats it as not armed.
+  const isArmed = r => r.status === "active" && !(r.snooze_until && r.snooze_until > Date.now());
+  const armed = rows.filter(isArmed);
+  const rest = rows.filter(r => !isArmed(r));
+  const progressById = Object.fromEntries((data.progress ?? []).map(p => [p.id, p]));
+
+  const inputStyle = {
+    background: t.surfaceAlt ?? t.surface, border: `1px solid ${t.border}`,
+    color: t.text, fontSize: 12, padding: "6px 8px", borderRadius: 3,
+    fontFamily: "monospace", minWidth: 0,
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <Panel>
+        <SectionHeader title="ARM AN ALERT" subtitle={`${armed.length} armed`} action="REFRESH" onAction={load} />
+        <div style={{ padding: "14px 20px", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>CONDITION</label>
+            <select id="alert-kind" value={kind} onChange={e => setKind(e.target.value)} style={{ ...inputStyle, minWidth: 220 }}>
+              <optgroup label="Cross-engine">
+                {Object.entries(signalKinds).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </optgroup>
+              <optgroup label="Price and technicals">
+                {Object.entries(priceKinds).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </optgroup>
+            </select>
+          </div>
+          {needsSymbol && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>SYMBOL</label>
+              <input id="alert-symbol" value={symbol} onChange={e => setSymbol(e.target.value)}
+                     placeholder="e.g. VUSA.L" style={{ ...inputStyle, width: 120 }} />
+            </div>
+          )}
+          {needsThreshold && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>THRESHOLD</label>
+              <input id="alert-threshold" value={threshold} onChange={e => setThreshold(e.target.value)}
+                     placeholder={spec?.defaultThreshold != null ? String(spec.defaultThreshold) : "value"}
+                     style={{ ...inputStyle, width: 100 }} />
+            </div>
+          )}
+          {isSignal && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>REPEATS</label>
+              <select id="alert-repeat" value={repeat} onChange={e => setRepeat(e.target.value)} style={{ ...inputStyle, width: 110 }}>
+                <option value="once">Once</option>
+                <option value="daily">Daily</option>
+                <option value="always">Every time</option>
+              </select>
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 140 }}>
+            <label style={{ fontSize: 9, color: t.textFaint, letterSpacing: 1, fontFamily: "monospace" }}>NOTE (OPTIONAL)</label>
+            <input id="alert-note" value={note} onChange={e => setNote(e.target.value)}
+                   placeholder="why you care" style={inputStyle} />
+          </div>
+          <button id="alert-create" onClick={create} disabled={saving} style={{
+            background: t.accent, border: "none", color: "#04121a", fontSize: 12, fontWeight: 700,
+            padding: "8px 16px", borderRadius: 3, cursor: saving ? "default" : "pointer", fontFamily: "monospace",
+          }}>{saving ? "ARMING…" : "ARM"}</button>
+        </div>
+        {spec && (
+          <div style={{ padding: "0 20px 12px", fontSize: 11.5, color: t.textMuted }}>
+            {spec.describe ? null : null}
+            {spec.scope === "portfolio"
+              ? "Watches the portfolio as a whole — no symbol needed."
+              : "Watches one instrument, using what the news and research engines know about it."}
+          </div>
+        )}
+        {formErr && (
+          <div style={{ padding: "0 20px 12px", fontSize: 12, color: t.negative }}>{formErr}</div>
+        )}
+        <div style={{ padding: "0 20px 14px", fontSize: 10.5, color: t.textFaint, lineHeight: 1.6 }}>
+          {data.delivery}
+        </div>
+      </Panel>
+
+      <Panel>
+        <SectionHeader title="ARMED" subtitle={`${armed.length}`} />
+        {armed.length === 0 ? (
+          <div style={{ padding: 20, fontSize: 12, color: t.textFaint }}>
+            Nothing armed. Alerts you arm here are evaluated automatically while the app is running.
+          </div>
+        ) : armed.map(row => (
+          <AlertRow key={row.id} row={row} progress={progressById[row.id]}
+                    onAction={onAction} portfolioSymbol={data.portfolioSymbol} />
+        ))}
+      </Panel>
+
+      {rest.length > 0 && (
+        <Panel>
+          <SectionHeader title="FIRED AND MUTED" subtitle={`${rest.length}`} />
+          {rest.map(row => (
+            <AlertRow key={row.id} row={row} progress={progressById[row.id]}
+                      onAction={onAction} portfolioSymbol={data.portfolioSymbol} />
+          ))}
+        </Panel>
+      )}
+
+      <Panel>
+        <SectionHeader title="FIRING HISTORY" subtitle={`${(data.events ?? []).length} recorded`} />
+        {(data.events ?? []).length === 0 ? (
+          <div style={{ padding: 20, fontSize: 12, color: t.textFaint }}>
+            No alert has fired yet. History is kept even when a repeating alert re-arms.
+          </div>
+        ) : (
+          <div style={{ padding: "8px 20px 16px" }}>
+            {data.events.map(e => (
+              <div key={e.id} style={{ padding: "8px 0", borderBottom: `1px solid ${t.border}` }}>
+                <div style={{ fontSize: 12.5, color: t.text }}>{e.message}</div>
+                <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 2, fontFamily: "monospace" }}>
+                  {new Date(e.fired_at).toLocaleString("en-GB")} · {e.kind} · {e.symbol}
+                </div>
+                {e.detail && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>{e.detail}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -10456,6 +10786,9 @@ function TradingTerminalInner() {
           )}
           {activePage === "changed" && (
             <WhatChangedPage prices={prices} pulseCount={pulseCount} poll={poll} feed={feed} />
+          )}
+          {activePage === "alerts" && (
+            <AlertsPage />
           )}
           {activePage === "risk" && (
             <RiskPage />

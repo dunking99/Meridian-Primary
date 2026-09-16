@@ -20,6 +20,12 @@ export const CADENCE = {
   news:      600_000,
   edgar:     3_600_000,
   snapshot:  900_000,   // portfolio snapshot every 15 min while running
+  // Cross-engine alerts read the news table, rebuild bull/bear signals from
+  // bars and run the scorecard — hundreds of milliseconds, not the
+  // microseconds a price comparison costs. They are also claims about change
+  // over days, so evaluating them on the price tick would burn work to answer
+  // the same question sixty times an hour.
+  signals:   900_000,
 };
 
 // ─── Symbol universe ──────────────────────────────────────────
