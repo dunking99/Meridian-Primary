@@ -32,6 +32,7 @@ import { backtest, walkForward, STRATEGIES as BT_STRATEGIES } from './engines/ba
 import * as paper from './engines/paper.js';
 import * as alerts from './engines/alerts.js';
 import * as signals from './engines/signals.js';
+import * as performance from './engines/performance.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
 import * as calendar from './engines/calendar.js';
@@ -398,6 +399,23 @@ const routes = {
     pf.reconstructHistoryByHolding(state.prices, Number(q.lookback) || 750),
 
   'GET /portfolio/snapshots': () => ({ snapshots: getSnapshots() }),
+
+  // ── performance ────────────────────────────────────────────
+  // Money-weighted and time-weighted return, which answer different questions
+  // and routinely disagree. Both come from recorded facts — the cash-flow
+  // ledger and stored snapshots — never inferred from current holdings.
+  'GET /performance': q => {
+    const v = pf.valuePortfolio(state.prices);
+    return performance.performanceReport(v.total, getSnapshots(), {
+      benchmark: q.benchmark || undefined,
+    });
+  },
+  'GET /performance/flows': () => ({ flows: performance.listFlows() }),
+  'POST /performance/flows': body => performance.addFlow({
+    date: body?.date, amount: body?.amount, currency: body?.currency ?? 'GBP',
+    account: body?.account ?? 'Main', kind: body?.kind ?? 'deposit', note: body?.note ?? null,
+  }),
+  'DELETE /performance/flows': q => performance.deleteFlow(Number(q.id)),
 
   // ── portfolio analysis ─────────────────────────────────────
   //
