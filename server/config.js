@@ -20,6 +20,10 @@ export const CADENCE = {
   news:      600_000,
   edgar:     3_600_000,
   snapshot:  900_000,   // portfolio snapshot every 15 min while running
+  // Reports are checked hourly rather than on a period boundary. The app is
+  // closed most of the time, so what matters is noticing a completed period
+  // soon after the app next runs, not firing at midnight on the dot.
+  reports:   3_600_000,
   // Cross-engine alerts read the news table, rebuild bull/bear signals from
   // bars and run the scorecard — hundreds of milliseconds, not the
   // microseconds a price comparison costs. They are also claims about change
