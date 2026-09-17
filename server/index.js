@@ -35,6 +35,7 @@ import * as signals from './engines/signals.js';
 import * as performance from './engines/performance.js';
 import * as lookthrough from './engines/lookthrough.js';
 import * as correlation from './engines/correlation.js';
+import * as xray from './engines/xray.js';
 import * as exposure from './engines/rebuild/exposure.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
@@ -516,6 +517,25 @@ const routes = {
       weights,
       tail: Number(q.tail) || correlation.STRESS_TAIL,
     });
+  },
+
+  // ─── Portfolio X-ray ────────────────────────────────────────
+  // What you actually own, as opposed to what you bought.
+  'GET /xray': q => {
+    const v = pf.valuePortfolio(state.prices);
+    return xray.xray(v.positions, { top: Number(q.top) || 10 });
+  },
+
+  // Companies reached through more than one holding.
+  'GET /xray/overlaps': () => {
+    const v = pf.valuePortfolio(state.prices);
+    return { pairs: xray.multiFundNames(xray.underlyingExposure(v.positions)) };
+  },
+
+  // Sector exposure blended through every fund that publishes one.
+  'GET /xray/sectors': () => {
+    const v = pf.valuePortfolio(state.prices);
+    return xray.sectorExposure(v.positions);
   },
 
   // Pairs that duplicate each other, ranked by how much of the book they cover.

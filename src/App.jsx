@@ -125,6 +125,7 @@ const NAV_ITEMS = [
     { tab: "ai", label: "AI Note" },
   ] },
   { id: "portfolio", label: "Portfolio", icon: "◰", subItems: [
+    { tab: "xray", label: "X-Ray" },
     { tab: "performance", label: "Performance" },
     { tab: "analysis", label: "Analysis" },
     { tab: "allocate", label: "Allocate" },
@@ -7571,6 +7572,285 @@ function CorrelationReportPanel() {
   );
 }
 
+// ============================================================
+// PORTFOLIO X-RAY
+// ============================================================
+//
+// Every weight this panel shows is a floor, because fund compositions publish
+// roughly a top ten and the rest of each fund is not disclosed anywhere free.
+// The UI has to carry that or it lies by omission: the coverage bar leads,
+// every figure is prefixed "at least", and the undisclosed remainder is drawn
+// rather than described, so a reader cannot mistake a partial picture for a
+// complete one. Scaling the disclosed weights up to fill the gap would make
+// all of this look much better and would be false.
+
+function CoverageBar({ coverage }) {
+  const t = useTheme();
+  const seen = Math.max(0, Math.min(coverage?.seen ?? 0, 1));
+  const unseen = Math.max(0, 1 - seen);
+  return (
+    <div style={{ padding: "16px 18px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <span style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace" }}>
+          HOW MUCH OF THE BOOK CAN BE SEEN THROUGH
+        </span>
+        <span style={{ fontSize: 22, fontWeight: 700, fontFamily: "monospace", color: seen > 0.5 ? t.accent : t.warning }}>
+          {(seen * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div style={{ display: "flex", height: 18, borderRadius: 3, overflow: "hidden", border: `1px solid ${t.border}` }}>
+        <div style={{ width: `${seen * 100}%`, background: t.accent }} />
+        <div style={{
+          width: `${unseen * 100}%`,
+          background: `repeating-linear-gradient(45deg, ${t.surfaceAlt} 0px, ${t.surfaceAlt} 4px, ${t.surfaceInset} 4px, ${t.surfaceInset} 8px)`,
+        }} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 7, fontSize: 10, color: t.textFaint }}>
+        <span>disclosed holdings</span>
+        <span>{(unseen * 100).toFixed(1)}% not published by the funds</span>
+      </div>
+      <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 10, lineHeight: 1.55 }}>
+        Funds publish roughly their ten largest holdings. Everything below is what those
+        disclosures add up to, so each figure is a floor — the true exposure can only be higher.
+        {coverage?.positionsUnseen > 0 && (coverage.positionsUnseen === 1
+          ? " 1 holding publishes nothing at all."
+          : ` ${coverage.positionsUnseen} holdings publish nothing at all.`)}
+      </div>
+    </div>
+  );
+}
+
+/** Underlying companies as horizontal bars. Route count is drawn as pips
+ *  beside the bar, because "arrives three different ways" is the finding. */
+function UnderlyingBars({ underlyings, limit = 14 }) {
+  const t = useTheme();
+  const rows = (underlyings ?? []).slice(0, limit);
+  if (!rows.length) return <div style={{ padding: 18 }}><NoData reason="Nothing could be looked through" /></div>;
+  const max = rows[0].weight || 1;
+
+  return (
+    <div style={{ padding: "12px 18px 16px" }}>
+      {rows.map(u => (
+        <div key={u.key} style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <span style={{ fontSize: 11.5, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "70%" }}>
+              {u.name ?? u.symbol}
+              {u.viaCount > 1 && (
+                <span style={{
+                  marginLeft: 7, fontSize: 9.5, fontFamily: "monospace",
+                  color: t.warning, border: `1px solid ${t.warning}66`,
+                  borderRadius: 2, padding: "1px 4px",
+                }}>×{u.viaCount}</span>
+              )}
+            </span>
+            <span style={{ fontSize: 11.5, fontFamily: "monospace", color: t.textSecondary }}>
+              {u.exact ? "" : "≥"}{(u.weight * 100).toFixed(2)}%
+            </span>
+          </div>
+          <div style={{ height: 8, background: t.surfaceInset, borderRadius: 2, overflow: "hidden", display: "flex" }}>
+            {/* Segmented by route, so a name that is one big holding reads
+                differently from one assembled out of four small ones. */}
+            {u.via.map((v, i) => (
+              <div key={v.symbol + i}
+                title={`${v.name ?? v.symbol}: ${(v.contribution * 100).toFixed(2)}%`}
+                style={{
+                  width: `${(v.contribution / max) * 100}%`,
+                  height: "100%",
+                  background: i % 2 === 0 ? t.accent : t.info,
+                  borderRight: u.via.length > 1 ? `1px solid ${t.appBg}` : "none",
+                }} />
+            ))}
+          </div>
+        </div>
+      ))}
+      <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8, lineHeight: 1.5 }}>
+        ≥ marks a floor from partial fund disclosure. Bars are split by which holding each
+        part arrived through — hover a segment to see it.
+      </div>
+    </div>
+  );
+}
+
+function OverlapList({ overlaps }) {
+  const t = useTheme();
+  const rows = (overlaps ?? []).slice(0, 8);
+  if (!rows.length) {
+    return (
+      <div style={{ padding: 18, fontSize: 11, color: t.textMuted, lineHeight: 1.6 }}>
+        No company is reached through more than one holding, among the holdings that
+        publish their contents.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "4px 0 8px" }}>
+      {rows.map(o => (
+        <div key={o.key} style={{ padding: "10px 18px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+            <span style={{ fontSize: 11.5, color: t.text }}>{o.name ?? o.symbol}</span>
+            <span style={{ fontSize: 11.5, fontFamily: "monospace", color: t.warning }}>
+              ≥{(o.weight * 100).toFixed(2)}%
+            </span>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {o.via.map((v, i) => (
+              <span key={v.symbol + i} style={{
+                fontSize: 9.5, fontFamily: "monospace", background: t.surfaceInset,
+                color: t.textMuted, padding: "2px 6px", borderRadius: 3,
+              }}>
+                {v.name ?? v.symbol} {(v.contribution * 100).toFixed(2)}%
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SectorBlend({ sectors }) {
+  const t = useTheme();
+  if (!sectors?.available) {
+    return <div style={{ padding: 18 }}><NoData reason={sectors?.reason ?? "No holding publishes a sector split"} /></div>;
+  }
+  const rows = sectors.sectors.slice(0, 12);
+  const max = Math.max(...rows.map(r => r.weightOfBook), 0.0001);
+  const palette = [t.accent, t.info, t.warning, t.positive, "#a78bfa", "#f472b6", "#38bdf8", "#facc15"];
+
+  return (
+    <div style={{ padding: "12px 18px 16px" }}>
+      {rows.map((s, i) => (
+        <div key={s.sector} style={{ marginBottom: 9 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span style={{ fontSize: 11, color: t.textSecondary, textTransform: "capitalize" }}>{s.sector}</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.textMuted }}>
+              {(s.weightOfBook * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div style={{ height: 7, background: t.surfaceInset, borderRadius: 2, overflow: "hidden" }}>
+            <div style={{ width: `${(s.weightOfBook / max) * 100}%`, height: "100%", background: palette[i % palette.length] }} />
+          </div>
+        </div>
+      ))}
+      <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8, lineHeight: 1.5 }}>
+        Percentages are of the whole book. {sectors.basis}
+      </div>
+    </div>
+  );
+}
+
+function XRayTab() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API}/xray`, { signal: AbortSignal.timeout(20000) });
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.error) { setError(json.error); } else { setData(json); setError(null); }
+      } catch (e) {
+        if (!cancelled) setError("Could not reach the X-ray engine.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (error) return <Panel><div style={{ padding: 20, color: t.negative, fontSize: 12 }}>⚠ {error}</div></Panel>;
+  if (!data) return <Panel><div style={{ padding: 26, textAlign: "center", color: t.textMuted, fontSize: 12 }}>Looking through the funds…</div></Panel>;
+  if (!data.available) {
+    return <Panel><div style={{ padding: 20, fontSize: 11.5, color: t.textMuted }}>{data.reason}</div></Panel>;
+  }
+
+  const c = data.concentration;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
+      <Panel>
+        <SectionHeader title="X-RAY" subtitle="what you actually own, rather than what you bought" />
+        <CoverageBar coverage={data.coverage} />
+      </Panel>
+
+      {/* The contrast that justifies the whole tab */}
+      {c?.available && (
+        <Panel>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)" }}>
+            <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>YOU BOUGHT</div>
+              <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "monospace", color: t.text, lineHeight: 1 }}>{c.positionCount}</div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7 }}>holdings</div>
+            </div>
+            <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>YOU OWN</div>
+              <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "monospace", color: t.accent, lineHeight: 1 }}>{c.distinctNames}</div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7 }}>disclosed companies</div>
+            </div>
+            <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>LARGEST COMPANY</div>
+              <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "monospace", color: t.text, lineHeight: 1 }}>
+                {c.largestName ? `≥${(c.largestName.weight * 100).toFixed(1)}%` : <NoData />}
+              </div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {c.largestName?.name ?? "—"}
+              </div>
+            </div>
+            <div style={{ padding: "16px 18px" }}>
+              <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>HELD TWICE OVER</div>
+              <div style={{
+                fontSize: 26, fontWeight: 700, fontFamily: "monospace", lineHeight: 1,
+                color: (data.overlaps?.length ?? 0) > 0 ? t.warning : t.text,
+              }}>{data.overlaps?.length ?? 0}</div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7 }}>via several holdings</div>
+            </div>
+          </div>
+        </Panel>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.25fr 1fr", gap: 16 }}>
+        <Panel>
+          <SectionHeader title="WHAT YOU ACTUALLY HOLD" subtitle="largest underlying companies across every fund" />
+          <UnderlyingBars underlyings={data.underlyings} />
+        </Panel>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <Panel>
+            <SectionHeader title="REACHED MORE THAN ONCE" subtitle="the same company, arriving several ways" />
+            <OverlapList overlaps={data.overlaps} />
+          </Panel>
+          <Panel>
+            <SectionHeader title="SECTORS, BLENDED" subtitle="through every fund that publishes a split" />
+            <SectorBlend sectors={data.sectors} />
+          </Panel>
+        </div>
+      </div>
+
+      {data.unseenPositions?.length > 0 && (
+        <Panel>
+          <SectionHeader title="COULD NOT BE SEEN THROUGH" subtitle="excluded from every figure above" />
+          <div style={{ padding: "10px 18px 14px" }}>
+            {data.unseenPositions.map(p => (
+              <div key={p.symbol} style={{
+                display: "flex", justifyContent: "space-between", gap: 12,
+                padding: "7px 0", borderBottom: `1px solid ${t.borderSubtle}`,
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11.5, color: t.textSecondary }}>{p.name ?? p.symbol}</div>
+                  <div style={{ fontSize: 10, color: t.textFaint, marginTop: 2 }}>{p.note}</div>
+                </div>
+                <div style={{ fontSize: 11.5, fontFamily: "monospace", color: t.warning, whiteSpace: "nowrap" }}>
+                  {p.weight == null ? <NoData compact /> : `${(p.weight * 100).toFixed(1)}%`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
 function RiskPage() {
   const [risk, setRisk] = useState(null);
   const [error, setError] = useState(null);
@@ -9617,7 +9897,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
       </div>
 
       <div style={{ display: "flex", gap: 2, borderBottom: `1px solid ${t.border}` }}>
-        {[["holdings", "Holdings"], ["performance", "Performance"], ["analysis", "Analysis"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
+        {[["holdings", "Holdings"], ["xray", "X-Ray"], ["performance", "Performance"], ["analysis", "Analysis"], ["allocate", "Allocate"], ["rebuild", "Rebuild"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{
             background: "transparent", border: "none",
             borderBottom: tab === id ? `2px solid ${t.accent}` : "2px solid transparent",
@@ -9628,6 +9908,7 @@ function PortfolioPageV2({ tabJump, onTabChange } = {}) {
         ))}
       </div>
 
+      {tab === "xray" && <XRayTab />}
       {tab === "performance" && <PerformanceTab />}
       {tab === "analysis" && <PortfolioAnalysisPage />}
       {tab === "allocate" && <AllocatePage />}
