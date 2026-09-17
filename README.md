@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 129 routes
+  index.js               HTTP server, 132 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -104,6 +104,9 @@ server/
     correlation.js       date-joined correlation: multi-window matrix, calm vs
                          stressed conditioning, clustering, and how many
                          independent bets the book actually contains
+    xray.js              what the book actually holds once every fund is looked
+                         through: merged underlying companies, the ones reached
+                         through several holdings, and blended sectors
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -153,6 +156,9 @@ scripts/
   test-correlation.mjs   correlation against closed-form answers, and the
                          date-alignment case that returns 1.0 joined on date
                          and -0.04 compared by position on the same bars
+  test-xray.mjs          look-through arithmetic worked out on paper, and the
+                         assertion that partial fund disclosure is never scaled
+                         up to look complete
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -449,6 +455,56 @@ correlates at exactly 1, the identity matrix has every eigenvalue 1,
 factor blocs cluster as two blocs, and a pair engineered to correlate only in a
 selloff is caught by the stress split and missed by the full-sample number.
 
+## Portfolio X-ray
+
+Every other view answers questions about the things you bought. This one
+answers questions about what you actually own, which is a different list. Six
+fund tickers can be one bet on the same twenty companies, and no amount of
+staring at the fund-level table will show it.
+
+It merges every fund's disclosed holdings, weighted by position size, into one
+list of underlying companies — each carrying which of your holdings it arrived
+through. On the test book, Apple is 17.6% of the portfolio reached three
+separate ways, a fact no fund-level view in the app can produce. The tab leads
+with the contrast: **you bought 5 holdings, you own 6 disclosed companies.**
+
+**The thing that matters most here is what it refuses to do.** Yahoo publishes
+a fund's top ten holdings, not its book — for a global tracker that is often
+15-25% of the fund, and the rest is not available anywhere free. So every
+weight is a **floor**: "at least this much", never an estimate of the truth.
+
+The tempting move is to scale the disclosed weights up so they sum to the
+position's full weight. It makes the output look complete and produces a
+beautiful pie chart. It is also a fabrication — it asserts the undisclosed 80%
+of a fund is distributed like the disclosed 20%, which is false for every fund
+with a long tail, i.e. precisely the funds most people hold. Nothing here
+normalises a partial disclosure up to 100%, `seenWeight` and `unseenWeight` are
+reported on every figure, and the UI leads with a coverage bar that draws the
+undisclosed remainder rather than describing it. There is a test pinning the
+sum of underlying weights to the disclosed share specifically so that change
+cannot be made quietly later.
+
+Other things it keeps honest:
+
+- A directly held company is marked `exact`; anything reached through a fund is
+  a floor. One fund leg is enough to make a mixed figure a floor — Apple held
+  directly *and* through two funds is still `≥`.
+- Sector coverage is computed separately from name coverage, because a fund can
+  disclose 18% of its holdings by name and still publish its full sector split.
+  Reusing one coverage figure for both would understate the sector picture.
+- Tickers are matched with the listing suffix stripped, so the same company
+  reached as `SHEL` through one fund and `SHEL.L` through another does not read
+  as two separate moderate positions. Names fall back to the same normaliser
+  the pairwise overlap uses, exported rather than duplicated so the two cannot
+  drift apart and disagree about whether two entries are one company.
+- Holdings that publish nothing are listed by name with their weight, and
+  separated into "stores a composition with no holdings" versus "has no stored
+  composition at all", which are different problems with different fixes.
+
+Verify with `MERIDIAN_DB=/tmp/xray.db node scripts/test-xray.mjs` — 72
+assertions against a book whose every answer is worked out on paper in the file
+header before the engine runs.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -463,6 +519,8 @@ selloff is caught by the stress split and missed by the full-sample number.
 **Correlation** — `GET /correlation?window=` (the whole report) ·
 `/correlation/matrix` `/correlation/independence` `/correlation/stress`
 `/correlation/redundancies`
+
+**X-ray** — `GET /xray` `/xray/overlaps` `/xray/sectors`
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
 `/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`

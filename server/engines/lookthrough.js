@@ -207,7 +207,7 @@ export function decomposePosition(position, composition) {
  * user recorded against the holding. A ticker the classifier could not place
  * is not counted, because "I do not recognise this" is not "this is a stock".
  */
-function isSingleCompany(position) {
+export function isSingleCompany(position) {
   if (classify(position.symbol).type === 'equity') return true;
   const cls = String(position.assetClass ?? '').trim().toLowerCase();
   return cls === 'equity' || cls === 'stock' || cls === 'share' || cls === 'shares';

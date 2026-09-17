@@ -237,7 +237,11 @@ function holdingsOverlap(a, b) {
   };
 }
 
-const normaliseName = n => String(n ?? '')
+/** Exported so the X-ray engine matches names by exactly the same rule as the
+ *  pairwise overlap does. Two different normalisers would let one module call
+ *  two entries the same company while the other calls them different, and the
+ *  two numbers would disagree with no way to tell which was right. */
+export const normaliseName = n => String(n ?? '')
   .toUpperCase()
   .replace(/\b(INC|CORP|CORPORATION|PLC|LTD|LIMITED|CO|COMPANY|GROUP|HOLDINGS|NV|SA|AG|CLASS [A-C])\b/g, '')
   .replace(/[^A-Z0-9]/g, '');
