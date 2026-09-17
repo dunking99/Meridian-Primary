@@ -37,6 +37,8 @@ import * as lookthrough from './engines/lookthrough.js';
 import * as correlation from './engines/correlation.js';
 import * as xray from './engines/xray.js';
 import * as attribution from './engines/attribution.js';
+import * as importer from './engines/importer.js';
+import * as reports from './engines/reports.js';
 import * as exposure from './engines/rebuild/exposure.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
@@ -176,6 +178,43 @@ function readBody(req) {
       catch { resolve({}); }
     });
   });
+}
+
+/**
+ * The engines a periodic report is assembled from.
+ *
+ * Passed in rather than imported inside the reports module so that module has
+ * no opinion about which engines exist, and so the whole scheduler can be
+ * exercised in tests with stubs and no price data.
+ */
+const reportEngines = {
+  portfolio: prices => pf.valuePortfolio(prices),
+  performance: prices => {
+    const v = pf.valuePortfolio(prices);
+    return performance.performanceReport(v.total, getSnapshots(400));
+  },
+  attribution: (prices, opts) => attribution.attributionReport(prices, opts),
+  correlation: prices => correlation.correlationReport(pf.valuePortfolio(prices).positions),
+  xray: prices => xray.xray(pf.valuePortfolio(prices).positions),
+};
+
+/**
+ * Write any report that has fallen due.
+ *
+ * Runs on a timer, but is not driven by one: `generateDue` asks the table which
+ * completed periods have no report yet. The app is closed most of the time, and
+ * a schedule that only fired while the process happened to be running would
+ * skip every period the user did not open it during.
+ */
+function generateDueReports() {
+  try {
+    const res = reports.generateDue({ prices: state.prices, engines: reportEngines });
+    for (const w of res.written) {
+      console.log(`  report     ${w.period} ${w.periodKey}${w.complete ? '' : ' (incomplete — some engines failed)'}`);
+    }
+  } catch (e) {
+    console.log(`  report generation failed: ${e.message}`);
+  }
 }
 
 const routes = {
@@ -518,6 +557,47 @@ const routes = {
       weights,
       tail: Number(q.tail) || correlation.STRESS_TAIL,
     });
+  },
+
+  // ─── Statement import ───────────────────────────────────────
+  // Two steps on purpose. Preview writes nothing; apply takes the preview's
+  // own rows back, so what is written is what was shown.
+  'POST /import/preview': body => importer.preview(body?.text ?? '', {
+    mode: body?.mode || 'holdings',
+    mapping: body?.mapping ?? null,
+    dateOrder: body?.dateOrder ?? null,
+    defaults: body?.defaults ?? {},
+  }),
+
+  'POST /import/apply': body => importer.apply(body?.rows ?? [], {
+    mode: body?.mode || 'holdings',
+    updateExisting: body?.updateExisting === true,
+    includeWarnings: body?.includeWarnings !== false,
+  }),
+
+  // ─── Periodic reports ───────────────────────────────────────
+  'GET /reports': q => ({ reports: reports.listReports({ limit: Number(q.limit) || 50 }) }),
+
+  'GET /reports/one': q => {
+    const r = reports.getReport(Number(q.id));
+    return r ?? { error: 'No such report' };
+  },
+
+  'DELETE /reports': q => reports.deleteReport(Number(q.id)),
+
+  // Build one now, for whichever period is asked for, rather than waiting for
+  // it to fall due.
+  'POST /reports/generate': body => {
+    const period = body?.period || 'monthly';
+    const payload = reports.assemble({
+      period,
+      at: body?.at ? new Date(body.at) : new Date(),
+      prices: state.prices,
+      engines: reportEngines,
+    });
+    const html = reports.render(payload);
+    const saved = reports.saveReport(payload, html);
+    return { id: saved?.id ?? null, periodKey: payload.periodKey, complete: payload.complete, failedSections: payload.failedSections };
   },
 
   // ─── Return attribution ─────────────────────────────────────
@@ -1554,6 +1634,10 @@ const server = http.createServer(async (req, res) => {
   setInterval(() => refreshNewsFeed().catch(() => {}), CADENCE.news);
   setInterval(snapshot, CADENCE.snapshot);
   setInterval(evaluateSignalAlerts, CADENCE.signals);
+  setInterval(generateDueReports, CADENCE.reports);
+  // Also check once at startup: if the app was closed across a period
+  // boundary, that report is due now and should not wait an hour.
+  setTimeout(generateDueReports, 20_000);
   // Once at boot too: after an update or a restart the machine may have been
   // off for hours, and the first pass is where a flip that happened overnight
   // gets noticed.

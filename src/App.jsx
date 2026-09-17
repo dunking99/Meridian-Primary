@@ -143,6 +143,7 @@ const NAV_ITEMS = [
     { tab: "banks", label: "Central Banks" },
   ] },
   { id: "news", label: "News", icon: "◉" },
+  { id: "reports", label: "Reports", icon: "▤" },
   { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
@@ -7573,6 +7574,376 @@ function CorrelationReportPanel() {
 }
 
 // ============================================================
+// STATEMENT IMPORT
+// ============================================================
+//
+// The engine refuses to write on the first call, and the UI has to make that
+// visible rather than merely true: nothing here has an "import" button until a
+// preview has been read. The apply step sends the preview's own rows back, so
+// what gets written is what was on screen.
+
+function ImportPanel() {
+  const t = useTheme();
+  const [text, setText] = useState("");
+  const [mode, setMode] = useState("holdings");
+  const [preview, setPreview] = useState(null);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [dateOrder, setDateOrder] = useState("");
+  const [updateExisting, setUpdateExisting] = useState(false);
+
+  // keepResult is set when the refresh follows an apply: the whole point of
+  // that refresh is to show the new state next to the confirmation of what was
+  // just written, and clearing the result first makes the import look like it
+  // did nothing.
+  async function runPreview(orderOverride, { keepResult = false } = {}) {
+    setBusy(true);
+    if (!keepResult) setResult(null);
+    try {
+      const res = await fetch(`${API}/import/preview`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text, mode,
+          dateOrder: (orderOverride ?? dateOrder) || null,
+        }),
+      });
+      setPreview(await res.json());
+    } catch (e) {
+      setPreview({ available: false, reason: "Could not reach the import engine." });
+    } finally { setBusy(false); }
+  }
+
+  async function runApply() {
+    if (!preview?.available) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/import/apply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: preview.rows, mode, updateExisting }),
+      });
+      setResult(await res.json());
+      await runPreview(undefined, { keepResult: true });
+    } catch (e) {
+      setResult({ applied: 0, reason: "The request failed." });
+    } finally { setBusy(false); }
+  }
+
+  function onFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { setText(String(r.result ?? "")); setPreview(null); setResult(null); };
+    r.readAsText(f);
+  }
+
+  const statusColour = s => s === "error" ? t.negative : s === "warning" ? t.warning : t.positive;
+  const counts = preview?.counts;
+
+  return (
+    <Panel>
+      <SectionHeader
+        title="IMPORT A STATEMENT"
+        subtitle="paste or open a broker CSV — nothing is written until you say so"
+        extra={
+          <div style={{ display: "flex", gap: 4 }}>
+            {["holdings", "transactions"].map(m => (
+              <button key={m} onClick={() => { setMode(m); setPreview(null); setResult(null); }} style={{
+                fontSize: 10, fontFamily: "monospace", padding: "3px 8px",
+                background: m === mode ? t.accentSoft : "transparent",
+                color: m === mode ? t.accent : t.textMuted,
+                border: `1px solid ${m === mode ? t.accent : t.border}`,
+                borderRadius: 3, cursor: "pointer",
+              }}>{m}</button>
+            ))}
+          </div>
+        }
+      />
+
+      <div style={{ padding: "14px 18px" }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input id="import-file" type="file" accept=".csv,.txt,.tsv" onChange={onFile}
+            style={{ fontSize: 11, color: t.textMuted }} />
+          <span style={{ fontSize: 10.5, color: t.textFaint }}>or paste below</span>
+        </div>
+
+        <textarea
+          id="import-text"
+          value={text}
+          onChange={e => { setText(e.target.value); setPreview(null); setResult(null); }}
+          placeholder={"Stock,Units held,Price,Account Type\nSHEL.L,1000,27.50,ISA"}
+          spellCheck={false}
+          style={{
+            width: "100%", minHeight: 110, resize: "vertical",
+            background: t.surfaceInset, color: t.textSecondary,
+            border: `1px solid ${t.border}`, borderRadius: 4,
+            padding: 10, fontFamily: "monospace", fontSize: 11.5, lineHeight: 1.5,
+          }}
+        />
+
+        <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={() => runPreview()} disabled={busy || !text.trim()} style={{
+            fontSize: 11, fontFamily: "monospace", padding: "6px 14px",
+            background: "transparent", color: text.trim() ? t.accent : t.textFaint,
+            border: `1px solid ${text.trim() ? t.accent : t.border}`,
+            borderRadius: 3, cursor: text.trim() ? "pointer" : "default",
+          }}>{busy ? "reading…" : "preview"}</button>
+
+          {preview?.available && (
+            <>
+              <button onClick={runApply} disabled={busy || !counts || counts.total === counts.failed} style={{
+                fontSize: 11, fontFamily: "monospace", padding: "6px 14px",
+                background: t.accentSoft, color: t.accent,
+                border: `1px solid ${t.accent}`, borderRadius: 3, cursor: "pointer",
+              }}>import {counts.total - counts.failed} row{counts.total - counts.failed === 1 ? "" : "s"}</button>
+
+              {mode === "holdings" && (
+                <label style={{ fontSize: 10.5, color: t.textMuted, display: "flex", alignItems: "center", gap: 5 }}>
+                  <input id="import-update" type="checkbox" checked={updateExisting}
+                    onChange={e => setUpdateExisting(e.target.checked)} />
+                  update positions I already hold
+                </label>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* A date column that could be read either way blocks everything until
+            the reader settles it. The engine will not pick one. */}
+        {preview?.available && ["ambiguous", "conflicting"].includes(preview.dateOrder) && (
+          <div style={{
+            marginTop: 12, padding: "10px 12px", borderRadius: 4,
+            border: `1px solid ${t.warning}66`, background: `${t.warning}11`,
+          }}>
+            <div style={{ fontSize: 11.5, color: t.warning, marginBottom: 7 }}>
+              Every date in this file could be read day-first or month-first, and nothing in the
+              column settles it. Choose, and nothing is guessed on your behalf.
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              {[["dmy", "day first (03/04 = 3 April)"], ["mdy", "month first (03/04 = 4 March)"]].map(([v, label]) => (
+                <button key={v} onClick={() => { setDateOrder(v); runPreview(v); }} style={{
+                  fontSize: 10.5, fontFamily: "monospace", padding: "4px 10px",
+                  background: "transparent", color: t.text,
+                  border: `1px solid ${t.borderStrong}`, borderRadius: 3, cursor: "pointer",
+                }}>{label}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {preview && !preview.available && (
+          <div style={{ marginTop: 12, fontSize: 11.5, color: t.negative, lineHeight: 1.6 }}>
+            ⚠ {preview.reason}
+            {preview.hint && <div style={{ color: t.textMuted, marginTop: 4 }}>{preview.hint}</div>}
+          </div>
+        )}
+
+        {preview?.available && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", gap: 14, fontSize: 10.5, color: t.textMuted, fontFamily: "monospace", marginBottom: 8, flexWrap: "wrap" }}>
+              <span>{counts.total} rows</span>
+              <span style={{ color: t.positive }}>{counts.ok} clean</span>
+              <span style={{ color: t.warning }}>{counts.warned} with warnings</span>
+              <span style={{ color: t.negative }}>{counts.failed} unusable</span>
+              <span>{counts.new} new to the portfolio</span>
+              <span style={{ color: t.textFaint }}>header on line {preview.headerLine} · {preview.delimiter}-separated</span>
+            </div>
+
+            <div style={{ maxHeight: 340, overflowY: "auto", border: `1px solid ${t.border}`, borderRadius: 4 }}>
+              {preview.rows.map(r => (
+                <div key={r.row} style={{
+                  padding: "8px 11px", borderBottom: `1px solid ${t.borderSubtle}`,
+                  background: r.status === "error" ? `${t.negative}0f` : "transparent",
+                }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace", width: 30 }}>{r.row}</span>
+                    <span style={{ fontSize: 8, color: statusColour(r.status) }}>●</span>
+                    <span style={{ fontSize: 11.5, color: t.text, fontFamily: "monospace", minWidth: 80 }}>{r.symbol ?? "—"}</span>
+                    <span style={{ fontSize: 11, color: t.textSecondary, fontFamily: "monospace" }}>
+                      {r.quantity ?? "—"} @ {r.price == null ? "—" : r.price}
+                      {r.priceDerived ? " (from value)" : ""}
+                    </span>
+                    {r.date && <span style={{ fontSize: 10.5, color: t.textMuted, fontFamily: "monospace" }}>{r.date}</span>}
+                    {r.side && <span style={{ fontSize: 10.5, color: t.textMuted }}>{r.side}</span>}
+                    {r.existing && (
+                      <span style={{ fontSize: 9.5, color: t.info, border: `1px solid ${t.info}55`, borderRadius: 2, padding: "1px 5px" }}>
+                        already held
+                      </span>
+                    )}
+                  </div>
+                  {r.issues?.map((i, k) => (
+                    <div key={k} style={{
+                      fontSize: 10.5, marginTop: 4, marginLeft: 40, lineHeight: 1.5,
+                      color: i.level === "error" ? t.negative : t.warning,
+                    }}>{i.message}</div>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 9, lineHeight: 1.6 }}>
+              {preview.note} Holdings missing from the file are never removed — a statement not
+              mentioning a position is not evidence it was sold.
+            </div>
+          </div>
+        )}
+
+        {result && (
+          <div style={{
+            marginTop: 14, padding: "11px 13px", borderRadius: 4,
+            border: `1px solid ${result.applied > 0 ? t.accent : t.border}`,
+            background: result.applied > 0 ? t.accentSoft : t.surfaceAlt,
+          }}>
+            <div style={{ fontSize: 12, color: result.applied > 0 ? t.accent : t.textMuted }}>
+              {result.applied > 0
+                ? `Wrote ${result.applied} row${result.applied === 1 ? "" : "s"}.`
+                : (result.reason ?? "Nothing was written.")}
+            </div>
+            {result.updated?.length > 0 && (
+              <div style={{ fontSize: 10.5, color: t.textMuted, marginTop: 6, lineHeight: 1.6 }}>
+                {result.updated.map(u => `${u.symbol}: ${u.from.qty} → ${u.to.qty}`).join(" · ")}
+              </div>
+            )}
+            {result.skippedRows?.length > 0 && (
+              <div style={{ fontSize: 10.5, color: t.textFaint, marginTop: 6, lineHeight: 1.6 }}>
+                Skipped: {result.skippedRows.map(s => `${s.symbol} (${s.reason})`).join(" · ")}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ============================================================
+// REPORTS
+// ============================================================
+
+function ReportsPage() {
+  const t = useTheme();
+  const [list, setList] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      const res = await fetch(`${API}/reports`);
+      const j = await res.json();
+      setList(j.reports ?? []);
+    } catch (e) { setList([]); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function generate(period) {
+    setBusy(true);
+    try {
+      await fetch(`${API}/reports/generate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ period }),
+      });
+      await load();
+    } finally { setBusy(false); }
+  }
+
+  async function view(id) {
+    const res = await fetch(`${API}/reports/one?id=${id}`);
+    setOpen(await res.json());
+  }
+
+  async function remove(id) {
+    await fetch(`${API}/reports?id=${id}`, { method: "DELETE" });
+    if (open?.id === id) setOpen(null);
+    await load();
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: t.text, fontFamily: "monospace" }}>REPORTS</div>
+        <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>
+          Written automatically once a period ends, and kept so last month's version is still
+          there when you want to compare.
+        </div>
+      </div>
+
+      <Panel>
+        <SectionHeader
+          title="ARCHIVE"
+          subtitle={list == null ? "loading…" : `${list.length} report${list.length === 1 ? "" : "s"}`}
+          extra={
+            <div style={{ display: "flex", gap: 4 }}>
+              {["weekly", "monthly", "quarterly"].map(p => (
+                <button key={p} onClick={() => generate(p)} disabled={busy} style={{
+                  fontSize: 10, fontFamily: "monospace", padding: "3px 8px",
+                  background: "transparent", color: busy ? t.textFaint : t.accent,
+                  border: `1px solid ${busy ? t.border : t.accent}`, borderRadius: 3,
+                  cursor: busy ? "default" : "pointer",
+                }}>build {p}</button>
+              ))}
+            </div>
+          }
+        />
+        {list == null ? (
+          <div style={{ padding: 22, textAlign: "center", color: t.textMuted, fontSize: 11.5 }}>Loading…</div>
+        ) : list.length === 0 ? (
+          <div style={{ padding: 18, fontSize: 11.5, color: t.textMuted, lineHeight: 1.6 }}>
+            No reports yet. One is written automatically after each period ends — or build one now
+            with the buttons above.
+          </div>
+        ) : (
+          <div style={{ padding: "4px 0 8px" }}>
+            {list.map(r => (
+              <div key={r.id} style={{
+                display: "flex", alignItems: "center", gap: 12,
+                padding: "9px 18px", borderBottom: `1px solid ${t.borderSubtle}`,
+              }}>
+                <span style={{ fontSize: 12, color: t.text, fontFamily: "monospace", width: 92 }}>{r.periodKey}</span>
+                <span style={{ fontSize: 10.5, color: t.textMuted, width: 76 }}>{r.period}</span>
+                <span style={{ fontSize: 10.5, color: t.textFaint, flex: 1, fontFamily: "monospace" }}>
+                  {r.from} → {r.to}
+                </span>
+                <button onClick={() => view(r.id)} style={{
+                  fontSize: 10, fontFamily: "monospace", padding: "3px 10px",
+                  background: "transparent", color: t.accent,
+                  border: `1px solid ${t.accent}`, borderRadius: 3, cursor: "pointer",
+                }}>open</button>
+                <AlertButton danger onClick={() => remove(r.id)}>DELETE</AlertButton>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      {open && (
+        <Panel>
+          <SectionHeader
+            title={`${open.periodKey}`}
+            subtitle={`${open.from} to ${open.to} · generated ${open.generatedAt?.slice(0, 10)}`}
+            extra={
+              <button onClick={() => setOpen(null)} style={{
+                fontSize: 10, fontFamily: "monospace", padding: "3px 10px",
+                background: "transparent", color: t.textMuted,
+                border: `1px solid ${t.border}`, borderRadius: 3, cursor: "pointer",
+              }}>close</button>
+            }
+          />
+          {/* The stored document is rendered in a sandboxed frame rather than
+              injected into this page: it is a standalone file with its own
+              styling, and it should look here exactly as it does when opened
+              from disk. */}
+          <iframe
+            title={`report-${open.id}`}
+            sandbox=""
+            srcDoc={open.html ?? "<p>This report has no stored document.</p>"}
+            style={{ width: "100%", height: 760, border: "none", borderRadius: "0 0 4px 4px", background: "#fff" }}
+          />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // RETURN ATTRIBUTION
 // ============================================================
 //
@@ -11753,6 +12124,11 @@ function SettingsPage({ onApiKeySet }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 700 }}>
 
+      {/* Import sits at the top of Settings because it is the one thing here
+          that writes to holdings, and it is what someone setting the app up on
+          a new machine needs first. */}
+      <ImportPanel />
+
       {/* Appearance */}
       <Panel>
         <SectionHeader title="APPEARANCE" subtitle="Rolling out page by page — Portfolio is done; other pages follow once this looks right" />
@@ -12203,6 +12579,9 @@ function TradingTerminalInner() {
           )}
           {activePage === "news" && (
             <NewsPage />
+          )}
+          {activePage === "reports" && (
+            <ReportsPage />
           )}
           {activePage === "settings" && (
             <SettingsPage onApiKeySet={setApiKey} />

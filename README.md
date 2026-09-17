@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 134 routes
+  index.js               HTTP server, 140 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -111,6 +111,11 @@ server/
                          per holding, allocation and selection against the
                          portfolio's own average, and commentary over the
                          reconciled figures
+    importer.js          broker statement parsing: delimiter and header
+                         sniffing, column mapping, and a preview that writes
+                         nothing until told
+    reports.js           periodic reports assembled from every engine, rendered
+                         self-contained and archived once each period closes
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -167,6 +172,10 @@ scripts/
                          contributions summing to the compounded return, effects
                          summing to zero, and commentary that can say nothing
                          happened
+  test-importer.mjs      messy real-world statement shapes, and every case where
+                         the importer refuses rather than guesses
+  test-reports.mjs       period arithmetic, self-contained rendering, and a
+                         schedule that survives the app being closed
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -577,6 +586,80 @@ Verify with `MERIDIAN_DB=/tmp/attr.db node scripts/test-attribution.mjs` — 68
 assertions, most of them exact identities a correct decomposition must satisfy
 whatever the prices happen to be.
 
+## Importing a statement
+
+Every engine here is only as good as the holdings behind it, and until now
+those were typed in by hand.
+
+`engines/importer.js` parses what a broker actually exports: preamble rows above
+the header, semicolon or tab delimiters, `£1,234.50`, `(1,500.00)` for a
+negative, `2750p`, quoted fields containing commas and newlines, and the dozen
+different names brokers give the same column (`EPIC`, `No. of Shares`, `Price
+Per Share`, `Account Type`).
+
+**Nothing writes on the first call.** `preview()` parses, maps, validates and
+reports what WOULD happen row by row, and touches nothing. `apply()` is a
+separate call that takes the preview's own rows back, so what is written is what
+was shown. Rows the preview rejected cannot be applied even if handed back
+directly. No path deletes a holding, and an existing position is only changed
+when that is explicitly requested — a statement not mentioning a position is not
+evidence it was sold.
+
+Three ways a statement import goes silently wrong, and what happens instead:
+
+- **Dates.** `03/04/2026` is 3 April to a British broker and 4 March to an
+  American one. The order is inferred from the whole column — one row with a
+  first component above 12 settles it for every row — and where a column is
+  genuinely undecidable the import is **blocked** with the choice handed to the
+  reader. Guessing here corrupts a transaction history in a way that looks
+  entirely normal.
+- **Pence.** UK brokers quote many LSE lines in pence, so `1,234.50` may be
+  £1,234.50 or £12.345 — a 100x error. The suspicion is raised by comparing
+  against the instrument's own stored bars, which is the only evidence that
+  settles it, and nothing is ever converted on a guess.
+- **Tickers.** An unrecognised symbol imports but is flagged as having no stored
+  history, rather than being mapped to whatever looks closest.
+
+Verify with `MERIDIAN_DB=/tmp/imp.db node scripts/test-importer.mjs` — 102
+assertions, weighted towards what it refuses to do.
+
+## Reports
+
+Stock Rover emails a performance report on a schedule. The value in that is not
+the email — it is that the report exists without you remembering to look, and
+that last month's version is still there when you want to compare.
+
+`engines/reports.js` assembles every engine's answer for a period, renders it to
+a single self-contained HTML document (no external stylesheet, font or script,
+so it still opens years later from a folder with nothing running), and stores
+both the document and the underlying numbers. Storing the numbers matters: a
+report generated in March should still say what March said after the engines
+that produced it have changed.
+
+Two things it gets right that a naive scheduler does not:
+
+- **A report covers a period that has ENDED.** Reporting on the week currently
+  running produces a partial figure labelled as a full one, and then quietly
+  changes every time it regenerates.
+- **The schedule is driven by the table, not by a timer's memory.** The app is
+  closed most of the time. A schedule that only fired while the process happened
+  to be running would skip every period the user did not open it during — so
+  `generateDue` asks which completed periods have no report yet. Close the app
+  for three weeks and the missing reports appear on the next run.
+
+**Email delivery is deliberately not implemented**, and the reason is this
+project's own testing rule rather than laziness. The sandbox this was built in
+cannot reach a mail server, so an SMTP client written here could be checked for
+syntax and against a fake socket and nothing more — the parts that actually
+break (a provider's TLS quirks, app-password auth, implicit TLS on 465 versus
+STARTTLS on 587) would ship unverified, against real credentials. This project
+has a specific history of exactly that failure. The scheduling half is real; the
+transport is left to the user and said plainly rather than half-built.
+
+Verify with `MERIDIAN_DB=/tmp/rep.db node scripts/test-reports.mjs` — 49
+assertions, including that closing the app across three week boundaries still
+produces three reports.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -595,6 +678,11 @@ whatever the prices happen to be.
 **X-ray** — `GET /xray` `/xray/overlaps` `/xray/sectors`
 
 **Attribution** — `GET /attribution?grouping=` · `POST /attribution/explain`
+
+**Import** — `POST /import/preview` `/import/apply`
+
+**Reports** — `GET /reports` `/reports/one?id=` · `POST /reports/generate` ·
+`DELETE /reports?id=`
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
 `/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`
