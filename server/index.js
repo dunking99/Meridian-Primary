@@ -34,6 +34,7 @@ import * as alerts from './engines/alerts.js';
 import * as signals from './engines/signals.js';
 import * as performance from './engines/performance.js';
 import * as lookthrough from './engines/lookthrough.js';
+import * as correlation from './engines/correlation.js';
 import * as exposure from './engines/rebuild/exposure.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
@@ -468,6 +469,61 @@ const routes = {
     return pfa.correlationPairs(v.positions, {
       minObs: Number(q.minObs) || 60,
       limit: Number(q.limit) || 5,
+    });
+  },
+
+  // ─── Correlation engine ─────────────────────────────────────
+  // The whole report in one call: the page renders several views of the same
+  // matrix, and computing it once per view would recompute the same date joins
+  // four times over.
+  'GET /correlation': q => {
+    const v = pf.valuePortfolio(state.prices);
+    return correlation.correlationReport(v.positions, {
+      window: q.window || '1y',
+      rollingWindow: Number(q.rolling) || 60,
+    });
+  },
+
+  // The matrix alone, for a caller that only wants the grid.
+  'GET /correlation/matrix': q => {
+    const v = pf.valuePortfolio(state.prices);
+    const symbols = q.symbols ? String(q.symbols).split(',').filter(Boolean)
+                              : v.positions.map(p => p.symbol);
+    return correlation.matrix(symbols, { window: q.window || '1y' });
+  },
+
+  // How many independent bets the book actually contains.
+  'GET /correlation/independence': q => {
+    const v = pf.valuePortfolio(state.prices);
+    const total = v.positions.reduce((s, p) => s + (p.value ?? 0), 0);
+    const weights = total > 0
+      ? Object.fromEntries(v.positions.map(p => [p.symbol, (p.value ?? 0) / total]))
+      : null;
+    return correlation.independence(v.positions.map(p => p.symbol), {
+      weights, window: q.window || '1y',
+    });
+  },
+
+  // Does diversification survive a selloff.
+  'GET /correlation/stress': q => {
+    const v = pf.valuePortfolio(state.prices);
+    const total = v.positions.reduce((s, p) => s + (p.value ?? 0), 0);
+    const weights = total > 0
+      ? Object.fromEntries(v.positions.map(p => [p.symbol, (p.value ?? 0) / total]))
+      : null;
+    return correlation.stressCorrelation(v.positions.map(p => p.symbol), {
+      window: q.window || '1y',
+      weights,
+      tail: Number(q.tail) || correlation.STRESS_TAIL,
+    });
+  },
+
+  // Pairs that duplicate each other, ranked by how much of the book they cover.
+  'GET /correlation/redundancies': q => {
+    const v = pf.valuePortfolio(state.prices);
+    return correlation.redundancies(v.positions, {
+      window: q.window || '1y',
+      minCorr: q.minCorr ? Number(q.minCorr) : correlation.REDUNDANT_CORR,
     });
   },
 
