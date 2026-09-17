@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 123 routes
+  index.js               HTTP server, 129 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -101,6 +101,9 @@ server/
                          portfolio, alerts, news, calendar, signals, regime
                          and correlation on one materiality scale, and diffs
                          them against the last briefing marked as read
+    correlation.js       date-joined correlation: multi-window matrix, calm vs
+                         stressed conditioning, clustering, and how many
+                         independent bets the book actually contains
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -145,6 +148,11 @@ scripts/
                          importantly, staying quiet on an unchanged world
   test-performance.mjs   IRR and TWR against schedules whose answer is known
                          analytically before the engine runs
+  test-lookthrough.mjs   venue classification and fund decomposition, including
+                         that an unseen fund stays unseen
+  test-correlation.mjs   correlation against closed-form answers, and the
+                         date-alignment case that returns 1.0 joined on date
+                         and -0.04 compared by position on the same bars
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -387,6 +395,60 @@ relevance, a high-relevance story about an untracked ticker is excluded
 entirely, fingerprints are stable across rebuilds, and an empty portfolio
 concludes nothing happened rather than inventing a finding.
 
+## Correlation
+
+The Risk page used to draw its correlation matrix from
+`analytics.correlationMatrix`, which takes the last N bars of each symbol and
+correlates them index-for-index. That is only valid if every symbol's stored
+history lines up perfectly, and it does not: two London listings with different
+suspension histories, or any symbol with a gap in its bars, shift against each
+other, and the cell then compares one holding's Tuesday against another's
+Thursday. The number it produced looked exactly like a measurement.
+
+`engines/correlation.js` joins on date instead. The test that matters seeds two
+symbols holding **identical prices on every date they share**, one of them
+missing a day each week. Joined on date they correlate at 1.0. Compared by
+position — the old behaviour, on the same bars — they come out at **-0.04**.
+
+Four things it does that a single correlation number cannot:
+
+- **Windows.** The same pairs over 3m, 6m, 1y and everything stored, plus the
+  drift between the shortest and longest measurable window. A pair at 0.29 over
+  a year and 0.99 over three months is a diversification assumption that has
+  quietly stopped holding, and one figure averaged across both regimes hides it.
+  There is deliberately no one-month window: 30 calendar days is ~22 trading
+  days, and a correlation from 22 points has a 95% interval roughly 0.66 wide.
+- **Calm versus stressed.** Correlation measured on the worst 10% of days for
+  *this* portfolio, against the other 90%. Diversification failing is a tail
+  event, so the full-sample number is dominated by exactly the days you do not
+  care about. A pair at 0.06 normally and 1.00 in a selloff is not diversified,
+  and the full-sample figure for that pair is 0.77.
+- **Independent bets.** Holding count and weight-based concentration both treat
+  two 0.98-correlated funds as two holdings. `independentBets` (eigenvalue
+  entropy of the correlation matrix) and `effectiveBets` (the squared
+  diversification ratio) give the honest count — four identical holdings score
+  1.0, four independent ones score 4.0.
+- **Blocs.** Average-linkage clustering on `1 - correlation`, so "six of your
+  eleven holdings are one thing" is visible without reading a grid. Average
+  rather than single linkage because single linkage chains: one incidental pair
+  merges two unrelated groups and reports a diversified book as one blob.
+
+Nothing that cannot be measured is filled in. A pair with too little overlap,
+or a series with no variance, is `null` — never `0`, which is a claim that two
+things move independently and is a much stronger statement than "we could not
+tell". Holdings that could not be assessed are named at the top of the report
+rather than silently dropped, and the matrix is pairwise (each cell on its own
+overlap) while anything matrix-wide is complete-case (the dates every holding
+shares), because those are different samples and substituting one for the other
+quietly changes what the answer is about.
+
+Verify with `MERIDIAN_DB=/tmp/corr.db node scripts/test-correlation.mjs` — 107
+assertions, most against answers known in advance: a perfect linear relation
+correlates at exactly 1, the identity matrix has every eigenvalue 1,
+`[[1,r],[r,1]]` gives 1±r, four identical holdings collapse to one bet, two
+factor blocs cluster as two blocs, and a pair engineered to correlate only in a
+selloff is caught by the stress split and missed by the full-sample number.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -397,6 +459,10 @@ concludes nothing happened rather than inventing a finding.
 
 **Risk** — `GET /risk` `/regime` `/correlations` `/stress` `/scenarios` ·
 `POST /stress/shock`
+
+**Correlation** — `GET /correlation?window=` (the whole report) ·
+`/correlation/matrix` `/correlation/independence` `/correlation/stress`
+`/correlation/redundancies`
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
 `/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`

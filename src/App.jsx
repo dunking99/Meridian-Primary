@@ -7041,6 +7041,536 @@ function CorrelationCell({ value }) {
   );
 }
 
+// ============================================================
+// CORRELATION
+// ============================================================
+//
+// The panel leads with a heatmap rather than a table because the question it
+// answers is a shape question — where are the hot blocks — and a grid of
+// numbers makes that the reader's job instead of the page's.
+//
+// Three rules the rendering has to keep, because the engine goes to some
+// trouble to make them true:
+//   - a cell with no measurement is drawn as visibly absent, never as the
+//     colour for zero. Zero means "these move independently" and is a real
+//     finding; absent means "we could not tell".
+//   - the number a cell rests on is available on hover, because a correlation
+//     from 31 days and one from 1,200 look identical otherwise.
+//   - anything the engine returned null for renders as a dash, not a 0.00.
+
+/** Short display form: SHEL.L -> SHEL, 0P0001O7DK.L -> 0P0001O7DK. */
+const shortSym = s => String(s ?? "").replace(/\.(L|DE|PA|AS|MI|TO|T|HK|SW|ST|OL|CO|HE)$/i, "");
+
+/**
+ * Diverging colour scale for a correlation.
+ * Neutral at zero, blue as it goes negative, amber-into-red as it goes
+ * positive — high positive correlation is the finding that costs you money in
+ * a diversification tool, so it gets the hot end.
+ */
+function corrColor(r, t) {
+  if (r == null) return null;
+  const mix = (a, b, k) => {
+    const pa = [parseInt(a.slice(1, 3), 16), parseInt(a.slice(3, 5), 16), parseInt(a.slice(5, 7), 16)];
+    const pb = [parseInt(b.slice(1, 3), 16), parseInt(b.slice(3, 5), 16), parseInt(b.slice(5, 7), 16)];
+    const c = pa.map((x, i) => Math.round(x + (pb[i] - x) * Math.max(0, Math.min(1, k))));
+    return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+  };
+  const neutral = t.surfaceInset;
+  if (r < 0) return mix(neutral, t.info, Math.min(Math.abs(r) * 1.25, 1));
+  if (r <= 0.6) return mix(neutral, t.warning, r / 0.6 * 0.75);
+  return mix(t.warning, t.negative, (r - 0.6) / 0.4);
+}
+
+/** Cell background for "no measurement" — hatched, so it cannot be mistaken
+ *  for a colour on the scale. */
+function noDataFill(t) {
+  return `repeating-linear-gradient(45deg, ${t.surfaceAlt} 0px, ${t.surfaceAlt} 3px, ${t.surface} 3px, ${t.surface} 6px)`;
+}
+
+function CorrelationHeatmap({ data }) {
+  const t = useTheme();
+  const syms = data?.symbols ?? [];
+  if (syms.length < 2) return <div style={{ padding: 16 }}><NoData reason="Need at least two holdings with stored history" /></div>;
+
+  // Label gutter scales with the longest symbol so nothing is clipped.
+  const longest = Math.max(...syms.map(s => shortSym(s).length));
+  const gutter = Math.min(Math.max(longest * 7 + 10, 48), 104);
+  const cell = syms.length > 10 ? 30 : syms.length > 7 ? 38 : 46;
+
+  return (
+    <div style={{ padding: "12px 16px 16px", overflowX: "auto" }}>
+      <div style={{ display: "inline-block", minWidth: "min-content" }}>
+        {/* Column headers, rotated so long tickers do not force a wide grid */}
+        <div style={{ display: "flex", marginLeft: gutter, height: 62 }}>
+          {syms.map(s => (
+            <div key={s} style={{ width: cell, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+              <span style={{
+                fontSize: 9.5, fontFamily: "monospace", color: t.textMuted,
+                transform: "rotate(-55deg)", transformOrigin: "left bottom",
+                whiteSpace: "nowrap", display: "block", marginLeft: cell / 2 - 2,
+              }}>{shortSym(s)}</span>
+            </div>
+          ))}
+        </div>
+
+        {syms.map((rowSym, i) => (
+          <div key={rowSym} style={{ display: "flex", alignItems: "center" }}>
+            <div style={{
+              width: gutter, fontSize: 9.5, fontFamily: "monospace", color: t.textMuted,
+              textAlign: "right", paddingRight: 8, whiteSpace: "nowrap", overflow: "hidden",
+            }}>{shortSym(rowSym)}</div>
+
+            {syms.map((colSym, j) => {
+              const r = data.matrix[i][j];
+              const obs = data.observations?.[i]?.[j] ?? null;
+              const diag = i === j;
+              const bg = diag ? t.surfaceInset : (r == null ? null : corrColor(r, t));
+              return (
+                <div
+                  key={colSym}
+                  title={
+                    diag ? shortSym(rowSym)
+                      : r == null
+                        ? `${shortSym(rowSym)} / ${shortSym(colSym)} — not measurable${obs ? ` (only ${obs} overlapping days)` : " (no overlapping history)"}`
+                        : `${shortSym(rowSym)} / ${shortSym(colSym)} — ${r.toFixed(2)} over ${obs} days`
+                  }
+                  style={{
+                    width: cell, height: cell,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    background: bg ?? noDataFill(t),
+                    border: `1px solid ${t.appBg}`,
+                    fontSize: cell > 36 ? 10 : 9, fontFamily: "monospace",
+                    color: diag ? t.textFaint : r == null ? t.textFaint : (Math.abs(r) > 0.55 ? "#0a0d13" : t.text),
+                    cursor: "help", boxSizing: "border-box",
+                  }}
+                >
+                  {diag ? "—" : r == null ? "·" : r.toFixed(2)}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+
+        {/* Scale legend, so the colours mean something without a caption */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, marginLeft: gutter }}>
+          <span style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>-1</span>
+          <div style={{ display: "flex", height: 8, borderRadius: 2, overflow: "hidden" }}>
+            {Array.from({ length: 41 }, (_, k) => {
+              const r = -1 + k * 0.05;
+              return <div key={k} style={{ width: 6, height: 8, background: corrColor(r, t) }} />;
+            })}
+          </div>
+          <span style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>+1</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginLeft: 10 }}>
+            <div style={{ width: 14, height: 10, background: noDataFill(t), border: `1px solid ${t.border}` }} />
+            <span style={{ fontSize: 9.5, color: t.textFaint }}>not measurable</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Calm versus stressed, as a paired bar per holding pair. The jump between
+ *  the two bars is the whole point, so they share one axis and sit adjacent. */
+function StressPairBars({ stress, limit = 6 }) {
+  const t = useTheme();
+  if (!stress?.available) {
+    return <div style={{ padding: 16 }}><NoData reason={stress?.reason ?? "Not enough history to split calm from stressed days"} /></div>;
+  }
+  const rows = [...(stress.pairs ?? [])]
+    .filter(p => p.gap != null)
+    .sort((a, b) => b.gap - a.gap)
+    .slice(0, limit);
+
+  if (!rows.length) return <div style={{ padding: 16 }}><NoData reason="No pair could be measured on both calm and stressed days" /></div>;
+
+  // Correlation runs -1..+1, so the track is centred on zero and bars grow
+  // left or right from it. Clamping negatives to zero width — the obvious
+  // shortcut — draws -0.01 and -0.22 as the same empty bar, which throws away
+  // exactly the difference the panel exists to show.
+  const bar = (v, color) => {
+    if (v == null) {
+      return (
+        <div style={{ flex: 1, height: 9, background: t.surfaceInset, borderRadius: 2, position: "relative" }}>
+          <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: t.border }} />
+        </div>
+      );
+    }
+    const c = Math.max(-1, Math.min(v, 1));
+    const half = Math.abs(c) / 2 * 100;
+    return (
+      <div style={{ flex: 1, height: 9, background: t.surfaceInset, borderRadius: 2, position: "relative", overflow: "hidden" }}>
+        <div style={{
+          position: "absolute", top: 1, bottom: 1,
+          left: c >= 0 ? "50%" : `${50 - half}%`,
+          width: `${Math.max(half, c === 0 ? 0 : 0.8)}%`,
+          background: color, borderRadius: 1,
+        }} />
+        {/* Zero line stays visible above the fill so the sign is unambiguous */}
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: t.borderStrong }} />
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ padding: "12px 16px 16px" }}>
+      {rows.map(p => (
+        <div key={`${p.a}|${p.b}`} style={{ marginBottom: 13 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.textSecondary }}>
+              {shortSym(p.a)} · {shortSym(p.b)}
+            </span>
+            <span style={{
+              fontSize: 11, fontFamily: "monospace",
+              color: p.failsUnderStress ? t.negative : t.textMuted,
+            }}>
+              {p.gap > 0 ? "+" : ""}{p.gap.toFixed(2)}{p.failsUnderStress ? "  fails" : ""}
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+            <span style={{ width: 52, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>calm</span>
+            {bar(p.calm, t.info)}
+            <span style={{ width: 34, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace", textAlign: "right" }}>
+              {p.calm == null ? "—" : p.calm.toFixed(2)}
+            </span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <span style={{ width: 52, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>selloff</span>
+            {bar(p.stressed, p.failsUnderStress ? t.negative : t.warning)}
+            <span style={{ width: 34, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace", textAlign: "right" }}>
+              {p.stressed == null ? "—" : p.stressed.toFixed(2)}
+            </span>
+          </div>
+        </div>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 2, marginBottom: 6 }}>
+        <span style={{ width: 52 }} />
+        <div style={{ flex: 1, display: "flex", justifyContent: "space-between", fontSize: 9, color: t.textFaint, fontFamily: "monospace" }}>
+          <span>-1</span><span>0</span><span>+1</span>
+        </div>
+        <span style={{ width: 34 }} />
+      </div>
+      <div style={{ fontSize: 10, color: t.textFaint, lineHeight: 1.5 }}>
+        {stress.stressedDays} worst days against {stress.calmDays} others. {stress.basis}.
+      </div>
+    </div>
+  );
+}
+
+/** Clusters as blocs — a set of chips per group, sized by membership. */
+function ClusterBlocs({ clusters }) {
+  const t = useTheme();
+  if (!clusters?.available) {
+    return <div style={{ padding: 16 }}><NoData reason={clusters?.reason ?? "Not enough overlapping history to cluster"} /></div>;
+  }
+  const groups = clusters.clusters ?? [];
+  return (
+    <div style={{ padding: "12px 16px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+      {groups.map((g, i) => {
+        const solo = g.size === 1;
+        const hot = (g.averageInternalCorrelation ?? 0) >= 0.8;
+        return (
+          <div key={i} style={{
+            border: `1px solid ${solo ? t.borderSubtle : hot ? t.negative + "66" : t.border}`,
+            background: solo ? "transparent" : t.surfaceAlt,
+            borderRadius: 4, padding: "8px 10px",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: solo ? 0 : 6 }}>
+              <span style={{ fontSize: 10, letterSpacing: 1, fontFamily: "monospace", color: t.textMuted }}>
+                {solo ? "ON ITS OWN" : `BLOC OF ${g.size}`}
+              </span>
+              {!solo && (
+                <span style={{ fontSize: 10, fontFamily: "monospace", color: hot ? t.negative : t.textMuted }}>
+                  {g.averageInternalCorrelation == null ? "—" : `r ${g.averageInternalCorrelation.toFixed(2)} internally`}
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {g.members.map(m => (
+                <span key={m} style={{
+                  fontSize: 10.5, fontFamily: "monospace",
+                  background: solo ? t.surfaceInset : t.surfaceInset,
+                  color: solo ? t.textMuted : t.text,
+                  padding: "3px 7px", borderRadius: 3,
+                }}>{shortSym(m)}</span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 10, color: t.textFaint, lineHeight: 1.5 }}>{clusters.basis}.</div>
+    </div>
+  );
+}
+
+function RedundancyRows({ redundancies }) {
+  const t = useTheme();
+  const rows = redundancies?.pairs ?? [];
+  if (!rows.length) {
+    return (
+      <div style={{ padding: 16, fontSize: 11, color: t.textMuted, lineHeight: 1.6 }}>
+        No pair of holdings is correlated above {((redundancies?.threshold ?? 0.9) * 100).toFixed(0)}% with enough
+        combined weight to matter. Nothing here is a duplicate of anything else.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "4px 0 10px" }}>
+      {rows.map(p => (
+        <div key={`${p.a}|${p.b}`} style={{
+          display: "flex", alignItems: "center", gap: 12,
+          padding: "9px 16px", borderBottom: `1px solid ${t.borderSubtle}`,
+        }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11.5, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {p.nameA ?? shortSym(p.a)} <span style={{ color: t.textFaint }}>+</span> {p.nameB ?? shortSym(p.b)}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, fontFamily: "monospace", marginTop: 2 }}>
+              {p.observations} days
+              {p.smallerLeg ? ` · smaller leg ${shortSym(p.smallerLeg)}` : ""}
+            </div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 13, fontFamily: "monospace", color: t.negative }}>{p.correlation.toFixed(2)}</div>
+            <div style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>
+              {p.combinedWeight == null ? <NoData compact reason="No priced value for these holdings" />
+                : `${(p.combinedWeight * 100).toFixed(1)}% of book`}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The big number: how many independent bets the book actually contains,
+ *  drawn against the number of holdings so the gap is the thing you see. */
+function EffectiveBetsDial({ independence }) {
+  const t = useTheme();
+  if (!independence?.available || independence.effectiveBets == null) {
+    return (
+      <div style={{ padding: "18px 16px" }}>
+        <div style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace", marginBottom: 6 }}>
+          INDEPENDENT BETS
+        </div>
+        <NoData reason={independence?.reason ?? "Needs priced holdings and a shared window of stored history"} />
+      </div>
+    );
+  }
+  const n = independence.holdingsCount;
+  const bets = independence.effectiveBets;
+  const ratio = Math.max(0, Math.min(bets / Math.max(n, 1), 1));
+  const colour = ratio < 0.34 ? t.negative : ratio < 0.6 ? t.warning : t.positive;
+
+  return (
+    <div style={{ padding: "16px 16px 14px" }}>
+      <div style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace", marginBottom: 8 }}>
+        INDEPENDENT BETS
+      </div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 34, fontWeight: 700, fontFamily: "monospace", color: colour, lineHeight: 1 }}>
+          {bets.toFixed(1)}
+        </span>
+        <span style={{ fontSize: 13, color: t.textMuted, fontFamily: "monospace" }}>of {n} holdings</span>
+      </div>
+      {/* One segment per holding, filled up to the effective count — the empty
+          segments are the holdings that are not buying you anything. */}
+      <div style={{ display: "flex", gap: 3, marginBottom: 8 }}>
+        {Array.from({ length: n }, (_, i) => {
+          const fill = Math.max(0, Math.min(bets - i, 1));
+          return (
+            <div key={i} style={{ flex: 1, height: 9, background: t.surfaceInset, borderRadius: 2, overflow: "hidden" }}>
+              <div style={{ width: `${fill * 100}%`, height: "100%", background: colour }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 10, color: t.textFaint, lineHeight: 1.5 }}>
+        {independence.diversificationRatio != null && (
+          <>Diversification ratio {independence.diversificationRatio.toFixed(2)} · </>
+        )}
+        {independence.observations} shared days
+        {independence.excluded?.length ? ` · ${independence.excluded.length} holding(s) excluded for short history` : ""}
+      </div>
+    </div>
+  );
+}
+
+function CorrelationReportPanel() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [window_, setWindow] = useState("1y");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`http://localhost:3001/correlation?window=${window_}`, { signal: AbortSignal.timeout(20000) });
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.error) { setError(json.error); setData(null); }
+        else { setData(json); setError(null); }
+      } catch (e) {
+        if (!cancelled) setError("Could not reach the correlation engine.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [window_]);
+
+  const windows = ["3m", "6m", "1y", "max"];
+
+  const header = (
+    <SectionHeader
+      title="CORRELATION"
+      subtitle="what actually moves together"
+      extra={
+        <div style={{ display: "flex", gap: 4 }}>
+          {windows.map(w => (
+            <button
+              key={w}
+              onClick={() => setWindow(w)}
+              style={{
+                fontSize: 10, fontFamily: "monospace", padding: "3px 8px",
+                background: w === window_ ? t.accentSoft : "transparent",
+                color: w === window_ ? t.accent : t.textMuted,
+                border: `1px solid ${w === window_ ? t.accent : t.border}`,
+                borderRadius: 3, cursor: "pointer",
+              }}
+            >{w}</button>
+          ))}
+        </div>
+      }
+    />
+  );
+
+  if (loading && !data) {
+    return <Panel>{header}<div style={{ padding: 24, textAlign: "center", color: t.textMuted, fontSize: 11 }}>Measuring…</div></Panel>;
+  }
+  if (error) {
+    return <Panel>{header}<div style={{ padding: 20, color: t.negative, fontSize: 11 }}>⚠ {error}</div></Panel>;
+  }
+  if (!data?.available) {
+    return (
+      <Panel>{header}
+        <div style={{ padding: 20, fontSize: 11, color: t.textMuted, lineHeight: 1.6 }}>
+          {data?.reason ?? "Nothing to correlate yet."}
+        </div>
+      </Panel>
+    );
+  }
+
+  const stressGap = data.stress?.available ? data.stress.averageGap : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Panel>
+        {header}
+
+        {/* Headline row: the four things worth knowing before any detail */}
+        <div style={{
+          display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 1fr",
+          borderBottom: `1px solid ${t.border}`,
+        }}>
+          <div style={{ borderRight: `1px solid ${t.border}` }}>
+            <EffectiveBetsDial independence={data.independence} />
+          </div>
+          <div style={{ borderRight: `1px solid ${t.border}`, padding: "16px 14px" }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace", marginBottom: 8 }}>
+              AVERAGE PAIR
+            </div>
+            <div style={{ fontSize: 26, fontFamily: "monospace", fontWeight: 700, color: t.text, lineHeight: 1 }}>
+              {data.matrix?.averageCorrelation == null ? <NoData /> : data.matrix.averageCorrelation.toFixed(2)}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8 }}>
+              {data.coverage.pairsMeasured} of {data.coverage.pairsTotal} pairs measurable
+            </div>
+          </div>
+          <div style={{ borderRight: `1px solid ${t.border}`, padding: "16px 14px" }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace", marginBottom: 8 }}>
+              IN A SELLOFF
+            </div>
+            <div style={{
+              fontSize: 26, fontFamily: "monospace", fontWeight: 700, lineHeight: 1,
+              color: stressGap == null ? t.text
+                : stressGap > 0.15 ? t.negative
+                : stressGap < -0.05 ? t.positive : t.text,
+            }}>
+              {data.stress?.available && data.stress.averageStressed != null
+                ? data.stress.averageStressed.toFixed(2)
+                : <NoData reason={data.stress?.reason ?? "Not enough history"} />}
+            </div>
+            {/* A gap below zero means these holdings pulled apart in a selloff
+                rather than converging — the diversification actually held. That
+                is good news and is coloured as such, not left neutral. */}
+            <div style={{
+              fontSize: 10, marginTop: 8,
+              color: stressGap == null ? t.textFaint
+                : stressGap > 0.15 ? t.negative
+                : stressGap < -0.05 ? t.positive : t.textFaint,
+            }}>
+              {stressGap == null ? "—"
+                : `${stressGap > 0 ? "+" : ""}${stressGap.toFixed(2)} vs calm${stressGap < -0.05 ? " — held up" : stressGap > 0.15 ? " — converged" : ""}`}
+            </div>
+          </div>
+          <div style={{ padding: "16px 14px" }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.4, color: t.textMuted, fontFamily: "monospace", marginBottom: 8 }}>
+              DUPLICATED
+            </div>
+            <div style={{
+              fontSize: 26, fontFamily: "monospace", fontWeight: 700, lineHeight: 1,
+              color: (data.redundancies?.count ?? 0) > 0 ? t.warning : t.text,
+            }}>
+              {data.redundancies?.weightsAvailable
+                ? `${((data.redundancies.weightInvolved ?? 0) * 100).toFixed(0)}%`
+                : (data.redundancies?.count ?? 0)}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8 }}>
+              {data.redundancies?.count ?? 0} redundant pair{(data.redundancies?.count ?? 0) === 1 ? "" : "s"}
+            </div>
+          </div>
+        </div>
+
+        <CorrelationHeatmap data={data.matrix} />
+
+        {data.unassessable?.length > 0 && (
+          <div style={{
+            padding: "9px 16px", borderTop: `1px solid ${t.borderSubtle}`,
+            fontSize: 10.5, color: t.warning, fontFamily: "monospace",
+          }}>
+            ⚠ {data.unassessable.map(shortSym).join(", ")} ha{data.unassessable.length === 1 ? "s" : "ve"} too
+            little overlapping history to correlate against anything — excluded from every figure above.
+          </div>
+        )}
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Panel>
+          <SectionHeader title="WHEN IT MATTERS" subtitle="correlation on the worst days vs the rest" />
+          <StressPairBars stress={data.stress} />
+        </Panel>
+        <Panel>
+          <SectionHeader title="BLOCS" subtitle="holdings that move as one thing" />
+          <ClusterBlocs clusters={data.clusters} />
+        </Panel>
+      </div>
+
+      <Panel>
+        <SectionHeader
+          title="DUPLICATION"
+          subtitle="pairs you are arguably holding twice, ranked by how much of the book they cover"
+        />
+        <RedundancyRows redundancies={data.redundancies} />
+      </Panel>
+    </div>
+  );
+}
+
 function RiskPage() {
   const [risk, setRisk] = useState(null);
   const [error, setError] = useState(null);
@@ -7075,14 +7605,22 @@ function RiskPage() {
     );
   }
 
+  // The risk scorecard needs live prices to value the book. Correlation does
+  // not — it reads stored bars — so it is rendered alongside the failure rather
+  // than hidden behind it. Gating one engine's output on another engine's data
+  // requirements is how a page ends up blank while half of it had an answer.
   if (error) {
     return (
-      <Panel style={{ padding: 20 }}>
-        <div style={{ color: "#ff4757", fontSize: 12, marginBottom: 8 }}>⚠ {error}</div>
-        <div style={{ color: "#4a6080", fontSize: 11 }}>
-          Add holdings via the API and make sure history has been synced (npm run sync).
-        </div>
-      </Panel>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <Panel style={{ padding: 20 }}>
+          <div style={{ color: "#ff4757", fontSize: 12, marginBottom: 8 }}>⚠ {error}</div>
+          <div style={{ color: "#4a6080", fontSize: 11 }}>
+            The risk scorecard needs priced holdings. Correlation below reads stored price
+            history instead, so it still works.
+          </div>
+        </Panel>
+        <CorrelationReportPanel />
+      </div>
     );
   }
 
@@ -7169,28 +7707,13 @@ function RiskPage() {
         </Panel>
       </div>
 
-      {/* Correlation matrix */}
-      <Panel>
-        <SectionHeader title="CORRELATION MATRIX" subtitle={`${risk.correlationMatrix.observations} trading days`} />
-        <div style={{ padding: 16, overflowX: "auto" }}>
-          <div style={{ display: "inline-block" }}>
-            <div style={{ display: "flex" }}>
-              <div style={{ width: 60 }} />
-              {risk.correlationMatrix.symbols.map(s => (
-                <div key={s} style={{ width: 52, fontSize: 9, color: "#4a6080", textAlign: "center", fontFamily: "monospace" }}>{s.replace(".L", "")}</div>
-              ))}
-            </div>
-            {risk.correlationMatrix.matrix.map((row, i) => (
-              <div key={i} style={{ display: "flex" }}>
-                <div style={{ width: 60, fontSize: 10, color: "#7a8ba0", display: "flex", alignItems: "center", fontFamily: "monospace" }}>
-                  {risk.correlationMatrix.symbols[i].replace(".L", "")}
-                </div>
-                {row.map((v, j) => <CorrelationCell key={j} value={v} />)}
-              </div>
-            ))}
-          </div>
-        </div>
-      </Panel>
+      {/* Correlation. Replaces the old matrix panel, which rendered
+          analytics.correlationMatrix — a grid built by slicing the last N bars
+          of each symbol and correlating them index-for-index. Two London
+          listings with different suspension histories do not line up that way,
+          so some of those cells compared different days to each other. The
+          engine behind this panel joins on date. */}
+      <CorrelationReportPanel />
     </div>
   );
 }
