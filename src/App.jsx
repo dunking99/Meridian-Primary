@@ -7573,6 +7573,312 @@ function CorrelationReportPanel() {
 }
 
 // ============================================================
+// RETURN ATTRIBUTION
+// ============================================================
+//
+// Effects here are measured against the portfolio's own average, not against
+// an index — a Brinson attribution would need the benchmark's sector weights
+// and sector returns as a time series, which no free source publishes. The
+// labelling has to carry that distinction everywhere, because "allocation
+// effect" means something specific to anyone who has seen the term before, and
+// letting them assume it is index-relative would be the misleading part.
+
+/** A bar that grows left or right from a centre line. Contributions are
+ *  signed, and a chart that only draws the positive half hides half the
+ *  answer. */
+function SignedBar({ value, max, color, height = 9 }) {
+  const t = useTheme();
+  const m = max || 1;
+  const half = Math.min(Math.abs(value) / m, 1) / 2 * 100;
+  return (
+    <div style={{ flex: 1, height, background: t.surfaceInset, borderRadius: 2, position: "relative", overflow: "hidden" }}>
+      <div style={{
+        position: "absolute", top: 1, bottom: 1,
+        left: value >= 0 ? "50%" : `${50 - half}%`,
+        width: `${Math.max(half, value === 0 ? 0 : 0.6)}%`,
+        background: color, borderRadius: 1,
+      }} />
+      <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: t.borderStrong }} />
+    </div>
+  );
+}
+
+const pctPP = v => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`;
+
+function ContributionRows({ holdings, limit = 12 }) {
+  const t = useTheme();
+  const rows = (holdings ?? []).slice(0, limit);
+  if (!rows.length) return <div style={{ padding: 18 }}><NoData reason="Nothing to decompose" /></div>;
+  const max = Math.max(...rows.map(h => Math.abs(h.contribution)), 1e-6);
+
+  return (
+    <div style={{ padding: "12px 18px 16px" }}>
+      {rows.map(h => (
+        <div key={h.symbol} style={{ marginBottom: 11 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <span style={{ fontSize: 11.5, color: t.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "62%" }}>
+              {h.name ?? h.symbol}
+              <span style={{ color: t.textFaint, marginLeft: 6, fontSize: 10, fontFamily: "monospace" }}>
+                {(h.averageWeight * 100).toFixed(1)}% avg
+              </span>
+            </span>
+            <span style={{
+              fontSize: 11.5, fontFamily: "monospace",
+              color: h.contribution >= 0 ? t.positive : t.negative,
+            }}>{pctPP(h.contribution)}</span>
+          </div>
+          <SignedBar value={h.contribution} max={max} color={h.contribution >= 0 ? t.positive : t.negative} />
+          {/* Selection is meaningful at this level even though it cancels at
+              group level: it says whether this holding beat the group it sits in. */}
+          <div style={{ fontSize: 9.5, color: t.textFaint, fontFamily: "monospace", marginTop: 3 }}>
+            {h.group} · {h.selection >= 0 ? "beat" : "lagged"} it by {Math.abs(h.selection * 100).toFixed(2)}%
+          </div>
+        </div>
+      ))}
+      <div style={{ fontSize: 10, color: t.textFaint, marginTop: 8, lineHeight: 1.5 }}>
+        Contribution to the total return, not each holding's own return — a big mover at
+        1% of the book contributes less than a small mover at 30%. The average weight is
+        shown so the two are distinguishable.
+      </div>
+    </div>
+  );
+}
+
+function GroupEffectRows({ groups }) {
+  const t = useTheme();
+  const rows = groups ?? [];
+  if (!rows.length) return <div style={{ padding: 18 }}><NoData reason="No groups to decompose" /></div>;
+  const max = Math.max(...rows.flatMap(g => [Math.abs(g.allocation), Math.abs(g.selection)]), 1e-6);
+
+  return (
+    <div style={{ padding: "4px 0 10px" }}>
+      {rows.map(g => (
+        <div key={g.group} style={{ padding: "10px 18px", borderBottom: `1px solid ${t.borderSubtle}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 7 }}>
+            <span style={{ fontSize: 11.5, color: t.text }}>
+              {g.group}
+              <span style={{ color: t.textFaint, marginLeft: 6, fontSize: 10, fontFamily: "monospace" }}>
+                {g.holdingCount} holding{g.holdingCount === 1 ? "" : "s"} · {(g.averageWeight * 100).toFixed(0)}%
+              </span>
+            </span>
+            <span style={{
+              fontSize: 11.5, fontFamily: "monospace",
+              color: g.contribution >= 0 ? t.positive : t.negative,
+            }}>{pctPP(g.contribution)}</span>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ width: 62, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>allocation</span>
+            <SignedBar value={g.allocation} max={max} color={t.info} height={7} />
+            <span style={{ width: 52, fontSize: 9.5, fontFamily: "monospace", color: t.textMuted, textAlign: "right" }}>
+              {pctPP(g.allocation)}
+            </span>
+          </div>
+          {/* Selection is shown as a spread, not a sum. Within a group the
+              selection effects necessarily cancel — the group return IS the
+              weighted average of its members — so a summed figure would read
+              0.00% for every group forever. The spread says how much the
+              picking moved between them, which is the real content. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ width: 62, fontSize: 9.5, color: t.textFaint, fontFamily: "monospace" }}>picking</span>
+            <div style={{ flex: 1, height: 7, background: t.surfaceInset, borderRadius: 2, overflow: "hidden" }}>
+              <div style={{
+                width: `${Math.min((g.selectionSpread ?? 0) / max, 1) * 100}%`,
+                height: "100%", background: t.warning, borderRadius: 1,
+              }} />
+            </div>
+            <span style={{ width: 52, fontSize: 9.5, fontFamily: "monospace", color: t.textMuted, textAlign: "right" }}>
+              {g.holdingCount < 2 ? "—" : `±${((g.selectionSpread ?? 0) * 100).toFixed(2)}%`}
+            </span>
+          </div>
+        </div>
+      ))}
+      <div style={{ padding: "10px 18px 0", fontSize: 10, color: t.textFaint, lineHeight: 1.6 }}>
+        <strong style={{ color: t.textMuted }}>Allocation</strong> — this group did better or worse than
+        the portfolio average, scaled by how much was in it. Sums to zero across groups.{" "}
+        <strong style={{ color: t.textMuted }}>Picking</strong> — how much moved between holdings
+        inside the group, from the laggards to the leaders. Both are measured against this
+        portfolio, not against an index.
+      </div>
+    </div>
+  );
+}
+
+function AttributionPanel() {
+  const t = useTheme();
+  const [data, setData] = useState(null);
+  const [grouping, setGrouping] = useState("sector");
+  const [error, setError] = useState(null);
+  const [note, setNote] = useState(null);
+  const [noteLoading, setNoteLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setData(null);
+    (async () => {
+      try {
+        const res = await fetch(`${API}/attribution?grouping=${grouping}`, { signal: AbortSignal.timeout(25000) });
+        const json = await res.json();
+        if (cancelled) return;
+        if (json.error) setError(json.error); else { setData(json); setError(null); }
+      } catch (e) {
+        if (!cancelled) setError("Could not reach the attribution engine.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [grouping]);
+
+  async function writeNote() {
+    setNoteLoading(true);
+    try {
+      const res = await fetch(`${API}/attribution/explain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ grouping }),
+      });
+      setNote(await res.json());
+    } catch (e) {
+      setNote({ available: false, reason: "The request failed." });
+    } finally {
+      setNoteLoading(false);
+    }
+  }
+
+  const groupings = ["sector", "geography", "wrapper", "currency", "account"];
+
+  const header = (
+    <SectionHeader
+      title="ATTRIBUTION"
+      subtitle="where the return came from"
+      extra={
+        <div style={{ display: "flex", gap: 4 }}>
+          {groupings.map(g => (
+            <button key={g} onClick={() => setGrouping(g)} style={{
+              fontSize: 10, fontFamily: "monospace", padding: "3px 8px",
+              background: g === grouping ? t.accentSoft : "transparent",
+              color: g === grouping ? t.accent : t.textMuted,
+              border: `1px solid ${g === grouping ? t.accent : t.border}`,
+              borderRadius: 3, cursor: "pointer",
+            }}>{g}</button>
+          ))}
+        </div>
+      }
+    />
+  );
+
+  if (error) return <Panel>{header}<div style={{ padding: 20, color: t.negative, fontSize: 11.5 }}>⚠ {error}</div></Panel>;
+  if (!data) return <Panel>{header}<div style={{ padding: 26, textAlign: "center", color: t.textMuted, fontSize: 11.5 }}>Decomposing…</div></Panel>;
+  if (!data.available) {
+    return <Panel>{header}<div style={{ padding: 20, fontSize: 11.5, color: t.textMuted }}>{data.reason}</div></Panel>;
+  }
+
+  const b = data.benchmark;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 16 }}>
+      <Panel>
+        {header}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>TOTAL RETURN</div>
+            <div style={{
+              fontSize: 26, fontWeight: 700, fontFamily: "monospace", lineHeight: 1,
+              color: data.totalReturn >= 0 ? t.positive : t.negative,
+            }}>{pctPP(data.totalReturn)}</div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7 }}>{data.days} trading days</div>
+          </div>
+          <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>
+              VS {b?.available ? b.symbol.replace("^", "") : "BENCHMARK"}
+            </div>
+            <div style={{
+              fontSize: 26, fontWeight: 700, fontFamily: "monospace", lineHeight: 1,
+              color: !b?.available ? t.text : b.excess >= 0 ? t.positive : t.negative,
+            }}>
+              {b?.available ? pctPP(b.excess) : <NoData reason={b?.reason ?? "No benchmark history"} />}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7 }}>
+              {b?.available ? `index ${pctPP(b.benchmarkReturn)}` : "—"}
+            </div>
+          </div>
+          <div style={{ padding: "16px 18px", borderRight: `1px solid ${t.border}` }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>BEST</div>
+            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "monospace", color: t.positive, lineHeight: 1 }}>
+              {data.winners[0] ? pctPP(data.winners[0].contribution) : <NoData />}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {data.winners[0]?.name ?? "nothing positive"}
+            </div>
+          </div>
+          <div style={{ padding: "16px 18px" }}>
+            <div style={{ fontSize: 10, letterSpacing: 1.3, color: t.textMuted, fontFamily: "monospace", marginBottom: 7 }}>WORST</div>
+            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "monospace", color: t.negative, lineHeight: 1 }}>
+              {data.losers[0] ? pctPP(data.losers[0].contribution) : <NoData />}
+            </div>
+            <div style={{ fontSize: 10, color: t.textFaint, marginTop: 7, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {data.losers[0]?.name ?? "nothing negative"}
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: "9px 18px", fontSize: 10, color: t.textFaint, lineHeight: 1.55 }}>
+          {data.basis} {data.reconciles
+            ? "Contributions reconcile to the total exactly."
+            : "⚠ Contributions do not reconcile to the total — treat the split with caution."}
+        </div>
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Panel>
+          <SectionHeader title="BY HOLDING" subtitle="contribution to the total return" />
+          <ContributionRows holdings={data.holdings} />
+        </Panel>
+        <Panel>
+          <SectionHeader title={`BY ${grouping.toUpperCase()}`} subtitle="split into allocation and selection" />
+          <GroupEffectRows groups={data.groups} />
+        </Panel>
+      </div>
+
+      <Panel>
+        <SectionHeader
+          title="WHAT THIS SAYS"
+          subtitle="written from the figures above, and nothing else"
+          extra={
+            <button onClick={writeNote} disabled={noteLoading} style={{
+              fontSize: 10, fontFamily: "monospace", padding: "4px 10px",
+              background: "transparent", color: noteLoading ? t.textFaint : t.accent,
+              border: `1px solid ${noteLoading ? t.border : t.accent}`,
+              borderRadius: 3, cursor: noteLoading ? "default" : "pointer",
+            }}>{noteLoading ? "writing…" : note ? "rewrite" : "write a note"}</button>
+          }
+        />
+        <div style={{ padding: "14px 18px" }}>
+          {!note && (
+            <div style={{ fontSize: 11, color: t.textMuted, lineHeight: 1.6 }}>
+              Not written yet. The note costs an API call, so it is not generated automatically
+              with the numbers.
+            </div>
+          )}
+          {note && !note.available && (
+            <div style={{ fontSize: 11, color: t.textMuted, lineHeight: 1.6 }}>{note.reason}</div>
+          )}
+          {note?.available && (
+            <>
+              <div style={{ fontSize: 12.5, color: t.textSecondary, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+                {note.text}
+              </div>
+              <div style={{ fontSize: 10, color: t.textFaint, marginTop: 12 }}>{note.basis}</div>
+            </>
+          )}
+        </div>
+      </Panel>
+
+      <div style={{ fontSize: 10, color: t.textFaint, lineHeight: 1.6, padding: "0 2px" }}>
+        {data.caveat}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // PORTFOLIO X-RAY
 // ============================================================
 //
@@ -9813,6 +10119,12 @@ function PerformanceTab() {
         {data.coverage}
         {twr.available && twr.coverageNote && <> {twr.coverageNote}</>}
       </div>
+
+      {/* Attribution sits under the return figures because it answers the
+          question those figures raise. It fetches separately and fails
+          separately: it reads reconstructed bar history rather than the
+          cash-flow ledger, so it can work when the ledger is empty. */}
+      <AttributionPanel />
     </div>
   );
 }

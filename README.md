@@ -78,7 +78,7 @@ To run only the API: `npm run server`.
 server/
   config.js              symbol universe, scenarios, tax constants
   db.js                  schema + query helpers
-  index.js               HTTP server, 132 routes
+  index.js               HTTP server, 134 routes
   sources/
     yahoo.js             quotes, history sync, pence normalisation
     feargreed.js         CNN index (unchanged from v1 — it worked)
@@ -107,6 +107,10 @@ server/
     xray.js              what the book actually holds once every fund is looked
                          through: merged underlying companies, the ones reached
                          through several holdings, and blended sectors
+    attribution.js       where the return came from: Cariño-linked contribution
+                         per holding, allocation and selection against the
+                         portfolio's own average, and commentary over the
+                         reconciled figures
     rebalance.js         tax-wrapper-aware trade generation
     montecarlo.js        bootstrapped projections
     stress.js            historical scenario replay
@@ -159,6 +163,10 @@ scripts/
   test-xray.mjs          look-through arithmetic worked out on paper, and the
                          assertion that partial fund disclosure is never scaled
                          up to look complete
+  test-attribution.mjs   the exact identities a decomposition must satisfy:
+                         contributions summing to the compounded return, effects
+                         summing to zero, and commentary that can say nothing
+                         happened
 ```
 
 ## Rebuild — "what portfolio should exist?"
@@ -505,6 +513,70 @@ Verify with `MERIDIAN_DB=/tmp/xray.db node scripts/test-xray.mjs` — 72
 assertions against a book whose every answer is worked out on paper in the file
 header before the engine runs.
 
+## Attribution
+
+The performance engine says what the portfolio returned. This one says where
+that return came from.
+
+**What is deliberately not here.** The textbook answer is Brinson attribution:
+split excess return against a benchmark into an allocation effect (you were
+overweight the sectors that did well) and a selection effect (within each
+sector you picked the right names). Morningstar Direct and Bloomberg PORT both
+do this and it is the right decomposition.
+
+It also needs the benchmark's sector weights *and* the benchmark's return
+within each sector, at each point in the period. Meridian can fetch an index's
+price series. It cannot fetch the FTSE All-Share's technology weight as at
+March, because no free source publishes index constituent weights as a time
+series. Two of the four inputs are missing, so a Brinson attribution here would
+be a Brinson attribution against invented benchmark weights.
+
+So this engine decomposes the portfolio against **itself** — every effect is
+measured relative to the portfolio's own average return — and says so on every
+label it returns. The total-level comparison against a real index *is* honestly
+computable and is reported separately, rather than folded in where it would
+imply the sector splits were benchmark-relative too.
+
+Per holding, per day, with `w` the weight at yesterday's close:
+
+```
+contribution      = w x r                        what it added to the total
+baseline          = w x r_portfolio              what it would have added earning the average
+allocation effect = w x (r_group - r_portfolio)  its group beating the book
+selection effect  = w x (r_holding - r_group)    it beating its own group
+```
+
+and `contribution = baseline + allocation + selection` exactly, per holding and
+in total.
+
+**Why the sums are not naive.** Daily contributions are arithmetic; the total
+return is geometric. Summing `w x r` across 250 days does not equal the
+compounded return, and the gap grows with volatility — on the test book the
+unlinked sum is -6.95% against a true -7.09%. Every contribution is therefore
+Cariño-linked, scaled by a per-day factor derived from the log return, so the
+parts sum to the compounded whole exactly. The test asserts that identity to
+1e-9 and also measures the unlinked version, so the linking is visibly doing
+work rather than being asserted.
+
+**A defect this caught.** Group-level selection is *structurally* zero — a group
+return is the weighted average of its members, so nothing inside can beat it on
+net. A UI column showing that sum would have read `0.00%` for every group
+forever. The group view reports the selection *spread* instead (how much moved
+from laggards to leaders inside the group), and per-holding selection is shown
+on the holding rows where it does mean something. There is an assertion pinning
+the zero so it is understood rather than rediscovered.
+
+The commentary is written from the reconciled figures only — the model is handed
+the numbers this engine computed, never the raw report to interpret as it likes.
+It is permitted, and told, to conclude that nothing notable happened. It is
+generated on request rather than with the numbers, because it costs an API call
+and the page should render without one. The AI function is injectable, so all
+of it is tested with no key and no network.
+
+Verify with `MERIDIAN_DB=/tmp/attr.db node scripts/test-attribution.mjs` — 68
+assertions, most of them exact identities a correct decomposition must satisfy
+whatever the prices happen to be.
+
 ## Key endpoints
 
 **Data** — `GET /prices` `/feargreed` `/history?symbol=` `/symbols` `/quote?symbol=`
@@ -521,6 +593,8 @@ header before the engine runs.
 `/correlation/redundancies`
 
 **X-ray** — `GET /xray` `/xray/overlaps` `/xray/sectors`
+
+**Attribution** — `GET /attribution?grouping=` · `POST /attribution/explain`
 
 **Planning** — `POST /optimise` `/frontier` `/rebalance` `/contribute`
 `/montecarlo` `/goal` `/allocate` · `GET /allocate/candidates` `/allocate/history`

@@ -36,6 +36,7 @@ import * as performance from './engines/performance.js';
 import * as lookthrough from './engines/lookthrough.js';
 import * as correlation from './engines/correlation.js';
 import * as xray from './engines/xray.js';
+import * as attribution from './engines/attribution.js';
 import * as exposure from './engines/rebuild/exposure.js';
 import * as analyst from './engines/analyst.js';
 import * as memory from './engines/memory.js';
@@ -517,6 +518,26 @@ const routes = {
       weights,
       tail: Number(q.tail) || correlation.STRESS_TAIL,
     });
+  },
+
+  // ─── Return attribution ─────────────────────────────────────
+  // Where the return came from, decomposed against the portfolio's own
+  // average. Not benchmark-relative — see the engine header for why.
+  'GET /attribution': q => attribution.attributionReport(state.prices, {
+    lookback: Number(q.lookback) || 750,
+    grouping: q.grouping || 'sector',
+    benchmark: q.benchmark || '^FTSE',
+  }),
+
+  // Commentary over the reconciled figures. Separate from the report because
+  // it costs an API call and the page should render its numbers without one.
+  'POST /attribution/explain': async body => {
+    const report = attribution.attributionReport(state.prices, {
+      lookback: Number(body?.lookback) || 750,
+      grouping: body?.grouping || 'sector',
+      benchmark: body?.benchmark || '^FTSE',
+    });
+    return attribution.explain(report);
   },
 
   // ─── Portfolio X-ray ────────────────────────────────────────
