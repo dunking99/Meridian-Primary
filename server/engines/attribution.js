@@ -488,7 +488,17 @@ export async function explain(report, { aiFn = null, hasKey = null } = {}) {
         promptLength: prompt.length,
       };
     }
-    fn = ai.callAI;
+    // ai.callAI resolves to { ok, text, message }, not a string — the aiFn
+    // contract below (a string on success, a thrown error on failure) is what
+    // the try/catch here and every test in this file are written against.
+    // Assigning ai.callAI directly used to skip this adapter, which meant
+    // String({ok:true,text:'...'}) stringified to the literal text
+    // "[object Object]" and shipped as the commentary on every real call.
+    fn = async (p, opts) => {
+      const res = await ai.callAI(p, opts);
+      if (!res.ok) throw new Error(res.message ?? res.error ?? 'AI request failed');
+      return res.text;
+    };
   }
 
   try {

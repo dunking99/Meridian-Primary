@@ -172,6 +172,8 @@ scripts/
                          contributions summing to the compounded return, effects
                          summing to zero, and commentary that can say nothing
                          happened
+  test-ai.mjs             the Gemini caller's retry/backoff behaviour and error
+                         messages, against Google's real error envelope shape
   test-importer.mjs      messy real-world statement shapes, and every case where
                          the importer refuses rather than guesses
   test-reports.mjs       period arithmetic, self-contained rendering, and a
@@ -521,6 +523,52 @@ Other things it keeps honest:
 Verify with `MERIDIAN_DB=/tmp/xray.db node scripts/test-xray.mjs` — 72
 assertions against a book whose every answer is worked out on paper in the file
 header before the engine runs.
+
+## Making Gemini calls actually reliable
+
+Every AI box in the app — Session Read, AI Cross-Asset Read, the Research AI
+Note, Bull/Bear thesis drafting, per-story news analysis, Attribution
+commentary — routes through one of two `callAI()` functions (frontend and
+backend), and both had the same defect: a single non-200 response from Google
+surfaced immediately as a dead end, with the raw JSON error body sliced to a
+fixed character count and shown as-is — which cuts a real sentence off
+mid-word and reads as the app being broken rather than as an API hiccup.
+
+Two failure shapes reach these functions under real use, and they call for
+opposite responses:
+
+- **503** ("this model is currently experiencing high demand") is Google's
+  servers being briefly overloaded. The same request a few seconds later
+  routinely succeeds, so it's now retried automatically — up to two retries
+  with backoff (1s, then 2.5s) — before giving up.
+- **429** (quota exceeded) means the free tier's request budget for this
+  window is genuinely spent. Retrying immediately doesn't find spare
+  capacity; it spends another attempt against a budget already at zero and
+  delays the user finding out nothing will work. This, and any other 4xx
+  (bad key, malformed request — the request is wrong, not the server busy),
+  fails on the first attempt.
+
+Whatever finally reaches the screen is Google's own `error.message` — a real
+sentence — parsed out of the JSON envelope, never a slice of raw JSON
+truncated at an arbitrary character count.
+
+**A second, more serious bug was caught while fixing this.** Attribution's
+`explain()` took its default AI path by assigning `ai.callAI` directly, but
+`ai.callAI` resolves an *object* (`{ ok, text, message }`), not a string —
+`explain()` expected a string and called `String(text).trim()` on it, which
+stringifies any object to the literal text `"[object Object]"`. On every real
+(non-test) call, success or failure, the commentary shown would have been the
+literal seven characters `[object Object]`. Every existing test injected a
+fake AI function that already returned a plain string, so none of them
+exercised the real default path — it shipped, merged, and nothing caught it.
+Fixed with a thin adapter that normalises `ai.callAI`'s object into the
+string-or-throw contract `explain()`'s tests are actually written against,
+and there is now a regression test that takes the real default branch
+specifically because it's the one path every other test was skipping.
+
+Verify with `MERIDIAN_DB=/tmp/ai.db node scripts/test-ai.mjs` — 25
+assertions against an injected transport, including Google's real error
+envelope captured verbatim from a live (invalid-key) request during this fix.
 
 ## Attribution
 
