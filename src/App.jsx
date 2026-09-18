@@ -38,32 +38,68 @@ async function syncKeyToServerIfNeeded() {
   } catch { /* server not running */ }
 }
 
+// A 503 ("this model is currently experiencing high demand") routinely
+// succeeds a few seconds later, so it's retried automatically. A 429 (quota
+// exceeded) means the free tier's budget for this window is genuinely spent —
+// retrying immediately doesn't find spare capacity, it just spends another
+// attempt against a budget already at zero and delays the user finding out
+// nothing will work. So only network errors and 5xx are retried; 429 and
+// other 4xx (bad key, bad request — the request is wrong, not the server
+// busy) fail on the first attempt.
+const AI_RETRY_DELAYS_MS = [1000, 2500];
+
+/** A human sentence from whatever Google sent back, never a raw JSON slice
+ *  truncated mid-sentence — that reads as the app being broken, not as an
+ *  API error. */
+function describeAIError(status, rawText) {
+  try {
+    const parsed = JSON.parse(rawText);
+    const msg = parsed?.error?.message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  } catch { /* not a JSON envelope — fall through */ }
+  if (status === 429) return "Gemini rate-limited this request (free-tier quota).";
+  if (status >= 500) return "Gemini is currently overloaded.";
+  return `Gemini request failed (HTTP ${status}).`;
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function callAI(prompt, maxTokens = 600) {
   const key = getGeminiKey();
   if (!key) {
     return { ok: false, text: "No Gemini API key set. Add your free key in Settings (or .env) to enable AI features. Get one at aistudio.google.com." };
   }
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
-        }),
-      }
-    );
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      return { ok: false, text: `AI request failed (${res.status}). ${detail.slice(0, 140)}` };
+
+  for (let attempt = 0; attempt < AI_RETRY_DELAYS_MS.length + 1; attempt++) {
+    if (attempt > 0) await sleep(AI_RETRY_DELAYS_MS[attempt - 1]);
+
+    let res;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+          }),
+        }
+      );
+    } catch {
+      if (attempt < AI_RETRY_DELAYS_MS.length) continue; // network error — transient, keep retrying
+      return { ok: false, text: "AI service unreachable. Check your connection and key in Settings." };
     }
-    const data = await res.json();
-    const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
-    return text ? { ok: true, text } : { ok: false, text: "AI returned an empty response — try again." };
-  } catch {
-    return { ok: false, text: "AI service unreachable. Check your connection and key in Settings." };
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = (data?.candidates?.[0]?.content?.parts || []).map(p => p.text || "").join("").trim();
+      return text ? { ok: true, text } : { ok: false, text: "Gemini returned an empty response — try again." };
+    }
+
+    const detail = await res.text().catch(() => "");
+    if (res.status >= 500 && attempt < AI_RETRY_DELAYS_MS.length) continue; // transient — retry
+    return { ok: false, text: describeAIError(res.status, detail) };
   }
 }
 

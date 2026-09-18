@@ -440,6 +440,34 @@ check('the prompt tells the model to separate size from movement',
     nothing.available === false);
 }
 
+// The regression this guards against shipped in the first version of this
+// file: explain() with no injected aiFn fell back to ai.callAI directly,
+// which resolves an OBJECT ({ ok, text, message }), not a string. Every test
+// above injects a fake aiFn that already returns a plain string, so none of
+// them exercise that default path — it shipped, merged, and would have
+// rendered the literal text "[object Object]" as commentary on every real
+// call, both on success and on failure, and nothing caught it.
+//
+// This one takes the real default branch (no aiFn injected) with a key
+// present, which drives the real network call ai.callAI makes. It does not
+// matter whether this sandbox can actually reach Google: a reachable host
+// returns a real 400 (invalid test key) and an unreachable one resolves
+// { status: 0, ... } inside ai.js's own contract — both are still objects,
+// so both exercise the exact code path that broke. Either way, the assertion
+// is the same: the result must never be the literal string "[object Object]".
+{
+  const { setSetting } = await import('../server/db.js');
+  setSetting('gemini_key', 'not-a-real-key-for-default-path-test');
+  const rep = AT.attributionReport(prices, { lookback: 750, grouping: 'sector' });
+  const out = await AT.explain(rep); // no aiFn injected — takes the real ai.callAI default path
+  check('the default path never returns the stringified object literal',
+    out.available === false && !/\[object Object\]/.test(JSON.stringify(out)),
+    JSON.stringify(out));
+  check('and the failure reason is an actual sentence, not [object Object]',
+    typeof out.reason === 'string' && out.reason !== '[object Object]', out.reason);
+  setSetting('gemini_key', '');
+}
+
 // ─── Summary ──────────────────────────────────────────────────
 
 console.log(`\n${'='.repeat(52)}`);

@@ -655,12 +655,7 @@ export async function generateThesis(symbol, { name, summary, price } = {}) {
     temperature: 0.4,
   });
   if (!res.ok) {
-    return {
-      ok: false, error: res.error,
-      message: res.error === 'rate-limited'
-        ? 'Gemini rate-limited the request. The free tier allows a limited number per minute — try again shortly.'
-        : `The model call failed (${res.error}).`,
-    };
+    return { ok: false, error: res.error, message: res.message ?? `The model call failed (${res.error}).` };
   }
 
   const parsed = parseModelJson(res.text);
